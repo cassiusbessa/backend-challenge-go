@@ -10,13 +10,10 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
-	runtimemetrics "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -24,7 +21,6 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 )
 
-// Pipeline exporta trace, log e métrica e descarrega o buffer no encerramento.
 type Pipeline struct {
 	Logger   *slog.Logger
 	Tracer   trace.Tracer
@@ -33,12 +29,10 @@ type Pipeline struct {
 	base     *slog.Logger
 	tracer   *sdktrace.TracerProvider
 	logs     *sdklog.LoggerProvider
-	meter    *sdkmetric.MeterProvider
 	ratio    float64
 	endpoint string
 }
 
-// NewPipeline monta o logger JSON e os providers, sem abrir o coletor ainda.
 func NewPipeline(cfg config.Config) *Pipeline {
 	pipe := &Pipeline{
 		stopped:  make(chan struct{}),
@@ -52,26 +46,23 @@ func NewPipeline(cfg config.Config) *Pipeline {
 	return pipe
 }
 
-// Start liga os exportadores OTLP e as métricas de runtime.
+// A métrica de processo não sai por OTLP: ela fica no /metrics, para heap e
+// goroutines terem uma fonte só.
 func (p *Pipeline) Start(ctx context.Context) error {
 	if err := p.installTrace(ctx); err != nil {
 		return err
 	}
-	if err := p.installLogs(ctx); err != nil {
-		return err
-	}
-	return p.installMetrics(ctx)
+	return p.installLogs(ctx)
 }
 
-// Shutdown descarrega o buffer de telemetria. Chamar duas vezes é inofensivo.
 func (p *Pipeline) Shutdown(ctx context.Context) error {
 	p.stop.Do(func() { close(p.stopped) })
-	p.report(errors.Join(p.shutdownTracer(ctx), p.shutdownLogs(ctx), p.shutdownMeter(ctx)))
+	p.report(errors.Join(p.shutdownTracer(ctx), p.shutdownLogs(ctx)))
 	return nil
 }
 
-// report registra o descarregamento incompleto. Telemetria perdida não derruba
-// o encerramento do processo.
+// Telemetria perdida no encerramento é registrada, não propagada: ela não é
+// motivo para o processo sair com erro.
 func (p *Pipeline) report(err error) {
 	if err == nil {
 		return
@@ -79,7 +70,6 @@ func (p *Pipeline) report(err error) {
 	p.base.Error("telemetria não descarregou", slog.String("status", "error"))
 }
 
-// Stopped fecha quando o descarregamento começa.
 func (p *Pipeline) Stopped() <-chan struct{} {
 	return p.stopped
 }
@@ -116,18 +106,6 @@ func (p *Pipeline) installLogs(ctx context.Context) error {
 	return nil
 }
 
-func (p *Pipeline) installMetrics(ctx context.Context) error {
-	exp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint(hostPort(p.endpoint)), otlpmetricgrpc.WithInsecure(), otlpmetricgrpc.WithTimeout(exportTimeout))
-	if err != nil {
-		return err
-	}
-	p.meter = sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
-		sdkmetric.WithResource(serviceResource()),
-	)
-	return runtimemetrics.Start(runtimemetrics.WithMeterProvider(p.meter))
-}
-
 func (p *Pipeline) shutdownTracer(ctx context.Context) error {
 	if p.tracer == nil {
 		return nil
@@ -140,13 +118,6 @@ func (p *Pipeline) shutdownLogs(ctx context.Context) error {
 		return nil
 	}
 	return p.logs.Shutdown(ctx)
-}
-
-func (p *Pipeline) shutdownMeter(ctx context.Context) error {
-	if p.meter == nil {
-		return nil
-	}
-	return p.meter.Shutdown(ctx)
 }
 
 const exportTimeout = time.Second
