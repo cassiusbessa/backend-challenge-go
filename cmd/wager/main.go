@@ -1,4 +1,3 @@
-// Command wager sobe o processo HTTP da liquidação.
 package main
 
 import (

@@ -1,4 +1,3 @@
-// Package telemetry emite log JSON, trace e métrica do processo.
 package telemetry
 
 import (
@@ -7,8 +6,6 @@ import (
 	"strings"
 )
 
-// CorrelationID devolve o header quando ele é um token opaco curto.
-// Fora da regra, devolve traceID.
 func CorrelationID(header, traceID string) string {
 	if validCorrelation(header) {
 		return header
@@ -34,7 +31,6 @@ func onlyTokenRunes(value string) bool {
 
 const tokenAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
 
-// Allow descarta atributos fora da lista de identificadores.
 func Allow(next slog.Handler) slog.Handler {
 	return allowHandler{next: next}
 }

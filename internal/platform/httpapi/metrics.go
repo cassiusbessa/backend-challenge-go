@@ -8,7 +8,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// NewMetrics registra heap, goroutines e a latência HTTP.
 func NewMetrics() (*prometheus.Registry, *prometheus.HistogramVec) {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector())
@@ -21,7 +20,6 @@ func NewMetrics() (*prometheus.Registry, *prometheus.HistogramVec) {
 	return reg, latency
 }
 
-// MetricsHandler publica o registro em texto Prometheus, com exemplar.
 func MetricsHandler(reg *prometheus.Registry) http.Handler {
 	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{EnableOpenMetrics: true})
 }

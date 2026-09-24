@@ -1,4 +1,3 @@
-// Package app compõe configuração, telemetria e HTTP com Fx.
 package app
 
 import (
@@ -16,7 +15,6 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
-// LoadAndRun valida a configuração antes de escutar.
 func LoadAndRun(getenv func(string) string, signals <-chan os.Signal, run func(config.Config, <-chan os.Signal) error) error {
 	cfg, err := config.Load(getenv)
 	if err != nil {
@@ -25,12 +23,10 @@ func LoadAndRun(getenv func(string) string, signals <-chan os.Signal, run func(c
 	return run(cfg, signals)
 }
 
-// Boot sobe o processo e encerra quando o sinal chega.
 func Boot(cfg config.Config, signals <-chan os.Signal) error {
 	return Run(New(cfg), signals, cfg.ShutdownTimeout)
 }
 
-// Run chama Start, espera o sinal e descarrega no Stop.
 func Run(application *fx.App, signals <-chan os.Signal, timeout time.Duration) error {
 	if err := start(application, timeout); err != nil {
 		return err
@@ -51,7 +47,6 @@ func stop(application *fx.App, timeout time.Duration) error {
 	return application.Stop(ctx)
 }
 
-// New monta os módulos de configuração, telemetria e HTTP.
 func New(cfg config.Config, opts ...fx.Option) *fx.App {
 	options := []fx.Option{
 		fx.NopLogger,

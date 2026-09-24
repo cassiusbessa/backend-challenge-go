@@ -1,4 +1,3 @@
-// Package config lê a configuração obrigatória do processo.
 package config
 
 import (
@@ -8,7 +7,6 @@ import (
 	"time"
 )
 
-// Config é a configuração já validada do processo.
 type Config struct {
 	HTTPAddr        string
 	DatabaseURL     string
@@ -20,7 +18,6 @@ type Config struct {
 	PPROFAddr       string
 }
 
-// MissingError indica variável obrigatória ausente ou vazia.
 type MissingError struct {
 	Key string
 }
@@ -29,7 +26,6 @@ func (e MissingError) Error() string {
 	return "configuração: " + e.Key + " ausente"
 }
 
-// InvalidError indica variável opcional com valor inválido.
 type InvalidError struct {
 	Key string
 }
@@ -38,7 +34,6 @@ func (e InvalidError) Error() string {
 	return "configuração: " + e.Key + " inválida"
 }
 
-// Load lê o ambiente e recusa configuração incompleta.
 func Load(getenv func(string) string) (Config, error) {
 	raw := read(getenv)
 	if err := require(raw); err != nil {
@@ -47,7 +42,6 @@ func Load(getenv func(string) string) (Config, error) {
 	return build(raw)
 }
 
-// Validate recusa endereço HTTP, banco, SQS ou OTLP vazios.
 func (c Config) Validate() error {
 	return require(map[string]string{
 		"HTTP_ADDR":                   c.HTTPAddr,

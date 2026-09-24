@@ -32,6 +32,10 @@ linters:
   exclusions:
     presets:
       - std-error-handling
+    rules:
+      - linters:
+          - revive
+        text: "^(exported|package-comments):"
 
 formatters:
   enable:
