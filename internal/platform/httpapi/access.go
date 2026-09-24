@@ -15,7 +15,6 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
-// Routes são os handlers públicos do processo.
 type Routes struct {
 	Live    http.Handler
 	Ready   http.Handler
@@ -25,18 +24,15 @@ type Routes struct {
 	Latency *prometheus.HistogramVec
 }
 
-// Handler publica só live, ready e metrics. O resto responde 404.
+// Live, ready e metrics ficam fora do span e do log: a sonda e o scrape batem de
+// segundo em segundo, e afogariam o trace e o histograma.
 func Handler(routes Routes) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /health/live", routes.wrap("GET /health/live", routes.Live))
-	mux.Handle("GET /health/ready", routes.wrap("GET /health/ready", routes.Ready))
-	mux.Handle("GET /metrics", routes.wrap("GET /metrics", routes.Metrics))
-	mux.Handle("/", routes.wrap("unmatched", http.HandlerFunc(notFound)))
+	mux.Handle("GET /health/live", routes.Live)
+	mux.Handle("GET /health/ready", routes.Ready)
+	mux.Handle("GET /metrics", routes.Metrics)
+	mux.Handle("/", routes.wrap("unmatched", http.NotFoundHandler()))
 	return mux
-}
-
-func notFound(w http.ResponseWriter, r *http.Request) {
-	http.NotFound(w, r)
 }
 
 func (routes Routes) wrap(name string, next http.Handler) http.Handler {

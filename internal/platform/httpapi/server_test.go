@@ -45,7 +45,7 @@ func TestMetricsExposeHeapAndGoroutinesWithoutDomainLabels(t *testing.T) {
 func metricsBody(t *testing.T) string {
 	t.Helper()
 	handler, _ := testHandler(t)
-	_ = codeOf(t, handler, "/health/live")
+	_ = codeOf(t, handler, "/wagers")
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	req.Header.Set("Accept", "application/openmetrics-text;version=1.0.0")
 	rec := httptest.NewRecorder()
@@ -63,15 +63,15 @@ func assertMetric(t *testing.T, body, name string) {
 	}
 }
 
-func TestHealthLogOmitsSecrets(t *testing.T) {
+func TestRequestLogOmitsSecrets(t *testing.T) {
 	t.Parallel()
 	handler, buf := testHandler(t)
-	req := httptest.NewRequest(http.MethodGet, "/health/live", strings.NewReader(`{"amount":"25.00","balance":"10.00"}`))
+	req := httptest.NewRequest(http.MethodGet, "/wagers", strings.NewReader(`{"amount":"25.00","balance":"10.00"}`))
 	req.Header.Set("Authorization", "Bearer super-secret-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 	line := buf.String()
 	for _, banned := range []string{"Bearer", "super-secret-token", "25.00", "10.00", "authorization"} {
@@ -85,7 +85,7 @@ func TestOpaqueCorrelationIDIsKept(t *testing.T) {
 	t.Parallel()
 	handler, buf := testHandler(t)
 	correlation := "req-123.abc_DEF:ghi"
-	req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+	req := httptest.NewRequest(http.MethodGet, "/wagers", nil)
 	req.Header.Set("X-Correlation-Id", correlation)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 	fields := logFields(t, buf.String())
@@ -100,7 +100,7 @@ func TestInvalidCorrelationIDFallsBackToTrace(t *testing.T) {
 	for _, header := range cases {
 		t.Run(header+" cai no trace_id", func(t *testing.T) {
 			handler, buf := testHandler(t)
-			req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+			req := httptest.NewRequest(http.MethodGet, "/wagers", nil)
 			req.Header.Set("X-Correlation-Id", header)
 			handler.ServeHTTP(httptest.NewRecorder(), req)
 			fields := logFields(t, buf.String())
@@ -109,6 +109,23 @@ func TestInvalidCorrelationIDFallsBackToTrace(t *testing.T) {
 			}
 			if fields["correlationId"] == "" || fields["correlationId"] != fields["trace_id"] {
 				t.Fatalf("correlationId = %v, trace_id = %v", fields["correlationId"], fields["trace_id"])
+			}
+		})
+	}
+}
+
+func TestOperationalRoutesLeaveNoLogLine(t *testing.T) {
+	t.Parallel()
+	paths := []string{"/health/live", "/health/ready", "/metrics"}
+	for _, path := range paths {
+		t.Run(path+" não loga", func(t *testing.T) {
+			handler, buf := testHandler(t)
+			code := codeOf(t, handler, path)
+			if code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", code)
+			}
+			if buf.Len() != 0 {
+				t.Fatalf("log = %q, want vazio", buf.String())
 			}
 		})
 	}
