@@ -6,7 +6,6 @@ networks:
 
 volumes:
   postgres: {}
-  localstack: {}
   tools: {}
 
 services:
@@ -34,11 +33,8 @@ services:
     environment:
       SERVICES: sqs,sns,iam
       AWS_DEFAULT_REGION: us-east-1
-      PERSISTENCE: 1
     ports:
       - "4566:4566"
-    volumes:
-      - localstack:/var/lib/localstack
     networks:
       - junglegaming
     healthcheck:
