@@ -31,9 +31,13 @@ jobs:
         if: hashFiles('go.mod') != ''
         run: go run -C scripts/testgates . -root "$PWD" -cover "$PWD/cover.out"
 
-      - name: Start postgres, localstack, and otel-collector
+      - name: Start postgres, localstack, keycloak, and otel-collector
         if: hashFiles('go.mod') != ''
-        run: docker compose up -d --wait --timeout 180 postgres localstack otel-collector
+        run: docker compose up -d --wait --timeout 300 postgres localstack keycloak otel-collector
+
+      - name: apply the financial schema
+        if: hashFiles('go.mod') != ''
+        run: docker compose run --rm migrate
 
       - uses: hashicorp/setup-terraform@v3
         if: hashFiles('go.mod') != ''

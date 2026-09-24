@@ -28,22 +28,41 @@ func TestToolchainPinsOneGoVersionEverywhere(t *testing.T) {
 	}
 }
 
-func TestIntegrationWorkflowOmitsKeycloakAndGrafana(t *testing.T) {
+// The integration suite needs a real token, so the IdP joins the step. Grafana
+// stays out: nothing under test reads a dashboard.
+func TestIntegrationWorkflowOmitsGrafana(t *testing.T) {
 	t.Parallel()
 	ci := readText(t, filepath.Join(repoRoot(t), ".github", "workflows", "ci.yml"))
 	line := composeLine(ci)
 	if line == "" {
 		t.Fatalf("ci.yml is missing %q", "docker compose up")
 	}
-	for _, want := range []string{"postgres", "localstack", "otel-collector"} {
+	for _, want := range []string{"postgres", "localstack", "keycloak", "otel-collector"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("integration step is missing %s: %s", want, line)
 		}
 	}
-	for _, banned := range []string{"keycloak", "grafana"} {
-		if strings.Contains(line, banned) {
-			t.Fatalf("integration step includes %s: %s", banned, line)
-		}
+	if strings.Contains(line, "grafana") {
+		t.Fatalf("integration step includes grafana: %s", line)
+	}
+}
+
+// The schema is applied by the migration step, before the suite. The process
+// carries no migration code, so a workflow without this step would run the
+// suite against an empty database.
+func TestIntegrationWorkflowAppliesTheSchemaBeforeTheSuite(t *testing.T) {
+	t.Parallel()
+	ci := readText(t, filepath.Join(repoRoot(t), ".github", "workflows", "ci.yml"))
+	migration := strings.Index(ci, "docker compose run --rm migrate")
+	if migration < 0 {
+		t.Fatalf("ci.yml is missing %q", "docker compose run --rm migrate")
+	}
+	suite := strings.Index(ci, "-tags=integration")
+	if suite < 0 {
+		t.Fatalf("ci.yml is missing the integration suite")
+	}
+	if migration > suite {
+		t.Fatalf("the migration step comes after the suite, want it before")
 	}
 }
 
