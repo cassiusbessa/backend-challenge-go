@@ -183,7 +183,6 @@ func scanCover(root, profile string) []string {
 	if err != nil {
 		return []string{fmt.Sprintf("cover: %v", err)}
 	}
-	type acc struct{ covered, total int }
 	byDir := map[string]*acc{}
 	for _, line := range strings.Split(string(data), "\n") {
 		if line == "" || strings.HasPrefix(line, "mode:") {
@@ -228,6 +227,7 @@ func scanCover(root, profile string) []string {
 		{"internal/domain/wager", 0.90},
 		{"internal/domain/ledger", 0.90},
 		{"internal/app", 0.80},
+		{"internal/platform", 0.70},
 	}
 	for _, check := range checks {
 		full := filepath.Join(root, check.dir)
@@ -238,29 +238,48 @@ func scanCover(root, profile string) []string {
 		if !hasProductionGo(full) {
 			continue
 		}
-		bucket := byDir[check.dir]
-		if bucket == nil || bucket.total == 0 {
-			out = append(out, fmt.Sprintf("%s: pacote sem cobertura medida", check.dir))
-			continue
-		}
-		ratio := float64(bucket.covered) / float64(bucket.total)
-		if ratio+1e-9 < check.need {
-			out = append(out, fmt.Sprintf("%s: cobertura %.1f%%, mínimo %.0f%%", check.dir, ratio*100, check.need*100))
-		}
+		out = append(out, checkFloor(check.dir, check.need, subtreeOf(byDir, check.dir))...)
 	}
 	return out
 }
 
-func hasProductionGo(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !entry.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-			return true
+type acc struct{ covered, total int }
+
+func subtreeOf(byDir map[string]*acc, dir string) acc {
+	var total acc
+	for name, bucket := range byDir {
+		if name != dir && !strings.HasPrefix(name, dir+"/") {
+			continue
 		}
+		total.covered += bucket.covered
+		total.total += bucket.total
 	}
-	return false
+	return total
+}
+
+func checkFloor(dir string, need float64, measured acc) []string {
+	if measured.total == 0 {
+		return []string{fmt.Sprintf("%s: pacote sem cobertura medida", dir)}
+	}
+	ratio := float64(measured.covered) / float64(measured.total)
+	if ratio+1e-9 >= need {
+		return nil
+	}
+	return []string{fmt.Sprintf("%s: cobertura %.1f%%, mínimo %.0f%%", dir, ratio*100, need*100)}
+}
+
+func hasProductionGo(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
