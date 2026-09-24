@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -28,6 +29,8 @@ type Pipeline struct {
 	Logger   *slog.Logger
 	Tracer   trace.Tracer
 	stopped  chan struct{}
+	stop     sync.Once
+	base     *slog.Logger
 	tracer   *sdktrace.TracerProvider
 	logs     *sdklog.LoggerProvider
 	meter    *sdkmetric.MeterProvider
@@ -44,7 +47,8 @@ func NewPipeline(cfg config.Config) *Pipeline {
 	}
 	pipe.tracer = sdktrace.NewTracerProvider(sdktrace.WithSampler(sampler(cfg.SampleRatio)))
 	pipe.Tracer = pipe.tracer.Tracer("wager")
-	pipe.Logger = slog.New(Allow(slog.NewJSONHandler(os.Stdout, nil)))
+	pipe.base = slog.New(Allow(slog.NewJSONHandler(os.Stdout, nil)))
+	pipe.Logger = pipe.base
 	return pipe
 }
 
@@ -59,11 +63,20 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	return p.installMetrics(ctx)
 }
 
-// Shutdown descarrega o buffer de telemetria.
+// Shutdown descarrega o buffer de telemetria. Chamar duas vezes é inofensivo.
 func (p *Pipeline) Shutdown(ctx context.Context) error {
-	close(p.stopped)
-	_ = errors.Join(p.shutdownTracer(ctx), p.shutdownLogs(ctx), p.shutdownMeter(ctx))
+	p.stop.Do(func() { close(p.stopped) })
+	p.report(errors.Join(p.shutdownTracer(ctx), p.shutdownLogs(ctx), p.shutdownMeter(ctx)))
 	return nil
+}
+
+// report registra o descarregamento incompleto. Telemetria perdida não derruba
+// o encerramento do processo.
+func (p *Pipeline) report(err error) {
+	if err == nil {
+		return
+	}
+	p.base.Error("telemetria não descarregou", slog.String("status", "error"))
 }
 
 // Stopped fecha quando o descarregamento começa.
