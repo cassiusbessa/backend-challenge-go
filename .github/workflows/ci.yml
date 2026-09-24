@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: unit test constraints
+        run: go run ./scripts/testgates -root .
+
+      - name: lint
+        if: hashFiles('go.mod') != ''
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.1.6
+
+      - name: unit tests
+        if: hashFiles('go.mod') != ''
+        run: go test -race -count=1 -coverprofile=cover.out ./...
+
+      - name: coverage floors
+        if: hashFiles('go.mod') != ''
+        run: go run ./scripts/testgates -root . -cover cover.out
+
+      - name: integration tests
+        if: hashFiles('go.mod') != ''
+        run: go test -race -count=1 -tags=integration ./...

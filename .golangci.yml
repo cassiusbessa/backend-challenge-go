@@ -1,0 +1,39 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  build-tags:
+    - integration
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - errorlint
+    - gocognit
+    - gocyclo
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+  settings:
+    gocyclo:
+      min-complexity: 6
+    gocognit:
+      min-complexity: 10
+  exclusions:
+    presets:
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
