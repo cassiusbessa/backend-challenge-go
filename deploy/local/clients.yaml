@@ -1,0 +1,7 @@
+clients:
+  wallet-internal:
+    role: internal-wallet
+  provider-a:
+    providerId: provider-a
+  provider-b:
+    providerId: provider-b

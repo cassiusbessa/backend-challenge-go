@@ -1,0 +1,4 @@
+principal: wager-sender
+providers:
+  - provider-a
+  - provider-b

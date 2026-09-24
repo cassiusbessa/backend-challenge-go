@@ -1,0 +1,193 @@
+name: junglegaming
+
+networks:
+  junglegaming:
+    name: junglegaming
+
+volumes:
+  postgres: {}
+  localstack: {}
+  tools: {}
+
+services:
+  postgres:
+    image: postgres:16.15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-junglegaming}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-junglegaming}
+      POSTGRES_DB: ${POSTGRES_DB:-junglegaming}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    networks:
+      - junglegaming
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  localstack:
+    image: localstack/localstack:4.9.2
+    environment:
+      SERVICES: sqs,sns,iam
+      AWS_DEFAULT_REGION: us-east-1
+      PERSISTENCE: 1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack:/var/lib/localstack
+    networks:
+      - junglegaming
+    healthcheck:
+      test: ["CMD-SHELL", "h=$$(curl -fsS http://localhost:4566/_localstack/health); printf '%s' \"$$h\" | grep -Eq '\"sqs\": \"(available|running)\"' && printf '%s' \"$$h\" | grep -Eq '\"sns\": \"(available|running)\"' && printf '%s' \"$$h\" | grep -Eq '\"iam\": \"(available|running)\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.4
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_HOSTNAME: localhost
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./deploy/keycloak/junglegaming-realm.json:/opt/keycloak/data/import/junglegaming-realm.json:ro
+    networks:
+      - junglegaming
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "3200:3200"
+    volumes:
+      - ./deploy/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tools:/tools:ro
+    networks:
+      - junglegaming
+    depends_on:
+      tools:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/tools/busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3200/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  loki:
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./deploy/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - tools:/tools:ro
+    networks:
+      - junglegaming
+    depends_on:
+      tools:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/tools/busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./deploy/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - tools:/tools:ro
+    networks:
+      - junglegaming
+    depends_on:
+      tools:
+        condition: service_completed_successfully
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/tools/busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  tools:
+    image: busybox:1.37.0-musl
+    command: ["cp", "/bin/busybox", "/tools/busybox"]
+    volumes:
+      - tools:/tools
+    networks:
+      - junglegaming
+
+  prometheus:
+    image: prom/prometheus:v3.13.3-busybox
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9095:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - junglegaming
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:12.2.10
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana/provisioning/datasources/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - tools:/tools:ro
+    networks:
+      - junglegaming
+    depends_on:
+      tools:
+        condition: service_completed_successfully
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/tools/busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
