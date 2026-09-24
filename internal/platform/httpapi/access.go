@@ -16,12 +16,14 @@ import (
 )
 
 type Routes struct {
-	Live    http.Handler
-	Ready   http.Handler
-	Metrics http.Handler
-	Logger  *slog.Logger
-	Tracer  trace.Tracer
-	Latency *prometheus.HistogramVec
+	Live       http.Handler
+	Ready      http.Handler
+	Metrics    http.Handler
+	OpenWallet http.Handler
+	ReadWallet http.Handler
+	Logger     *slog.Logger
+	Tracer     trace.Tracer
+	Latency    *prometheus.HistogramVec
 }
 
 func Handler(routes Routes) http.Handler {
@@ -31,6 +33,10 @@ func Handler(routes Routes) http.Handler {
 	mux.Handle("GET /health/live", routes.Live)
 	mux.Handle("GET /health/ready", routes.Ready)
 	mux.Handle("GET /metrics", routes.Metrics)
+	// The span name is the route pattern and not the path: a wallet identity in
+	// the name would give every request a series of its own.
+	mux.Handle("POST /wallets", routes.wrap("POST /wallets", routes.OpenWallet))
+	mux.Handle("GET /wallets/{walletId}", routes.wrap("GET /wallets/{walletId}", routes.ReadWallet))
 	mux.Handle("/", routes.wrap("unmatched", http.NotFoundHandler()))
 	return mux
 }

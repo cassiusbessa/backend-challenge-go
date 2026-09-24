@@ -3,38 +3,25 @@ package probe
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 )
 
+// Postgres answers readiness through the pool the process already shares. It
+// does not own the connection: opening a second one would give the same
+// database two owners, and shutdown would depend on the order between them.
 type Postgres struct {
-	url  string
-	pool *pgxpool.Pool
+	source *postgres.Pool
 }
 
-func NewPostgres(cfg config.Config) *Postgres {
-	return &Postgres{url: cfg.DatabaseURL}
-}
-
-func (p *Postgres) Open(ctx context.Context) error {
-	pool, err := pgxpool.New(ctx, p.url)
-	if err != nil {
-		return err
-	}
-	p.pool = pool
-	return nil
-}
-
-func (p *Postgres) Close(context.Context) error {
-	if p.pool == nil {
-		return nil
-	}
-	p.pool.Close()
-	return nil
+func NewPostgres(source *postgres.Pool) *Postgres {
+	return &Postgres{source: source}
 }
 
 func (p *Postgres) Check(ctx context.Context) error {
+	pool, err := p.source.Querier()
+	if err != nil {
+		return err
+	}
 	var one int
-	return p.pool.QueryRow(ctx, "SELECT 1").Scan(&one)
+	return pool.QueryRow(ctx, "SELECT 1").Scan(&one)
 }

@@ -2,25 +2,27 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 )
 
-func TestNewPostgresKeepsTheConfiguredURL(t *testing.T) {
+func TestCheck_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
 	t.Parallel()
-	url := "postgres://junglegaming@127.0.0.1:1/junglegaming"
-	postgres := NewPostgres(config.Config{DatabaseURL: url})
-	if postgres.url != url {
-		t.Fatalf("pool url = %s, want %s", postgres.url, url)
+	shared := postgres.NewPool(config.Config{DatabaseURL: "postgres://junglegaming@127.0.0.1:1/junglegaming"})
+	err := NewPostgres(shared).Check(context.Background())
+	if !errors.Is(err, postgres.ErrPoolClosed) {
+		t.Fatalf("check before open = %v, want %v", err, postgres.ErrPoolClosed)
 	}
 }
 
-func TestCloseWithoutOpenDoesNothing(t *testing.T) {
+func TestNewPostgres_readinessDoesNotOwnTheConnection(t *testing.T) {
 	t.Parallel()
-	postgres := NewPostgres(config.Config{DatabaseURL: "postgres://junglegaming@127.0.0.1:1/junglegaming"})
-	err := postgres.Close(context.Background())
-	if err != nil {
-		t.Fatalf("close without open = %v, want nil", err)
+	shared := postgres.NewPool(config.Config{DatabaseURL: "postgres://junglegaming@127.0.0.1:1/junglegaming"})
+	probe := NewPostgres(shared)
+	if probe.source != shared {
+		t.Fatalf("probe source = %p, want the shared pool %p", probe.source, shared)
 	}
 }

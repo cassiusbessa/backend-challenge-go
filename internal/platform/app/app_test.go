@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"go.uber.org/fx"
 
+	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
@@ -38,6 +40,45 @@ func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 	}
 	if called {
 		t.Fatalf("boot invoked = %v, want false without a database URL", called)
+	}
+}
+
+// A process that cannot name its issuer, or cannot read the versioned map, does
+// not know how to authorize anybody, so it must not reach the listener.
+func TestLoadAndRun_refusesToListenWithoutTheIdentityProvider(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"IDP_ISSUER", "CLIENTS_PATH"} {
+		t.Run("missing "+key+" aborts startup", func(t *testing.T) {
+			booted := false
+			err := LoadAndRun(envWithout(key), nil, func(config.Config, <-chan os.Signal) error {
+				booted = true
+				return nil
+			})
+			var missing config.MissingError
+			if !errors.As(err, &missing) {
+				t.Fatalf("error = %v, want MissingError on %s", err, key)
+			}
+			if missing.Key != key {
+				t.Fatalf("key = %s, want %s", missing.Key, key)
+			}
+			if booted {
+				t.Fatalf("boot invoked = %v, want false without %s", booted, key)
+			}
+		})
+	}
+}
+
+func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Load(envWithClients(filepath.Join(t.TempDir(), "absent.yaml")))
+	if err != nil {
+		t.Fatalf("load config = %v, want nil", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	err = New(cfg).Start(ctx)
+	if !errors.Is(err, authz.ErrUnreadableClientMap) {
+		t.Fatalf("start = %v, want %v", err, authz.ErrUnreadableClientMap)
 	}
 }
 
@@ -131,10 +172,25 @@ type okCheck struct{}
 func (okCheck) Check(context.Context) error { return nil }
 
 func envWithoutDatabase(key string) string {
-	if key == "DATABASE_URL" {
-		return ""
+	return envWithout("DATABASE_URL")(key)
+}
+
+func envWithout(blank string) func(string) string {
+	return func(key string) string {
+		if key == blank {
+			return ""
+		}
+		return testEnv(key)
 	}
-	return testEnv(key)
+}
+
+func envWithClients(path string) func(string) string {
+	return func(key string) string {
+		if key == "CLIENTS_PATH" {
+			return path
+		}
+		return testEnv(key)
+	}
 }
 
 func testEnv(key string) string {

@@ -20,7 +20,7 @@ import (
 func TestOtherRoutesReturn404(t *testing.T) {
 	t.Parallel()
 	handler, _ := testHandler(t)
-	paths := []string{"/wagers", "/wallets", "/reconciliation", "/debug/pprof/"}
+	paths := []string{"/wagers", "/wagering/transactions", "/reconciliation", "/debug/pprof/"}
 	for _, path := range paths {
 		t.Run(path+" answers 404", func(t *testing.T) {
 			got := codeOf(t, handler, path)
@@ -28,6 +28,22 @@ func TestOtherRoutesReturn404(t *testing.T) {
 				t.Fatalf("%s = %d, want 404", path, got)
 			}
 		})
+	}
+}
+
+// The wallet routes of this delivery are served, so they no longer answer the
+// 404 of a route that does not exist.
+func TestHandler_servesTheWalletRoutes(t *testing.T) {
+	t.Parallel()
+	handler, _ := testHandler(t)
+	if got := codeOf(t, handler, "/wallets/11111111-1111-4111-8111-111111111111"); got != http.StatusOK {
+		t.Fatalf("GET /wallets/{walletId} = %d, want the route to answer", got)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/wallets", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /wallets = %d, want the route to answer", rec.Code)
 	}
 }
 
@@ -153,14 +169,24 @@ func testHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 		}
 	})
 	handler := Handler(Routes{
-		Live:    http.HandlerFunc(Live),
-		Ready:   NewReady(okProbe{}, okProbe{}),
-		Metrics: MetricsHandler(reg),
-		Logger:  slog.New(telemetry.Allow(slog.NewJSONHandler(buf, nil))),
-		Tracer:  provider.Tracer("test"),
-		Latency: latency,
+		Live:       http.HandlerFunc(Live),
+		Ready:      NewReady(okProbe{}, okProbe{}),
+		Metrics:    MetricsHandler(reg),
+		OpenWallet: answering(http.StatusCreated),
+		ReadWallet: answering(http.StatusOK),
+		Logger:     slog.New(telemetry.Allow(slog.NewJSONHandler(buf, nil))),
+		Tracer:     provider.Tracer("test"),
+		Latency:    latency,
 	})
 	return handler, buf
+}
+
+// answering stands in for the wallet border, so the routing test checks the
+// wiring and not the handler behind it.
+func answering(status int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	})
 }
 
 func logFields(t *testing.T, raw string) map[string]any {
