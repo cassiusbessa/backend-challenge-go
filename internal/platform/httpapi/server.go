@@ -12,7 +12,6 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 )
 
-// Server escuta a API e o pprof em endereços diferentes.
 type Server struct {
 	api       *http.Server
 	pprof     *http.Server
@@ -21,7 +20,6 @@ type Server struct {
 	log       *slog.Logger
 }
 
-// NewServer guarda os endereços. A escuta começa em Start.
 func NewServer(cfg config.Config, handler http.Handler, logger *slog.Logger) *Server {
 	return &Server{
 		api: &http.Server{
@@ -39,7 +37,6 @@ func NewServer(cfg config.Config, handler http.Handler, logger *slog.Logger) *Se
 	}
 }
 
-// Start deixa de retornar só depois que as duas portas aceitam conexão.
 func (s *Server) Start(ctx context.Context) error {
 	if err := s.listen(ctx, s.pprof, nil); err != nil {
 		return err
@@ -51,27 +48,20 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Use troca o handler da API antes da escuta.
 func (s *Server) Use(handler http.Handler) {
 	s.api.Handler = handler
 }
 
-// Addr é o endereço efetivo da API, depois do Start.
 func (s *Server) Addr() string {
 	return s.apiAddr
 }
 
-// Listening fecha quando a API está aceitando conexão.
 func (s *Server) Listening() <-chan struct{} {
 	return s.listening
 }
 
-// Shutdown para de aceitar conexão e conclui o pedido em curso.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if err := s.api.Shutdown(ctx); err != nil {
-		return err
-	}
-	return s.pprof.Shutdown(ctx)
+	return errors.Join(s.api.Shutdown(ctx), s.pprof.Shutdown(ctx))
 }
 
 func (s *Server) listen(ctx context.Context, srv *http.Server, addr *string) error {
