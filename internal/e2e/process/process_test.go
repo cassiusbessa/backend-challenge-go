@@ -72,10 +72,34 @@ func TestLiveStaysUpWhenQueueIsUnknown(t *testing.T) {
 	}
 }
 
+// The readiness probe answers through the pool the process shares. An
+// unreachable database must not take the process down with it.
+func TestReadyFallsWhenTheDatabaseIsUnreachable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	queueURL := createQueue(ctx, t)
+	base := startProcessWith(t, queueURL, "postgres://junglegaming:junglegaming@127.0.0.1:1/junglegaming?sslmode=disable")
+	live := statusCode(ctx, t, base+"/health/live")
+	if live != http.StatusOK {
+		t.Fatalf("live with an unreachable database = %d, want 200", live)
+	}
+	ready := statusCode(ctx, t, base+"/health/ready")
+	if ready != http.StatusServiceUnavailable {
+		t.Fatalf("ready = %d, want 503", ready)
+	}
+}
+
 func startProcess(t *testing.T, queueURL string) string {
 	t.Helper()
+	return startProcessWith(t, queueURL, envOr("DATABASE_URL", "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable"))
+}
+
+func startProcessWith(t *testing.T, queueURL, databaseURL string) string {
+	t.Helper()
 	cfg, err := config.Load(func(key string) string {
-		return integrationEnv(queueURL)[key]
+		env := integrationEnv(queueURL)
+		env["DATABASE_URL"] = databaseURL
+		return env[key]
 	})
 	if err != nil {
 		t.Fatalf("config: %v", err)
@@ -131,6 +155,8 @@ func integrationEnv(queueURL string) map[string]string {
 		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
 		"SQS_QUEUE_URL":               queueURL,
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		"IDP_ISSUER":                  envOr("IDP_ISSUER", "http://localhost:8080/realms/junglegaming"),
+		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
 		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
 	}
 }
