@@ -46,6 +46,9 @@ var allowedKeys = map[string]struct{}{
 	"kind":          {},
 	"status":        {},
 	"failureCode":   {},
+	// The stack of an infrastructure failure, captured once. A business
+	// rejection never carries one.
+	"stack": {},
 }
 
 type allowHandler struct {
