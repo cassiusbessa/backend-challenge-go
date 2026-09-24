@@ -2,6 +2,8 @@
 
 Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak, o cano de telemetria e o processo `wager`.
 
+As decisões de desenho — dinheiro, máquina de estados, idempotência, lock, reversões, inbox e outbox, autorização, Fx e encerramento — estão em [ARCHITECTURE.md](ARCHITECTURE.md), com o estado de implementação de cada uma.
+
 ## Pré-requisitos
 
 - Docker com Compose v2
@@ -74,4 +76,31 @@ Troque `client_id` e `client_secret` por `provider-a` / `provider-a-local` ou `p
 
 O coletor recebe OTLP, aplica batch e entrega trace ao Tempo, log ao Loki e métrica ao Prometheus. O Grafana só provisiona esses três datasources. Não há dashboard de negócio nem regra de alerta.
 
-O Prometheus raspa dois alvos: o coletor em `otel-collector:8889`, com o que chega por OTLP, e o `/metrics` do próprio processo em `wager:8090`. A latência HTTP sai em OpenMetrics com exemplar de `trace_id`; o Prometheus sobe com `--enable-feature=exemplar-storage` e o datasource liga esse exemplar ao Tempo, então o ponto do gráfico abre o trace.
+O processo manda trace e log por OTLP. A série de processo não vai por esse caminho: ela sai pelo `/metrics`, que o Prometheus raspa em `wager:8090`, para heap e goroutines terem uma fonte só. O outro alvo, `otel-collector:8889`, publica o que chegar ao coletor por OTLP.
+
+A latência HTTP sai em OpenMetrics com exemplar de `trace_id`. O Prometheus sobe com `--enable-feature=exemplar-storage` e o datasource liga esse exemplar ao Tempo, então o ponto do gráfico abre o trace.
+
+`/health/live`, `/health/ready` e `/metrics` ficam fora do span e do log. São chamados de segundo em segundo pela sonda e pelo scrape, e afogariam o trace e o histograma que o dashboard vai usar.
+
+## Testes
+
+A suíte de unidade não sobe Docker:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+A suíte de integração pede o ambiente de pé e o broker provisionado, e lê a credencial do LocalStack do ambiente:
+
+```bash
+docker compose up -d --wait postgres localstack otel-collector
+terraform -chdir=deploy/terraform/localstack apply -auto-approve
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1 \
+  go test -race -tags=integration ./...
+```
+
+Os três valores estão em `.env.example`. O código não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
+
+Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 70% em `internal/platform` — e o `.golangci.yml`.
