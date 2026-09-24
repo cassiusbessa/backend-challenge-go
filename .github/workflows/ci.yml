@@ -12,10 +12,10 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: "1.26.4"
 
       - name: unit test constraints
-        run: go run ./scripts/testgates -root .
+        run: go run -C scripts/testgates . -root "$PWD"
 
       - name: lint
         if: hashFiles('go.mod') != ''
@@ -29,7 +29,11 @@ jobs:
 
       - name: coverage floors
         if: hashFiles('go.mod') != ''
-        run: go run ./scripts/testgates -root . -cover cover.out
+        run: go run -C scripts/testgates . -root "$PWD" -cover "$PWD/cover.out"
+
+      - name: Start postgres, localstack, and otel-collector
+        if: hashFiles('go.mod') != ''
+        run: docker compose up -d --wait --timeout 180 postgres localstack otel-collector
 
       - name: integration tests
         if: hashFiles('go.mod') != ''
