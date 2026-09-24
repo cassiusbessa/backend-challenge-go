@@ -35,6 +35,22 @@ jobs:
         if: hashFiles('go.mod') != ''
         run: docker compose up -d --wait --timeout 180 postgres localstack otel-collector
 
+      - uses: hashicorp/setup-terraform@v3
+        if: hashFiles('go.mod') != ''
+        with:
+          terraform_version: "1.13.3"
+          terraform_wrapper: false
+
+      - name: provision the local broker
+        if: hashFiles('go.mod') != ''
+        run: |
+          terraform -chdir=deploy/terraform/localstack init -input=false
+          terraform -chdir=deploy/terraform/localstack apply -auto-approve -input=false
+
       - name: integration tests
         if: hashFiles('go.mod') != ''
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_REGION: us-east-1
         run: go test -race -count=1 -tags=integration ./...
