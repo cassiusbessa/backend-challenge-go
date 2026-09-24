@@ -13,7 +13,7 @@ func NewMetrics() (*prometheus.Registry, *prometheus.HistogramVec) {
 	reg.MustRegister(collectors.NewGoCollector())
 	latency := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "http_request_duration_seconds",
-		Help:    "Latência HTTP em segundos.",
+		Help:    "HTTP request latency in seconds.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "code"})
 	reg.MustRegister(latency)

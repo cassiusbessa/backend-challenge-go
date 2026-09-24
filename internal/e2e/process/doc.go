@@ -1,4 +1,6 @@
-// O pacote só existe atrás da tag integration. Sem um arquivo sem tag,
-// `go build` e `go vet` apontados para ele falham com "build constraints
-// exclude all Go files".
+// Package process holds the journey suite, which builds only under the
+// integration tag.
+//
+// This untagged file exists so that `go build` and `go vet` pointed at the
+// package do not fail with "build constraints exclude all Go files".
 package process

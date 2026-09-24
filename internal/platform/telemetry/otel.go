@@ -46,8 +46,9 @@ func NewPipeline(cfg config.Config) *Pipeline {
 	return pipe
 }
 
-// A métrica de processo não sai por OTLP: ela fica no /metrics, para heap e
-// goroutines terem uma fonte só.
+// Start installs the trace and log exporters. Process metrics are deliberately
+// left out: they stay on /metrics so that heap and goroutines have a single
+// source instead of two that can disagree.
 func (p *Pipeline) Start(ctx context.Context) error {
 	if err := p.installTrace(ctx); err != nil {
 		return err
@@ -61,13 +62,13 @@ func (p *Pipeline) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Telemetria perdida no encerramento é registrada, não propagada: ela não é
-// motivo para o processo sair com erro.
+// report logs telemetry lost on shutdown instead of propagating it: dropped
+// telemetry is not a reason for the process to exit with an error.
 func (p *Pipeline) report(err error) {
 	if err == nil {
 		return
 	}
-	p.base.Error("telemetria não descarregou", slog.String("status", "error"))
+	p.base.Error("telemetry did not flush", slog.String("status", "error"))
 }
 
 func (p *Pipeline) Stopped() <-chan struct{} {

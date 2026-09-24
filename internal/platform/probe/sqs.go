@@ -41,9 +41,11 @@ func NewClient(ctx context.Context, endpoint string) (*sqs.Client, error) {
 	}), nil
 }
 
-// A credencial vem da cadeia padrão do SDK: ambiente no Compose e no CI, papel
-// na nuvem. O IMDS fica desligado para não esperar por um endereço que só existe
-// dentro da EC2.
+// loadAWS takes the credential from the SDK default chain: the environment on
+// Compose and on CI, the role in the cloud.
+//
+// IMDS is disabled so that the chain does not wait on an address that only
+// answers inside EC2.
 func loadAWS(ctx context.Context) (aws.Config, error) {
 	return awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithDefaultRegion("us-east-1"),

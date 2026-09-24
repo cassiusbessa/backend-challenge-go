@@ -21,9 +21,11 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
 )
 
-// A suíte já cai no LocalStack quando banco e endpoint não vêm do ambiente.
-// A credencial segue a mesma regra, para o portão local não depender de um
-// shell preparado. Produção continua sem credencial no código.
+// TestMain falls back to LocalStack when the database and the endpoint do not
+// come from the environment.
+//
+// The credential follows the same rule so that the local gate does not depend
+// on a prepared shell. Production still carries no credential in the code.
 func TestMain(m *testing.M) {
 	for key, value := range localAWS {
 		if os.Getenv(key) == "" {

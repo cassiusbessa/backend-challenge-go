@@ -23,7 +23,7 @@ type MissingError struct {
 }
 
 func (e MissingError) Error() string {
-	return "configuração: " + e.Key + " ausente"
+	return "config: " + e.Key + " is missing"
 }
 
 type InvalidError struct {
@@ -31,7 +31,7 @@ type InvalidError struct {
 }
 
 func (e InvalidError) Error() string {
-	return "configuração: " + e.Key + " inválida"
+	return "config: " + e.Key + " is not valid"
 }
 
 func Load(getenv func(string) string) (Config, error) {

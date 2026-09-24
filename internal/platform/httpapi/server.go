@@ -79,7 +79,7 @@ func (s *Server) listen(ctx context.Context, srv *http.Server, addr *string) err
 func (s *Server) serve(srv *http.Server, ln net.Listener) {
 	err := srv.Serve(ln)
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		s.log.Error("servidor http", slog.String("status", "error"))
+		s.log.Error("http server", slog.String("status", "error"))
 	}
 }
 

@@ -24,10 +24,10 @@ type Routes struct {
 	Latency *prometheus.HistogramVec
 }
 
-// Live, ready e metrics ficam fora do span e do log: a sonda e o scrape batem de
-// segundo em segundo, e afogariam o trace e o histograma.
 func Handler(routes Routes) http.Handler {
 	mux := http.NewServeMux()
+	// Live, ready and metrics stay outside the span and the log: the probe and
+	// the scrape run every second and would drown the trace and the histogram.
 	mux.Handle("GET /health/live", routes.Live)
 	mux.Handle("GET /health/ready", routes.Ready)
 	mux.Handle("GET /metrics", routes.Metrics)
@@ -90,7 +90,7 @@ func exemplify(observer prometheus.Observer, seconds float64, traceID string) {
 func (routes Routes) log(ctx context.Context, span trace.Span, header string, status int) {
 	sc := span.SpanContext()
 	traceID := sc.TraceID().String()
-	routes.Logger.LogAttrs(ctx, slog.LevelInfo, "pedido",
+	routes.Logger.LogAttrs(ctx, slog.LevelInfo, "request",
 		slog.String("correlationId", telemetry.CorrelationID(header, traceID)),
 		slog.String("trace_id", traceID),
 		slog.String("span_id", sc.SpanID().String()),

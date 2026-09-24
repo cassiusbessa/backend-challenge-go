@@ -110,13 +110,13 @@ func checkTestFunc(fset *token.FileSet, path string, k kind, fn *ast.FuncDecl, p
 			return false
 		case *ast.CallExpr:
 			if k == integrationKind && isParallel(node) {
-				out = append(out, fmt.Sprintf("%s:%d: integração não usa t.Parallel", path, fset.Position(node.Pos()).Line))
+				out = append(out, fmt.Sprintf("%s:%d: integration test uses t.Parallel", path, fset.Position(node.Pos()).Line))
 			}
 		case *ast.AssignStmt:
 			for _, lhs := range node.Lhs {
 				id, ok := lhs.(*ast.Ident)
 				if ok && pkgVars[id.Name] {
-					out = append(out, fmt.Sprintf("%s:%d: teste escreve variável de pacote %s", path, fset.Position(id.Pos()).Line, id.Name))
+					out = append(out, fmt.Sprintf("%s:%d: test writes package variable %s", path, fset.Position(id.Pos()).Line, id.Name))
 				}
 			}
 		}
@@ -130,7 +130,7 @@ func checkTestFunc(fset *token.FileSet, path string, k kind, fn *ast.FuncDecl, p
 			}
 		}
 		if count > 1 {
-			out = append(out, fmt.Sprintf("%s:%d: t.Parallel mais de uma vez em %s", path, fset.Position(fn.Pos()).Line, fn.Name.Name))
+			out = append(out, fmt.Sprintf("%s:%d: t.Parallel more than once in %s", path, fset.Position(fn.Pos()).Line, fn.Name.Name))
 		}
 	}
 	return out
@@ -153,9 +153,9 @@ func checkUnitFile(fset *token.FileSet, path string, file *ast.File) []string {
 		pos := fset.Position(sel.Pos())
 		switch {
 		case pkg.Name == "time" && (name == "Now" || name == "Since" || name == "Sleep"):
-			out = append(out, fmt.Sprintf("%s:%d: teste de unidade usa time.%s", path, pos.Line, name))
+			out = append(out, fmt.Sprintf("%s:%d: unit test uses time.%s", path, pos.Line, name))
 		case (pkg.Name == "net" && (name == "Dial" || name == "DialTimeout")) || (pkg.Name == "sql" && name == "Open"):
-			out = append(out, fmt.Sprintf("%s:%d: teste de unidade abre %s.%s", path, pos.Line, pkg.Name, name))
+			out = append(out, fmt.Sprintf("%s:%d: unit test opens %s.%s", path, pos.Line, pkg.Name, name))
 		case pkg.Name == "rand" && name == "NewSource":
 			seeded = true
 		case pkg.Name == "rand":
@@ -164,7 +164,7 @@ func checkUnitFile(fset *token.FileSet, path string, file *ast.File) []string {
 		return true
 	})
 	if usesRand && !seeded {
-		out = append(out, fmt.Sprintf("%s: teste de unidade usa math/rand sem semente", path))
+		out = append(out, fmt.Sprintf("%s: unit test uses math/rand without a seed", path))
 	}
 	return out
 }
@@ -259,13 +259,13 @@ func subtreeOf(byDir map[string]*acc, dir string) acc {
 
 func checkFloor(dir string, need float64, measured acc) []string {
 	if measured.total == 0 {
-		return []string{fmt.Sprintf("%s: pacote sem cobertura medida", dir)}
+		return []string{fmt.Sprintf("%s: package has no measured coverage", dir)}
 	}
 	ratio := float64(measured.covered) / float64(measured.total)
 	if ratio+1e-9 >= need {
 		return nil
 	}
-	return []string{fmt.Sprintf("%s: cobertura %.1f%%, mínimo %.0f%%", dir, ratio*100, need*100)}
+	return []string{fmt.Sprintf("%s: coverage %.1f%%, minimum %.0f%%", dir, ratio*100, need*100)}
 }
 
 func hasProductionGo(dir string) bool {

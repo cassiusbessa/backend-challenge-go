@@ -39,7 +39,7 @@ func TestAllowDropsSecretAttributes(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(Allow(slog.NewJSONHandler(&buf, nil)))
-	logger.Info("pedido",
+	logger.Info("request",
 		slog.String("authorization", "Bearer super-secret-token"),
 		slog.String("body", `{"amount":"25.00"}`),
 		slog.String("amount", "25.00"),
