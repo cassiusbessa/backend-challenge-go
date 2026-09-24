@@ -58,7 +58,7 @@ func TestReadyReturns503WhenProbeDeadlineExpires(t *testing.T) {
 
 func codeOf(t *testing.T, handler http.Handler, path string) int {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec.Code

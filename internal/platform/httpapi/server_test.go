@@ -48,7 +48,7 @@ func metricsBody(t *testing.T) string {
 	t.Helper()
 	handler, _ := testHandler(t)
 	_ = codeOf(t, handler, "/wagers")
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	req.Header.Set("Accept", "application/openmetrics-text;version=1.0.0")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -68,7 +68,7 @@ func assertMetric(t *testing.T, body, name string) {
 func TestRequestLogOmitsSecrets(t *testing.T) {
 	t.Parallel()
 	handler, buf := testHandler(t)
-	req := httptest.NewRequest(http.MethodGet, "/wagers", strings.NewReader(`{"amount":"25.00","balance":"10.00"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/wagers", strings.NewReader(`{"amount":"25.00","balance":"10.00"}`))
 	req.Header.Set("Authorization", "Bearer super-secret-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -87,7 +87,7 @@ func TestOpaqueCorrelationIDIsKept(t *testing.T) {
 	t.Parallel()
 	handler, buf := testHandler(t)
 	correlation := "req-123.abc_DEF:ghi"
-	req := httptest.NewRequest(http.MethodGet, "/wagers", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/wagers", nil)
 	req.Header.Set("X-Correlation-Id", correlation)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 	fields := logFields(t, buf.String())
@@ -102,7 +102,7 @@ func TestInvalidCorrelationIDFallsBackToTrace(t *testing.T) {
 	for _, header := range cases {
 		t.Run(header+" falls back to trace_id", func(t *testing.T) {
 			handler, buf := testHandler(t)
-			req := httptest.NewRequest(http.MethodGet, "/wagers", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/wagers", nil)
 			req.Header.Set("X-Correlation-Id", header)
 			handler.ServeHTTP(httptest.NewRecorder(), req)
 			fields := logFields(t, buf.String())

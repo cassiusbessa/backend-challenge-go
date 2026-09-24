@@ -1,6 +1,6 @@
-FROM golang:1.26.4 AS build
+FROM golang:1.27.1 AS build
 WORKDIR /src
-RUN go version | grep -q 'go version go1.26.4 '
+RUN go version | grep -q 'go version go1.27.1 '
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
