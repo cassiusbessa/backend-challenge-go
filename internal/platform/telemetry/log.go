@@ -65,8 +65,13 @@ func (h allowHandler) Handle(ctx context.Context, rec slog.Record) error {
 	return h.next.Handle(ctx, filtered)
 }
 
+func allowed(key string) bool {
+	_, ok := allowedKeys[key]
+	return ok
+}
+
 func keep(rec *slog.Record, attr slog.Attr) {
-	if _, ok := allowedKeys[attr.Key]; !ok {
+	if !allowed(attr.Key) {
 		return
 	}
 	rec.AddAttrs(attr)
@@ -79,7 +84,7 @@ func (h allowHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 func filterAttrs(attrs []slog.Attr) []slog.Attr {
 	out := make([]slog.Attr, 0, len(attrs))
 	for _, attr := range attrs {
-		if _, ok := allowedKeys[attr.Key]; ok {
+		if allowed(attr.Key) {
 			out = append(out, attr)
 		}
 	}
