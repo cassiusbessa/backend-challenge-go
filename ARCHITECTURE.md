@@ -10,7 +10,7 @@ Este documento registra as decisões do desenho inteiro. Nem tudo está escrito 
 | --- | --- |
 | Ambiente compartilhado: Compose, Terraform local, realm do Keycloak | implementado |
 | Processo: Fx, configuração, `/health/live`, `/health/ready`, log JSON, OTLP, `/metrics`, `pprof` | implementado |
-| Domínio: `Money`, `Wallet`, `LedgerEntry`, `WagerTransaction` | decidido, não implementado |
+| Domínio: identidades, `Money`, `Wallet`, `LedgerEntry`, `WagerTransaction` | implementado |
 | Schema, unit of work, idempotência, lock, borda HTTP | decidido, não implementado |
 | Referência pendente, reversões | decidido, não implementado |
 | Inbox, outbox, consumidor SQS, publisher SNS | decidido, não implementado |
@@ -101,7 +101,7 @@ A operação citada precisa fechar em jogador, carteira, moeda, rodada e tipo; s
 
 ## Erros
 
-O domínio guarda `failureCode` em token estável, e HTTP e SQS devolvem o mesmo token. Já estão fixados: `INSUFFICIENT_FUNDS`, `REVERSAL_INSUFFICIENT_FUNDS`, `REFERENCE_NOT_FOUND`, `REFERENCE_NOT_PROCESSED`, `REFERENCE_UNSUCCESSFUL`, `ALREADY_REVERSED`, `PLAYER_WALLET_MISMATCH`, `CURRENCY_MISMATCH`, `REVERSAL_AMOUNT_MISMATCH`, `REFERENCE_MISMATCH`, `IDEMPOTENCY_CONFLICT` e `DUPLICATE_EXTERNAL_TRANSACTION`. O catálogo é fechado junto com o núcleo de domínio, num lugar só, para os canais não divergirem.
+O domínio guarda `failureCode` em token estável, e HTTP e SQS devolvem o mesmo token. O catálogo é fechado e enumerável em `internal/domain/wager`, num lugar só, para os canais não divergirem: `INSUFFICIENT_FUNDS`, `REVERSAL_INSUFFICIENT_FUNDS`, `REFERENCE_NOT_FOUND`, `REFERENCE_NOT_PROCESSED`, `REFERENCE_UNSUCCESSFUL`, `ALREADY_REVERSED`, `PLAYER_WALLET_MISMATCH`, `CURRENCY_MISMATCH`, `REVERSAL_AMOUNT_MISMATCH`, `REFERENCE_MISMATCH`, `IDEMPOTENCY_CONFLICT`, `DUPLICATE_EXTERNAL_TRANSACTION`, `WALLET_NOT_FOUND`, `OPENING_NOT_ALLOWED`, `AMOUNT_NOT_ALLOWED_FOR_KIND` e `REFERENCE_REQUIRED`. `Catalog()` devolve a lista que o mapa de status da borda e a série por código percorrem.
 
 Na borda HTTP o corpo de erro segue a RFC 9457, em `application/problem+json`, com `type`, `title`, `status`, `detail` e `instance`. O `failureCode` vai numa extensão: `type` identifica a classe do problema, o token identifica a regra de negócio. O mapa de status numérico fica no adaptador, fora do domínio. Autenticação e entrada inválida também saem como problem details, e entrada inválida não grava transação.
 
