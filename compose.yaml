@@ -216,11 +216,18 @@ services:
       SQS_ENDPOINT: http://localstack:4566
       SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      # O issuer é o que o token anuncia em `iss`, visto do host. O JWKS é
+      # buscado de dentro da rede, onde `localhost` seria o próprio processo.
+      IDP_ISSUER: http://localhost:8080/realms/junglegaming
+      IDP_JWKS_URL: http://keycloak:8080/realms/junglegaming/protocol/openid-connect/certs
+      CLIENTS_PATH: /etc/wager/clients.yaml
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       AWS_REGION: ${AWS_REGION:-us-east-1}
     ports:
       - "8090:8090"
+    volumes:
+      - ./deploy/local/clients.yaml:/etc/wager/clients.yaml:ro
     networks:
       - junglegaming
     stop_grace_period: 30s

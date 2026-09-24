@@ -13,6 +13,9 @@ type Config struct {
 	SQSEndpoint     string
 	SQSQueueURL     string
 	OTELEndpoint    string
+	IDPIssuer       string
+	IDPJWKSURL      string
+	ClientsPath     string
 	SampleRatio     float64
 	ShutdownTimeout time.Duration
 	PPROFAddr       string
@@ -49,6 +52,8 @@ func (c Config) Validate() error {
 		"SQS_ENDPOINT":                c.SQSEndpoint,
 		"SQS_QUEUE_URL":               c.SQSQueueURL,
 		"OTEL_EXPORTER_OTLP_ENDPOINT": c.OTELEndpoint,
+		"IDP_ISSUER":                  c.IDPIssuer,
+		"CLIENTS_PATH":                c.ClientsPath,
 	})
 }
 
@@ -59,6 +64,9 @@ func read(getenv func(string) string) map[string]string {
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"IDP_ISSUER",
+		"IDP_JWKS_URL",
+		"CLIENTS_PATH",
 		"OTEL_SAMPLE_RATIO",
 		"SHUTDOWN_TIMEOUT",
 		"PPROF_ADDR",
@@ -77,6 +85,8 @@ func require(raw map[string]string) error {
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"IDP_ISSUER",
+		"CLIENTS_PATH",
 	}
 	for _, key := range keys {
 		if err := present(key, raw[key]); err != nil {
@@ -108,10 +118,28 @@ func build(raw map[string]string) (Config, error) {
 		SQSEndpoint:     raw["SQS_ENDPOINT"],
 		SQSQueueURL:     raw["SQS_QUEUE_URL"],
 		OTELEndpoint:    raw["OTEL_EXPORTER_OTLP_ENDPOINT"],
+		IDPIssuer:       raw["IDP_ISSUER"],
+		IDPJWKSURL:      parseJWKSURL(raw["IDP_JWKS_URL"], raw["IDP_ISSUER"]),
+		ClientsPath:     raw["CLIENTS_PATH"],
 		SampleRatio:     ratio,
 		ShutdownTimeout: timeout,
 		PPROFAddr:       parsePPROF(raw["PPROF_ADDR"]),
 	}, nil
+}
+
+// parseJWKSURL defaults the key set to the realm endpoint of the issuer.
+//
+// The two are configured apart because they are not the same address: the issuer
+// is what the token announces in iss, seen from wherever the client asked for
+// it, while the key set is fetched from inside the network the process runs in.
+func parseJWKSURL(raw, issuer string) string {
+	if raw != "" {
+		return raw
+	}
+	if issuer == "" {
+		return ""
+	}
+	return strings.TrimSuffix(issuer, "/") + "/protocol/openid-connect/certs"
 }
 
 func parseRatio(raw string) (float64, error) {

@@ -32,6 +32,8 @@ func TestLoadRejectsBlankRequiredValues(t *testing.T) {
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"IDP_ISSUER",
+		"CLIENTS_PATH",
 	}
 	for _, key := range keys {
 		t.Run("blank "+key+" blocks the configuration", func(t *testing.T) {
@@ -126,9 +128,38 @@ func envWith(value, override string) func(string) string {
 		"SQS_ENDPOINT":                "http://localhost:4566",
 		"SQS_QUEUE_URL":               "http://localhost:4566/000000000000/wager-transactions.fifo",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "localhost:4317",
+		"IDP_ISSUER":                  "http://localhost:8080/realms/junglegaming",
+		"CLIENTS_PATH":                "deploy/local/clients.yaml",
 	}
 	if override != "" {
 		base[override] = value
 	}
 	return func(key string) string { return base[key] }
+}
+
+func TestParseJWKSURL_defaultsToTheRealmEndpointOfTheIssuer(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load = %v, want nil", err)
+	}
+	want := "http://localhost:8080/realms/junglegaming/protocol/openid-connect/certs"
+	if cfg.IDPJWKSURL != want {
+		t.Fatalf("IDPJWKSURL = %s, want %s", cfg.IDPJWKSURL, want)
+	}
+}
+
+func TestParseJWKSURL_keepsAnAddressReachableFromInsideTheNetwork(t *testing.T) {
+	t.Parallel()
+	explicit := "http://keycloak:8080/realms/junglegaming/protocol/openid-connect/certs"
+	cfg, err := Load(envWith(explicit, "IDP_JWKS_URL"))
+	if err != nil {
+		t.Fatalf("Load = %v, want nil", err)
+	}
+	if cfg.IDPJWKSURL != explicit {
+		t.Fatalf("IDPJWKSURL = %s, want %s", cfg.IDPJWKSURL, explicit)
+	}
+	if cfg.IDPIssuer != "http://localhost:8080/realms/junglegaming" {
+		t.Fatalf("IDPIssuer = %s, want the issuer untouched", cfg.IDPIssuer)
+	}
 }

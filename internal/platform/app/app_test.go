@@ -144,11 +144,17 @@ func testEnv(key string) string {
 		"SQS_ENDPOINT":                "http://127.0.0.1:1",
 		"SQS_QUEUE_URL":               "http://127.0.0.1:1/000000000000/wager-transactions.fifo",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "127.0.0.1:1",
+		"IDP_ISSUER":                  "http://127.0.0.1:1/realms/junglegaming",
+		"CLIENTS_PATH":                clientsPath,
 		"SHUTDOWN_TIMEOUT":            "8s",
 		"PPROF_ADDR":                  "127.0.0.1:0",
 	}
 	return values[key]
 }
+
+// clientsPath is the versioned map the challenge ships. The graph loads it on
+// construction, so a run without it would not reach the lifecycle at all.
+const clientsPath = moduleRoot + "/deploy/local/clients.yaml"
 
 const (
 	exitWait = 12 * time.Second
