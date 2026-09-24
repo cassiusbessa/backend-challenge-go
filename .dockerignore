@@ -1,0 +1,9 @@
+.git
+.cursor
+.github
+openspec
+deploy/terraform/localstack/.terraform
+deploy/terraform/localstack/*.tfstate
+deploy/terraform/localstack/*.tfstate.*
+deploy/terraform/localstack/*.keys
+**/*.keys
