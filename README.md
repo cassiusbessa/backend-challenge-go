@@ -1,12 +1,12 @@
 # Ambiente local
 
-Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak e o cano de telemetria. O processo da aplicação não entra neste Compose.
+Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak, o cano de telemetria e o processo `wager`.
 
 ## Pré-requisitos
 
 - Docker com Compose v2
 - Terraform 1.5 ou mais novo
-- As portas `5432`, `4566`, `8080`, `4317`, `4318` e `3000` livres no host
+- As portas `5432`, `4566`, `8080`, `8090`, `4317`, `4318` e `3000` livres no host
 
 ## Subida
 
@@ -25,6 +25,7 @@ Os defaults do Compose são os valores de `.env.example`. São senhas locais do 
 | Keycloak | `localhost:8080` |
 | Coletor OTLP | `localhost:4317` (gRPC) e `localhost:4318` (HTTP) |
 | Grafana | `localhost:3000`, usuário e senha `admin` |
+| Processo `wager` | `localhost:8090` |
 
 Consulta dos backends, a partir do host: Tempo em `localhost:3200`, Loki em `localhost:3100`, Prometheus em `localhost:9095`.
 
@@ -51,6 +52,8 @@ A access key gerada fica em `deploy/terraform/localstack/wager-sender.keys`, for
 No LocalStack community o IAM é parcial: a chave do `wager-sender` consegue `SendMessage`, mas a política pode não ser aplicada como na AWS. O principal continua criado.
 
 `docker compose down -v` apaga o volume do LocalStack. Rode `terraform apply` de novo depois disso. O estado no disco deixa de bater com o broker vazio.
+
+O ready do processo só fica verde depois desse apply: a fila `wager-transactions.fifo` precisa existir. Sem ela, `GET /health/ready` responde 503 e `GET /health/live` continua 200. O `pprof` escuta em `127.0.0.1:6060` dentro do container e o Compose não publica essa porta.
 
 ## Token
 
