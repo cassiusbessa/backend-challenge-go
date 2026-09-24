@@ -82,8 +82,9 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	}
 }
 
-func TestDefaultGoTestSkipsIntegration(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), "go", "test", "-count=0", "-list", ".")
+func TestDefaultGoTestSkipsIntegrationInTheWholeModule(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "go", "test", "-count=0", "-list", ".", "./...")
+	cmd.Dir = moduleRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go test -list: %v\n%s", err, out)
@@ -92,6 +93,8 @@ func TestDefaultGoTestSkipsIntegration(t *testing.T) {
 		t.Fatalf("teste de integração entrou no go test sem a tag:\n%s", out)
 	}
 }
+
+const moduleRoot = "../../.."
 
 type hold struct {
 	entered chan struct{}

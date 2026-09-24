@@ -92,15 +92,14 @@ go test -race ./...
 go vet ./...
 ```
 
-A suíte de integração pede o ambiente de pé e o broker provisionado, e lê a credencial do LocalStack do ambiente:
+A suíte de jornada vive em `internal/e2e/`, atrás da tag `integration`, e pede o ambiente de pé com o broker provisionado:
 
 ```bash
 docker compose up -d --wait postgres localstack otel-collector
 terraform -chdir=deploy/terraform/localstack apply -auto-approve
-AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1 \
-  go test -race -tags=integration ./...
+go test -race -tags=integration ./...
 ```
 
-Os três valores estão em `.env.example`. O código não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
+A suíte cai nos valores do LocalStack — banco, endpoint, coletor e credencial — quando eles não vêm do ambiente, e `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_REGION` sobrescrevem isso para apontar em outro broker. Os três estão em `.env.example`. O código de produção não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
 
 Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 70% em `internal/platform` — e o `.golangci.yml`.

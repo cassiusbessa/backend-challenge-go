@@ -1,6 +1,6 @@
 //go:build integration
 
-package app
+package process
 
 import (
 	"context"
@@ -15,10 +15,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"go.uber.org/fx"
 
+	"github.com/junglegaming/backend-challenge-go/internal/platform/app"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
 )
+
+// A suíte já cai no LocalStack quando banco e endpoint não vêm do ambiente.
+// A credencial segue a mesma regra, para o portão local não depender de um
+// shell preparado. Produção continua sem credencial no código.
+func TestMain(m *testing.M) {
+	for key, value := range localAWS {
+		if os.Getenv(key) == "" {
+			if err := os.Setenv(key, value); err != nil {
+				panic(err)
+			}
+		}
+	}
+	os.Exit(m.Run())
+}
+
+var localAWS = map[string]string{
+	"AWS_ACCESS_KEY_ID":     "test",
+	"AWS_SECRET_ACCESS_KEY": "test",
+	"AWS_REGION":            "us-east-1",
+}
 
 func TestLiveAndReadyWithRealQueue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -41,7 +62,7 @@ func TestLiveStaysUpWhenQueueIsUnknown(t *testing.T) {
 	base := startProcess(t, unknownQueue())
 	live := statusCode(ctx, t, base+"/health/live")
 	if live != http.StatusOK {
-		t.Fatalf("live = %d, want 200", live)
+		t.Fatalf("live com fila desconhecida = %d, want 200", live)
 	}
 	ready := statusCode(ctx, t, base+"/health/ready")
 	if ready != http.StatusServiceUnavailable {
@@ -58,7 +79,7 @@ func startProcess(t *testing.T, queueURL string) string {
 		t.Fatalf("config: %v", err)
 	}
 	got := make(chan *httpapi.Server, 1)
-	application := New(cfg, fx.Invoke(func(srv *httpapi.Server) { got <- srv }))
+	application := app.New(cfg, fx.Invoke(func(srv *httpapi.Server) { got <- srv }))
 	startCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := application.Start(startCtx); err != nil {
