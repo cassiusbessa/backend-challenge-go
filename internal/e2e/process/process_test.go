@@ -62,7 +62,7 @@ func TestLiveStaysUpWhenQueueIsUnknown(t *testing.T) {
 	base := startProcess(t, unknownQueue())
 	live := statusCode(ctx, t, base+"/health/live")
 	if live != http.StatusOK {
-		t.Fatalf("live com fila desconhecida = %d, want 200", live)
+		t.Fatalf("live with an unknown queue = %d, want 200", live)
 	}
 	ready := statusCode(ctx, t, base+"/health/ready")
 	if ready != http.StatusServiceUnavailable {

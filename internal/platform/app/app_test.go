@@ -27,7 +27,7 @@ func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 		return nil
 	})
 	if err == nil {
-		t.Fatalf("error = %v, want MissingError de DATABASE_URL", err)
+		t.Fatalf("error = %v, want MissingError on DATABASE_URL", err)
 	}
 	var missing config.MissingError
 	if !errors.As(err, &missing) {
@@ -37,14 +37,14 @@ func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 		t.Fatalf("key = %s, want DATABASE_URL", missing.Key)
 	}
 	if called {
-		t.Fatalf("subida chamada = %v, want false sem URL do banco", called)
+		t.Fatalf("boot invoked = %v, want false without a database URL", called)
 	}
 }
 
 func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	cfg, err := config.Load(testEnv)
 	if err != nil {
-		t.Fatalf("config: %v", err)
+		t.Fatalf("load config = %v, want nil", err)
 	}
 	gate := &hold{entered: make(chan struct{}), release: make(chan struct{})}
 	gotSrv := make(chan *httpapi.Server, 1)
@@ -69,7 +69,7 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	close(gate.release)
 	err = waitExit(t, errCh)
 	if err != nil {
-		t.Fatalf("saída = %v, want nil", err)
+		t.Fatalf("exit = %v, want nil", err)
 	}
 }
 
@@ -82,7 +82,7 @@ func assertNotFlushed(t *testing.T, pipe *telemetry.Pipeline) {
 	default:
 	}
 	if flushed {
-		t.Fatalf("telemetria descarregada = %v, want false com pedido em curso", flushed)
+		t.Fatalf("telemetry flushed = %v, want false while a request is in flight", flushed)
 	}
 }
 
@@ -92,7 +92,7 @@ func waitExit(t *testing.T, errCh <-chan error) error {
 	case err := <-errCh:
 		return err
 	case <-time.After(exitWait):
-		t.Fatalf("processo não encerrou em %s", exitWait)
+		t.Fatalf("process did not exit within %s", exitWait)
 	}
 	return nil
 }
@@ -105,7 +105,7 @@ func TestDefaultGoTestSkipsIntegrationInTheWholeModule(t *testing.T) {
 		t.Fatalf("go test -list: %v\n%s", err, out)
 	}
 	if strings.Contains(string(out), "TestLiveAndReadyWithRealQueue") {
-		t.Fatalf("teste de integração entrou no go test sem a tag:\n%s", out)
+		t.Fatalf("the integration suite entered go test without the tag:\n%s", out)
 	}
 }
 
@@ -161,7 +161,7 @@ func recvServer(t *testing.T, ch <-chan *httpapi.Server) *httpapi.Server {
 	case srv := <-ch:
 		return srv
 	case <-time.After(stepWait):
-		t.Fatalf("servidor não foi construído em %s", stepWait)
+		t.Fatalf("server was not built within %s", stepWait)
 	}
 	return nil
 }
@@ -171,7 +171,7 @@ func waitCh(t *testing.T, ch <-chan struct{}) {
 	select {
 	case <-ch:
 	case <-time.After(stepWait):
-		t.Fatalf("espera estourou em %s", stepWait)
+		t.Fatalf("wait expired after %s", stepWait)
 	}
 }
 
@@ -204,5 +204,5 @@ func waitRefused(t *testing.T, rawURL string) {
 		}
 		_ = res.Body.Close()
 	}
-	t.Fatalf("%s continuou aceitando conexão depois do SIGTERM", rawURL)
+	t.Fatalf("%s kept accepting connections after SIGTERM", rawURL)
 }
