@@ -18,7 +18,7 @@ func TestLiveStaysUpWhenReadyIsDown(t *testing.T) {
 		t.Fatalf("live = %d, want 200", liveCode)
 	}
 	if readyCode != http.StatusServiceUnavailable {
-		t.Fatalf("ready = %d, want 503", readyCode)
+		t.Fatalf("ready com sonda fora = %d, want 503", readyCode)
 	}
 }
 
@@ -27,7 +27,7 @@ func TestUnknownQueueReturns503(t *testing.T) {
 	ready := NewReady(okProbe{}, errProbe{err: errors.New("unknown queue")})
 	got := codeOf(t, ready, "/health/ready")
 	if got != http.StatusServiceUnavailable {
-		t.Fatalf("ready = %d, want 503", got)
+		t.Fatalf("ready com fila desconhecida = %d, want 503", got)
 	}
 }
 
@@ -52,7 +52,7 @@ func TestReadyReturns503WhenProbeDeadlineExpires(t *testing.T) {
 	ready := &Ready{postgres: blockingProbe{}, queue: okProbe{}, timeout: time.Nanosecond}
 	got := codeOf(t, ready, "/health/ready")
 	if got != http.StatusServiceUnavailable {
-		t.Fatalf("ready = %d, want 503", got)
+		t.Fatalf("ready com prazo estourado = %d, want 503", got)
 	}
 }
 

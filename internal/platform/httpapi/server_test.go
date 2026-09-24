@@ -22,10 +22,10 @@ func TestOtherRoutesReturn404(t *testing.T) {
 	handler, _ := testHandler(t)
 	paths := []string{"/wagers", "/wallets", "/reconciliation", "/debug/pprof/"}
 	for _, path := range paths {
-		t.Run(path+" responde 404", func(t *testing.T) {
+		t.Run(path+" answers 404", func(t *testing.T) {
 			got := codeOf(t, handler, path)
 			if got != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404", got)
+				t.Fatalf("%s = %d, want 404", path, got)
 			}
 		})
 	}
@@ -36,8 +36,10 @@ func TestMetricsExposeHeapAndGoroutinesWithoutDomainLabels(t *testing.T) {
 	body := metricsBody(t)
 	assertMetric(t, body, "go_goroutines")
 	assertMetric(t, body, "heap")
-	if strings.Contains(body, "walletId") || strings.Contains(body, "providerId") {
-		t.Fatal("rótulo de domínio em /metrics")
+	for _, banned := range []string{"walletId", "providerId"} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("domain label %q in /metrics", banned)
+		}
 	}
 	assertMetric(t, body, "trace_id")
 }
@@ -51,7 +53,7 @@ func metricsBody(t *testing.T) string {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+		t.Fatalf("/metrics = %d, want 200", rec.Code)
 	}
 	return rec.Body.String()
 }
@@ -59,7 +61,7 @@ func metricsBody(t *testing.T) string {
 func assertMetric(t *testing.T, body, name string) {
 	t.Helper()
 	if !strings.Contains(body, name) {
-		t.Fatalf("métricas sem %s", name)
+		t.Fatalf("metrics are missing %s", name)
 	}
 }
 
@@ -71,12 +73,12 @@ func TestRequestLogOmitsSecrets(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+		t.Fatalf("/wagers = %d, want 404", rec.Code)
 	}
 	line := buf.String()
 	for _, banned := range []string{"Bearer", "super-secret-token", "25.00", "10.00", "authorization"} {
 		if strings.Contains(line, banned) {
-			t.Fatalf("log contém %q: %s", banned, line)
+			t.Fatalf("log contains %q: %s", banned, line)
 		}
 	}
 }
@@ -98,14 +100,14 @@ func TestInvalidCorrelationIDFallsBackToTrace(t *testing.T) {
 	t.Parallel()
 	cases := []string{"bad id", strings.Repeat("a", 65)}
 	for _, header := range cases {
-		t.Run(header+" cai no trace_id", func(t *testing.T) {
+		t.Run(header+" falls back to trace_id", func(t *testing.T) {
 			handler, buf := testHandler(t)
 			req := httptest.NewRequest(http.MethodGet, "/wagers", nil)
 			req.Header.Set("X-Correlation-Id", header)
 			handler.ServeHTTP(httptest.NewRecorder(), req)
 			fields := logFields(t, buf.String())
 			if fields["correlationId"] == header {
-				t.Fatal("log usou o header inválido")
+				t.Fatalf("correlationId = %v, want anything but the header %q", fields["correlationId"], header)
 			}
 			if fields["correlationId"] == "" || fields["correlationId"] != fields["trace_id"] {
 				t.Fatalf("correlationId = %v, trace_id = %v", fields["correlationId"], fields["trace_id"])
@@ -118,14 +120,14 @@ func TestOperationalRoutesLeaveNoLogLine(t *testing.T) {
 	t.Parallel()
 	paths := []string{"/health/live", "/health/ready", "/metrics"}
 	for _, path := range paths {
-		t.Run(path+" não loga", func(t *testing.T) {
+		t.Run(path+" writes no log line", func(t *testing.T) {
 			handler, buf := testHandler(t)
 			code := codeOf(t, handler, path)
 			if code != http.StatusOK {
-				t.Fatalf("status = %d, want 200", code)
+				t.Fatalf("%s = %d, want 200", path, code)
 			}
 			if buf.Len() != 0 {
-				t.Fatalf("log = %q, want vazio", buf.String())
+				t.Fatalf("log = %q, want empty", buf.String())
 			}
 		})
 	}
@@ -136,7 +138,7 @@ func TestPprofDoesNotAnswerOnAPIPort(t *testing.T) {
 	handler, _ := testHandler(t)
 	got := codeOf(t, handler, "/debug/pprof/")
 	if got != http.StatusNotFound {
-		t.Fatalf("pprof na API = %d, want 404", got)
+		t.Fatalf("pprof on the API mux = %d, want 404", got)
 	}
 }
 
@@ -147,7 +149,7 @@ func testHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 	provider := sdktrace.NewTracerProvider()
 	t.Cleanup(func() {
 		if err := provider.Shutdown(context.Background()); err != nil {
-			t.Fatalf("shutdown tracer: %v", err)
+			t.Fatalf("shutdown tracer = %v, want nil", err)
 		}
 	})
 	handler := Handler(Routes{
@@ -165,7 +167,7 @@ func logFields(t *testing.T, raw string) map[string]any {
 	t.Helper()
 	var fields map[string]any
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
-		t.Fatalf("log %q: %v", raw, err)
+		t.Fatalf("decode log %q: %v", raw, err)
 	}
 	return fields
 }
@@ -188,14 +190,14 @@ func TestPprofListensApartFromTheAPI(t *testing.T) {
 	})
 	srv := NewServer(config.Config{HTTPAddr: "127.0.0.1:0", PPROFAddr: "127.0.0.1:0"}, handler, logger)
 	if err := srv.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
+		t.Fatalf("start with both ports = %v, want nil", err)
 	}
 	t.Cleanup(func() {
 		_ = srv.Shutdown(context.Background())
 	})
 	api := getStatus(t, "http://"+srv.Addr()+"/debug/pprof/")
 	if api != http.StatusNotFound {
-		t.Fatalf("pprof na API = %d, want 404", api)
+		t.Fatalf("pprof on the API port = %d, want 404", api)
 	}
 	metrics := getStatus(t, "http://"+srv.Addr()+"/metrics")
 	if metrics != http.StatusOK {
@@ -203,11 +205,45 @@ func TestPprofListensApartFromTheAPI(t *testing.T) {
 	}
 }
 
+func TestUseSwapsTheHandlerAndListeningClosesAfterStart(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := NewServer(config.Config{HTTPAddr: "127.0.0.1:0", PPROFAddr: "127.0.0.1:0"}, http.NotFoundHandler(), logger)
+	srv.Use(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	listening := false
+	select {
+	case <-srv.Listening():
+		listening = true
+	default:
+	}
+	if !listening {
+		t.Fatalf("Listening closed = %v, want true after start", listening)
+	}
+	got := getStatus(t, "http://"+srv.Addr()+"/anything")
+	if got != http.StatusTeapot {
+		t.Fatalf("swapped handler = %d, want 418", got)
+	}
+}
+
+func TestStartFailsWhenAPortCannotBeBound(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := NewServer(config.Config{HTTPAddr: "127.0.0.1:0", PPROFAddr: "127.0.0.1:999999"}, http.NotFoundHandler(), logger)
+	err := srv.Start(context.Background())
+	if err == nil {
+		t.Fatalf("start on an invalid pprof port = %v, want a listen error", err)
+	}
+}
+
 func getStatus(t *testing.T, rawURL string) int {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
 	if err != nil {
-		t.Fatalf("request: %v", err)
+		t.Fatalf("build request = %v, want nil", err)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
