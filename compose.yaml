@@ -199,6 +199,9 @@ services:
       SQS_ENDPOINT: http://localstack:4566
       SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
     ports:
       - "8090:8090"
     networks:
