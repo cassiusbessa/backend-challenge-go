@@ -191,3 +191,25 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+
+  wager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: ":8090"
+      DATABASE_URL: postgres://junglegaming:junglegaming@postgres:5432/junglegaming?sslmode=disable
+      SQS_ENDPOINT: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    ports:
+      - "8090:8090"
+    networks:
+      - junglegaming
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
