@@ -71,3 +71,5 @@ Troque `client_id` e `client_secret` por `provider-a` / `provider-a-local` ou `p
 ## Telemetria
 
 O coletor recebe OTLP, aplica batch e entrega trace ao Tempo, log ao Loki e métrica ao Prometheus. O Grafana só provisiona esses três datasources. Não há dashboard de negócio nem regra de alerta.
+
+O Prometheus raspa dois alvos: o coletor em `otel-collector:8889`, com o que chega por OTLP, e o `/metrics` do próprio processo em `wager:8090`. A latência HTTP sai em OpenMetrics com exemplar de `trace_id`; o Prometheus sobe com `--enable-feature=exemplar-storage` e o datasource liga esse exemplar ao Tempo, então o ponto do gráfico abre o trace.
