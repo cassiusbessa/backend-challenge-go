@@ -129,6 +129,7 @@ func integrationEnv(queueURL string) map[string]string {
 		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
 		"SQS_QUEUE_URL":               queueURL,
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
 	}
 }
 

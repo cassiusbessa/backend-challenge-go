@@ -145,6 +145,7 @@ func testEnv(key string) string {
 		"SQS_QUEUE_URL":               "http://127.0.0.1:1/000000000000/wager-transactions.fifo",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "127.0.0.1:1",
 		"SHUTDOWN_TIMEOUT":            "8s",
+		"PPROF_ADDR":                  "127.0.0.1:0",
 	}
 	return values[key]
 }
