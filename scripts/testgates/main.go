@@ -222,6 +222,7 @@ func scanCover(root, profile string) []string {
 		dir  string
 		need float64
 	}{
+		{"internal/domain/identity", 0.90},
 		{"internal/domain/money", 0.90},
 		{"internal/domain/wallet", 0.90},
 		{"internal/domain/wager", 0.90},
