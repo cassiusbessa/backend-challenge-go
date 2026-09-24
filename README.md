@@ -20,6 +20,8 @@ docker compose up --build
 
 Os defaults do Compose são os valores de `.env.example`. São senhas locais do desafio, não credencial de produção.
 
+A subida aplica o schema antes de o processo escutar: o serviço `migrate` roda uma vez, com o `wager` esperando `service_completed_successfully`. O binário da aplicação não carrega código de migration.
+
 | Serviço | Endereço |
 | --- | --- |
 | PostgreSQL | `localhost:5432`, database `junglegaming`, usuário e senha `junglegaming` |
@@ -30,6 +32,38 @@ Os defaults do Compose são os valores de `.env.example`. São senhas locais do 
 | Processo `wager` | `localhost:8090` |
 
 Consulta dos backends, a partir do host: Tempo em `localhost:3200`, Loki em `localhost:3100`, Prometheus em `localhost:9095`.
+
+## Schema
+
+O SQL versionado fica em `deploy/migrations`, com arquivos numerados aplicados pelo `golang-migrate`. Aplicar de novo o mesmo conjunto termina com sucesso e não altera o schema.
+
+```bash
+docker compose run --rm migrate
+```
+
+Reverter em desenvolvimento é o `down` da migration, ou `docker compose down -v` para recriar do zero.
+
+As três tabelas financeiras são `wallets`, `wager_transactions` e `ledger_entries`. As invariantes que o agregado não substitui ficam no banco: saldo não negativo, unicidade de jogador mais moeda, os campos exigidos por tipo e por status, uma reversão `PROCESSED` por transação citada, e o ledger recusando `UPDATE`, `DELETE` e `TRUNCATE`.
+
+A migration cria o papel `wager_app`, que tem apenas `SELECT` e `INSERT` no ledger, e concede esse papel a quem conectou. A aplicação entra com `SET ROLE` em cada conexão do pool, então o privilégio vale mesmo quando quem conecta é superusuário. Sem o schema aplicado, `GET /health/ready` responde 503 e `GET /health/live` continua 200.
+
+## Rotas de carteira
+
+`POST /wallets` abre a carteira e `GET /wallets/:walletId` devolve o estado gravado. As duas exigem token do cliente interno.
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=wallet-internal \
+  -d client_secret=wallet-internal-local | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+
+curl -s -X POST http://localhost:8090/wallets \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"playerId":"3f8c4a2e-1b5d-4e7a-9c3f-2d6b8a1e5c40","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
+```
+
+Saldo inicial positivo grava carteira, transação `OPENING` já `PROCESSED` e o lançamento de crédito no mesmo commit. Saldo inicial zero grava só a carteira. A carteira nasce na versão 1, e dinheiro entra e sai como `{"amount":"1000.00","currency":"BRL"}` — string decimal de duas casas, nunca número JSON.
+
+A segunda carteira do mesmo jogador na mesma moeda responde 409, decidido pela unicidade do banco e não por consulta prévia. Carteira inexistente na URL responde 404. Entrada inválida responde 400 sem gravar linha. Todo corpo de erro é `application/problem+json` conforme a RFC 9457, e `failureCode` aparece em extensão só quando a recusa é de regra de negócio.
 
 ## Broker
 
@@ -63,6 +97,10 @@ No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s
 
 O issuer é `http://localhost:8080/realms/junglegaming`. Os três clientes usam `client_credentials`. O mapa, sem segredo, está em `deploy/local/clients.yaml`: `wallet-internal` no papel interno de carteira, `provider-a` e `provider-b` nos `providerId` de mesmo nome.
 
+O processo recebe esse mapa em `CLIENTS_PATH` e o issuer em `IDP_ISSUER`. Sem um dos dois, ou com um mapa ilegível, a subida termina com erro e a porta HTTP não abre: um processo sem mapa não sabe autorizar ninguém. `IDP_JWKS_URL` é opcional e existe porque o endereço muda de lado: o issuer é o que o token anuncia em `iss`, visto do host, e o JWKS é buscado de dentro da rede do Compose. Vazio, ele é derivado do issuer.
+
+Quem autoriza é o cliente do token, não o corpo nem a URL. Nas rotas de carteira, só o papel interno passa: o provedor recebe 403 sem criar nada, e um cliente válido fora do mapa também. Credencial ausente, inválida ou expirada é a outra classe, 401. `/health/live` e `/health/ready` seguem públicas.
+
 ```bash
 curl -s -X POST http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
   -d grant_type=client_credentials \
@@ -92,14 +130,17 @@ go test -race ./...
 go vet ./...
 ```
 
-A suíte de jornada vive em `internal/e2e/`, atrás da tag `integration`, e pede o ambiente de pé com o broker provisionado:
+A suíte de jornada vive em `internal/e2e/`, atrás da tag `integration`, e pede o ambiente de pé, o schema aplicado e o broker provisionado:
 
 ```bash
-docker compose up -d --wait postgres localstack otel-collector
+docker compose up -d --wait postgres localstack keycloak otel-collector
+docker compose run --rm migrate
 terraform -chdir=deploy/terraform/localstack apply -auto-approve
 go test -race -tags=integration ./...
 ```
 
+A suíte pede IdP real: ela obtém token dos três clientes e, no caso do token expirado, encurta o `accessTokenLifespan` do realm pela API de administração e o restaura no fim. Trocar o Keycloak por um emissor de teste não provaria a borda.
+
 A suíte cai nos valores do LocalStack — banco, endpoint, coletor e credencial — quando eles não vêm do ambiente, e `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_REGION` sobrescrevem isso para apontar em outro broker. Os três estão em `.env.example`. O código de produção não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
 
-Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 70% em `internal/platform` — e o `.golangci.yml`.
+Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 90% em `money`, `wallet`, `wager`, `ledger` e `identity`, 80% em `internal/app` e 70% em `internal/platform` — e o `.golangci.yml`.

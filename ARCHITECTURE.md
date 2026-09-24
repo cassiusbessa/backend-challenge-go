@@ -11,10 +11,14 @@ Este documento registra as decisões do desenho inteiro. Nem tudo está escrito 
 | Ambiente compartilhado: Compose, Terraform local, realm do Keycloak | implementado |
 | Processo: Fx, configuração, `/health/live`, `/health/ready`, log JSON, OTLP, `/metrics`, `pprof` | implementado |
 | Domínio: identidades, `Money`, `Wallet`, `LedgerEntry`, `WagerTransaction` | implementado |
-| Schema, unit of work, idempotência, lock, borda HTTP | decidido, não implementado |
+| Schema das três tabelas financeiras, com as constraints, e migration versionada aplicada antes das réplicas | implementado |
+| Pool `pgx` compartilhado, unit of work em `READ COMMITTED`, repositórios de carteira, transação e lançamento | implementado |
+| Borda HTTP de erro em `application/problem+json`, com o mapa de status no adaptador | implementado |
+| Autorização por token do IdP nas rotas de carteira: `POST /wallets` e `GET /wallets/:walletId` | implementado |
+| Idempotência, lock pessimista, as cinco ações de aposta e as rotas de `/wagering/transactions` | decidido, não implementado |
 | Referência pendente, reversões | decidido, não implementado |
 | Inbox, outbox, consumidor SQS, publisher SNS | decidido, não implementado |
-| Autorização efetiva nas rotas de negócio, leituras, reconciliação | decidido, não implementado |
+| Autorização das rotas de aposta, ledger paginado, reconciliação | decidido, não implementado |
 
 A ordem de entrega está em `openspec/changes/`. As regras que governam cada decisão estão em `.claude/rules/`.
 
@@ -105,6 +109,10 @@ O domínio guarda `failureCode` em token estável, e HTTP e SQS devolvem o mesmo
 
 Na borda HTTP o corpo de erro segue a RFC 9457, em `application/problem+json`, com `type`, `title`, `status`, `detail` e `instance`. O `failureCode` vai numa extensão: `type` identifica a classe do problema, o token identifica a regra de negócio. O mapa de status numérico fica no adaptador, fora do domínio. Autenticação e entrada inválida também saem como problem details, e entrada inválida não grava transação.
 
+A colisão de unicidade na abertura de carteira fica fora do catálogo: ela recusa um `OpenWallet`, não uma aposta, então sai como 409 com `type` próprio e sem `failureCode`. Acrescentar um token ao catálogo abriria a porta para cada borda inventar o seu, que é o que a lista enumerável existe para impedir.
+
+A falha de infraestrutura passa por `internal/platform/fault`, que captura a stack uma vez, na fronteira onde ela é vista primeiro; o embrulho seguinte só acrescenta a operação. Rejeição de negócio não passa por lá — não há stack para saldo insuficiente. Quem decide o desfecho é quem loga, e loga uma vez.
+
 ## Invariantes no banco
 
 O Go pede a escrita; o commit só permanece se o banco aceitar. O agregado não substitui a constraint.
@@ -113,7 +121,9 @@ O Go pede a escrita; o commit só permanece se o banco aceitar. O agregado não 
 - Transação externa: exige provedor, id externo, chave, hash, rodada e jogo, e não pode ser `OPENING`. `OPENING` é interna, sem esses campos, no máximo uma por carteira.
 - `LOSS` tem quantia zero; os demais tipos, quantia positiva. `REFUND` e `ROLLBACK` exigem referência. `REJECTED` e `FAILED` exigem `failureCode`. `PROCESSED` exige o saldo observado. `PENDING_REFERENCE` exige `nextAttemptAt`.
 - Lançamento: um por transação, quantia positiva, mesma carteira e mesma moeda da transação. `UPDATE`, `DELETE` e `TRUNCATE` são recusados por trigger, e o papel da aplicação só tem `SELECT` e `INSERT` nessa tabela.
-- No commit, o saldo da carteira é o saldo posterior do último lançamento.
+- No commit, o saldo da carteira é o saldo posterior do último lançamento. No meio da transação SQL os dois podem divergir, então o gatilho que os compara é `DEFERRABLE INITIALLY DEFERRED`.
+
+O SQL versionado fica em `deploy/migrations` e é aplicado uma vez antes das réplicas — no Compose, por um serviço que termina; no Kubernetes, pelo Job equivalente. O binário da aplicação não carrega código de migration. A migration também cria o papel `wager_app` com esses privilégios, e a aplicação entra com `SET ROLE` em cada conexão do pool, porque um superusuário passaria por cima de qualquer `GRANT`.
 
 ## Inbox e outbox
 
@@ -137,7 +147,9 @@ O consumidor desiste na quinta entrega e copia para a DLQ. O redrive da fila fic
 
 ## Autorização
 
-O Keycloak emite os tokens, com `client_credentials`. Este serviço não cadastra senha e não emite token. A configuração mapeia cada `client_id` a um `providerId` ou ao papel interno de carteira; o mapa local versionado está em `deploy/local/clients.yaml`.
+O Keycloak emite os tokens, com `client_credentials`. Este serviço não cadastra senha e não emite token. A configuração mapeia cada `client_id` a um `providerId` ou ao papel interno de carteira; o mapa local versionado está em `deploy/local/clients.yaml`, e a configuração aponta para ele por caminho.
+
+A borda valida assinatura, emissor e validade contra o JWKS do realm, com chaveiro remoto que trata cache e rotação de chave. O papel vem da claim `azp` cruzada com esse mapa. Um processo sem issuer, sem o caminho do mapa, ou com um mapa ilegível, não abre a porta HTTP: sem mapa ele não sabe autorizar ninguém.
 
 A carteira não tem provedor: dono é o jogador, naquela moeda. O cliente interno abre, lê e reconcilia, e não envia aposta. O provedor envia e lê só a própria transação, inclusive no replay, e não abre carteira nem lê saldo, ledger ou reconciliação.
 
@@ -171,7 +183,8 @@ Trace por OTLP, com propagação W3C. Um span da entrada, um do caso de uso, um 
 
 - O LocalStack community não persiste: qualquer reinício esvazia filas e tópico, e é preciso rodar `terraform apply` de novo. O IAM dele também é parcial — o principal é criado, mas a política pode não ser aplicada como na AWS.
 - O Compose sobe uma réplica do processo. As três instâncias independentes que o desafio pede são reproduzidas com Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas.
-- O realm de teste não tem mapper de audience, e os clientes estão com `fullScopeAllowed`. A validação por `aud` depende dessa decisão, que é tomada junto com a autorização das rotas de negócio.
-- O piso de cobertura hoje é 70% em `internal/platform`, com margem estreita. Os caminhos de I/O de `probe` e `telemetry` são cobertos pela suíte de integração, que não entra nesse cálculo.
+- O realm de teste não tem mapper de audience, e os clientes estão com `fullScopeAllowed`. A borda não confere `aud`: o token de `client_credentials` não carrega audiência deste serviço. Quem decide é o cliente do token, na claim `azp`, cruzado com o mapa versionado.
+- O piso de cobertura hoje é 70% em `internal/platform` e 80% em `internal/app`, com margem estreita. Os caminhos de I/O de `postgres`, `probe` e `telemetry` são cobertos pela suíte de integração, que não entra nesse cálculo.
 - O guia separado de ambiente de teste, execução em múltiplas instâncias e simulação de falha ainda não existe. As instruções de subida e de teste estão no `README.md`.
-- Não há migration versionada ainda, porque não há schema.
+- A migration cria as constraints de reversão e de espera por referência, que nenhum código desta entrega escreve ainda. Uma constraint sem escrita não corrompe dado: ela espera.
+- O endereço do JWKS é configurado à parte do issuer (`IDP_JWKS_URL`), porque no Compose o token anuncia `localhost` e o processo precisa buscar a chave em `keycloak`. Vazio, ele é derivado do issuer. A descoberta OIDC não é feita na subida, para o IdP não entrar no caminho de boot.
