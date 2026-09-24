@@ -58,9 +58,13 @@ func TestShutdownWithoutStartStaysSilentAndRepeatable(t *testing.T) {
 	if second != nil {
 		t.Fatalf("segundo shutdown = %v, want nil", second)
 	}
+	closed := false
 	select {
 	case <-pipe.Stopped():
+		closed = true
 	default:
-		t.Fatal("Stopped não fechou depois do shutdown")
+	}
+	if !closed {
+		t.Fatalf("Stopped fechado = %v, want true", closed)
 	}
 }
