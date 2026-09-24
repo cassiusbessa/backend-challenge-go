@@ -10,11 +10,11 @@ func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(envWith("", "DATABASE_URL"))
 	if err == nil {
-		t.Fatal("error = nil, want missing DATABASE_URL")
+		t.Fatalf("error = %v, want MissingError for a blank DATABASE_URL", err)
 	}
 	var missing MissingError
 	if !errors.As(err, &missing) {
-		t.Fatalf("error = %v, want MissingError", err)
+		t.Fatalf("error = %v, want a typed MissingError", err)
 	}
 	if missing.Key != "DATABASE_URL" {
 		t.Fatalf("key = %s, want DATABASE_URL", missing.Key)
@@ -34,11 +34,11 @@ func TestLoadRejectsBlankRequiredValues(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 	}
 	for _, key := range keys {
-		t.Run(key+" vazio impede a configuração", func(t *testing.T) {
+		t.Run("blank "+key+" blocks the configuration", func(t *testing.T) {
 			_, err := Load(envWith("  ", key))
 			var missing MissingError
 			if !errors.As(err, &missing) {
-				t.Fatalf("error = %v, want MissingError", err)
+				t.Fatalf("error = %v, want MissingError on %s", err, key)
 			}
 			if missing.Key != key {
 				t.Fatalf("key = %s, want %s", missing.Key, key)
@@ -51,7 +51,7 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(envWith("", ""))
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("Load with defaults = %v, want nil", err)
 	}
 	if cfg.SampleRatio != 1 {
 		t.Fatalf("SampleRatio = %v, want 1", cfg.SampleRatio)
@@ -70,16 +70,16 @@ func TestLoadRejectsSampleRatioOutsideZeroAndOne(t *testing.T) {
 		name  string
 		value string
 	}{
-		{name: "acima de um é inválido", value: "1.0001"},
-		{name: "negativo é inválido", value: "-0.1"},
-		{name: "NaN é inválido", value: "NaN"},
+		{name: "above one is rejected", value: "1.0001"},
+		{name: "negative is rejected", value: "-0.1"},
+		{name: "NaN is rejected", value: "NaN"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(envWith(tc.value, "OTEL_SAMPLE_RATIO"))
 			var invalid InvalidError
 			if !errors.As(err, &invalid) {
-				t.Fatalf("error = %v, want InvalidError", err)
+				t.Fatalf("error = %v, want InvalidError on OTEL_SAMPLE_RATIO", err)
 			}
 			if invalid.Key != "OTEL_SAMPLE_RATIO" {
 				t.Fatalf("key = %s, want OTEL_SAMPLE_RATIO", invalid.Key)
@@ -91,10 +91,10 @@ func TestLoadRejectsSampleRatioOutsideZeroAndOne(t *testing.T) {
 func TestLoadAcceptsSampleRatioBoundaries(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{"0", "1"} {
-		t.Run(value+" é válido", func(t *testing.T) {
+		t.Run(value+" is accepted", func(t *testing.T) {
 			cfg, err := Load(envWith(value, "OTEL_SAMPLE_RATIO"))
 			if err != nil {
-				t.Fatalf("Load: %v", err)
+				t.Fatalf("Load with ratio %s = %v, want nil", value, err)
 			}
 			want := 0.0
 			if value == "1" {
@@ -112,7 +112,7 @@ func TestLoadRejectsNonPositiveShutdownTimeout(t *testing.T) {
 	_, err := Load(envWith("0s", "SHUTDOWN_TIMEOUT"))
 	var invalid InvalidError
 	if !errors.As(err, &invalid) {
-		t.Fatalf("error = %v, want InvalidError", err)
+		t.Fatalf("error = %v, want InvalidError on SHUTDOWN_TIMEOUT", err)
 	}
 	if invalid.Key != "SHUTDOWN_TIMEOUT" {
 		t.Fatalf("key = %s, want SHUTDOWN_TIMEOUT", invalid.Key)
