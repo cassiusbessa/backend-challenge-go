@@ -27,7 +27,7 @@ func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 		return nil
 	})
 	if err == nil {
-		t.Fatal("error = nil, want missing DATABASE_URL")
+		t.Fatalf("error = %v, want MissingError de DATABASE_URL", err)
 	}
 	var missing config.MissingError
 	if !errors.As(err, &missing) {
@@ -37,7 +37,7 @@ func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 		t.Fatalf("key = %s, want DATABASE_URL", missing.Key)
 	}
 	if called {
-		t.Fatal("a subida escutou sem URL do banco")
+		t.Fatalf("subida chamada = %v, want false sem URL do banco", called)
 	}
 }
 
@@ -65,21 +65,36 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	waitCh(t, gate.entered)
 	sigs <- syscall.SIGTERM
 	waitRefused(t, base+"/health/live")
-	pipe := <-gotPipe
-	select {
-	case <-pipe.Stopped():
-		t.Fatal("telemetria descarregou antes do pedido em curso")
-	default:
-	}
+	assertNotFlushed(t, <-gotPipe)
 	close(gate.release)
-	select {
-	case err = <-errCh:
-	case <-time.After(12 * time.Second):
-		t.Fatal("processo não encerrou dentro do prazo")
-	}
+	err = waitExit(t, errCh)
 	if err != nil {
 		t.Fatalf("saída = %v, want nil", err)
 	}
+}
+
+func assertNotFlushed(t *testing.T, pipe *telemetry.Pipeline) {
+	t.Helper()
+	flushed := false
+	select {
+	case <-pipe.Stopped():
+		flushed = true
+	default:
+	}
+	if flushed {
+		t.Fatalf("telemetria descarregada = %v, want false com pedido em curso", flushed)
+	}
+}
+
+func waitExit(t *testing.T, errCh <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(exitWait):
+		t.Fatalf("processo não encerrou em %s", exitWait)
+	}
+	return nil
 }
 
 func TestDefaultGoTestSkipsIntegrationInTheWholeModule(t *testing.T) {
@@ -134,13 +149,18 @@ func testEnv(key string) string {
 	return values[key]
 }
 
+const (
+	exitWait = 12 * time.Second
+	stepWait = 3 * time.Second
+)
+
 func recvServer(t *testing.T, ch <-chan *httpapi.Server) *httpapi.Server {
 	t.Helper()
 	select {
 	case srv := <-ch:
 		return srv
-	case <-time.After(3 * time.Second):
-		t.Fatal("servidor não foi construído")
+	case <-time.After(stepWait):
+		t.Fatalf("servidor não foi construído em %s", stepWait)
 	}
 	return nil
 }
@@ -149,8 +169,8 @@ func waitCh(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(3 * time.Second):
-		t.Fatal("espera estourou")
+	case <-time.After(stepWait):
+		t.Fatalf("espera estourou em %s", stepWait)
 	}
 }
 
@@ -183,5 +203,5 @@ func waitRefused(t *testing.T, rawURL string) {
 		}
 		_ = res.Body.Close()
 	}
-	t.Fatal("a porta continuou aceitando conexão")
+	t.Fatalf("%s continuou aceitando conexão depois do SIGTERM", rawURL)
 }
