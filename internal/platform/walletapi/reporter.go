@@ -47,19 +47,33 @@ func (rep *Reporter) Refuse(w http.ResponseWriter, r *http.Request, err error) {
 
 // record marks the span and logs once.
 //
-// A business rejection and a refusal of the contract leave the span ok: the rule
-// answered, and nothing is broken. Only an infrastructure failure marks the span
-// and carries the stack.
+// What decides it is the class and not the number: a rule that answered, a refusal
+// of the contract and a request that can be retried shortly all leave the span ok,
+// and a retryable answer shares its number with an outage, so the number alone
+// cannot tell them apart.
 func (rep *Reporter) record(r *http.Request, err error, details problem.Details) {
 	span := trace.SpanFromContext(r.Context())
 	span.SetAttributes(attribute.Int("http.response.status_code", details.Status))
-	if details.Status < http.StatusInternalServerError {
+	if !details.Broken() {
 		rep.refused(r, details, nil)
 		return
 	}
 	span.RecordError(err, trace.WithStackTrace(true))
-	span.SetStatus(codes.Error, "unavailable")
-	rep.refused(r, details, fault.Stack(err))
+	span.SetStatus(codes.Error, details.Title)
+	rep.refused(r, details, stackOf(err))
+}
+
+// stackOf answers the frames of the failure, capturing them here when the chain
+// carries none.
+//
+// A defect that never crossed an I/O boundary has no fault in its chain, and this
+// border is where it is first seen as a failure: go-errors puts the capture where
+// the failure is first seen, and one failure keeps one stack.
+func stackOf(err error) []string {
+	if frames := fault.Stack(err); len(frames) > 0 {
+		return frames
+	}
+	return fault.Stack(fault.Wrap("answer wallet request", err))
 }
 
 func (rep *Reporter) refused(r *http.Request, details problem.Details, stack []string) {

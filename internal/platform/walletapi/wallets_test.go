@@ -15,6 +15,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
@@ -46,7 +47,7 @@ func TestOpen_refusesTheSecondWalletOfThePlayerInTheSameCurrency(t *testing.T) {
 		t.Fatalf("failureCode = %s, want empty for a duplicate wallet", body.FailureCode)
 	}
 	if recorder.Header().Get("Content-Type") != problem.MediaType {
-		t.Fatalf("content type = %s, want %s", recorder.Header().Get("Content-Type"), problem.MediaType)
+		t.Fatalf("content type of the duplicate = %s, want %s", recorder.Header().Get("Content-Type"), problem.MediaType)
 	}
 }
 
@@ -55,7 +56,7 @@ func TestOpen_refusesInvalidInputWithoutReachingTheUseCase(t *testing.T) {
 	called := &opener{result: resultOf(t, "1000.00")}
 	recorder := serve(Open(called, quietReporter()), openRequestOf(`{"playerId":"nope","initialBalance":{"amount":"25.005","currency":"BRL"}}`))
 	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", recorder.Code)
+		t.Fatalf("status of an invalid opening = %d, want 400", recorder.Code)
 	}
 	if called.calls != 0 {
 		t.Fatalf("use case calls = %d, want 0 for invalid input", called.calls)
@@ -67,7 +68,7 @@ func TestOpen_refusesInvalidInputWithoutReachingTheUseCase(t *testing.T) {
 
 func TestOpen_answers503WhenTheDatabaseIsUnavailable(t *testing.T) {
 	t.Parallel()
-	recorder := serve(Open(&opener{err: errors.New("open wallet: acquire connection: refused")}, quietReporter()), openRequestOf(validBody))
+	recorder := serve(Open(&opener{err: fault.Wrap("acquire connection", errors.New("refused"))}, quietReporter()), openRequestOf(validBody))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", recorder.Code)
 	}
@@ -98,7 +99,7 @@ func TestRead_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 		t.Fatalf("status = %d, want 404", recorder.Code)
 	}
 	if recorder.Header().Get("Content-Type") != problem.MediaType {
-		t.Fatalf("content type = %s, want %s", recorder.Header().Get("Content-Type"), problem.MediaType)
+		t.Fatalf("content type of the absence = %s, want %s", recorder.Header().Get("Content-Type"), problem.MediaType)
 	}
 }
 
@@ -107,7 +108,7 @@ func TestRead_refusesAnIdentityOutOfFormatWithoutAskingTheReadModel(t *testing.T
 	asked := &reader{view: viewOf(t, "0.00", 1)}
 	recorder := serve(Read(asked, quietReporter()), readRequestOf("not-a-uuid"))
 	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", recorder.Code)
+		t.Fatalf("status of an identity out of format = %d, want 400", recorder.Code)
 	}
 	if asked.calls != 0 {
 		t.Fatalf("read model calls = %d, want 0", asked.calls)
@@ -215,7 +216,7 @@ func resultOf(t *testing.T, amount string) openwallet.Result {
 	t.Helper()
 	balance, err := money.Parse(amount, "BRL")
 	if err != nil {
-		t.Fatalf("money.Parse = %v, want nil", err)
+		t.Fatalf("money.Parse of the result balance = %v, want nil", err)
 	}
 	return openwallet.Result{
 		WalletID: walletOf(t),
@@ -229,7 +230,7 @@ func viewOf(t *testing.T, amount string, version int64) storage.WalletView {
 	t.Helper()
 	balance, err := money.Parse(amount, "BRL")
 	if err != nil {
-		t.Fatalf("money.Parse = %v, want nil", err)
+		t.Fatalf("money.Parse of the view balance = %v, want nil", err)
 	}
 	at := time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
 	return storage.WalletView{
