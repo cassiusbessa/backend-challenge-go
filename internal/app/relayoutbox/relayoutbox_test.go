@@ -76,16 +76,44 @@ func TestRelay_sendsTheRowBackOnTheBackoffWhenTheBrokerIsOut(t *testing.T) {
 func TestRelay_killsTheRowOnTheTenthPermanentRefusalAndNotOnTheNinth(t *testing.T) {
 	t.Parallel()
 	ninth := queueWith(t)
-	ninth.claimed.Attempts = 8
+	ninth.claimed.Refusals = 8
 	relay(t, ninth, &publisher{refuse: errors.New("topic does not exist"), permanent: true})
-	if ninth.killed || !ninth.rescheduled {
-		t.Fatalf("killed = %t on the ninth refusal, want the row rescheduled instead", ninth.killed)
+	if ninth.killed || !ninth.refused {
+		t.Fatalf("killed = %t and refused = %t on the ninth refusal, want the row set aside instead", ninth.killed, ninth.refused)
 	}
 	tenth := queueWith(t)
-	tenth.claimed.Attempts = 9
+	tenth.claimed.Refusals = 9
 	relay(t, tenth, &publisher{refuse: errors.New("topic does not exist"), permanent: true})
 	if !tenth.killed || tenth.confirmed != "" {
 		t.Fatalf("killed = %t and confirmed = %q on the tenth refusal, want it dead and unpublished", tenth.killed, tenth.confirmed)
+	}
+}
+
+// A broker that was out and came back leaves a row with attempts behind it and
+// no refusal at all. The first refusal it then meets is the first of ten, and
+// counting the attempts instead would make it the last.
+func TestRelay_doesNotCountTheAttemptsOfAnOutageTowardsTheDeathOfTheRow(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	queue.claimed.Attempts = 9
+	queue.claimed.Refusals = 0
+	relay(t, queue, &publisher{refuse: errors.New("topic does not exist"), permanent: true})
+	if queue.killed {
+		t.Fatalf("killed = %t after nine attempts and one refusal, want the row set aside", queue.killed)
+	}
+	if !queue.refused {
+		t.Fatalf("refused = %t, want the refusal counted apart from the attempts", queue.refused)
+	}
+}
+
+// A transitory failure moves the backoff and nothing else: the row it leaves
+// behind is one no refusal has ever been made on.
+func TestRelay_countsNoRefusalForAFailureThatMayComeBack(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	relay(t, queue, &publisher{refuse: errors.New("service unavailable")})
+	if queue.refused {
+		t.Fatalf("refused = %t on a transitory failure, want only the attempt counted", queue.refused)
 	}
 }
 
@@ -124,7 +152,7 @@ func TestRelay_logsTheDeathOfARowNobodyCanPublish(t *testing.T) {
 	t.Parallel()
 	written := &bytes.Buffer{}
 	queue := queueWith(t)
-	queue.claimed.Attempts = 9
+	queue.claimed.Refusals = 9
 	sender := &publisher{refuse: errors.New("refused"), permanent: true}
 	run(t, New(queue, sender, noSpan, frozenClock{}, allowingLogger(written), lease))
 	assertLine(t, written.String(), "dead")
@@ -301,6 +329,12 @@ func (q *queue) Reschedule(_ context.Context, _ identity.EventID, _ string, next
 	return nil
 }
 
+func (q *queue) Refuse(_ context.Context, _ identity.EventID, _ string, next time.Time) error {
+	q.rescheduled, q.refused = true, true
+	q.next = next
+	return nil
+}
+
 func (q *queue) Kill(context.Context, identity.EventID, string, time.Time) error {
 	q.killed = true
 	return nil
@@ -336,6 +370,16 @@ func (p *publisher) Publish(ctx context.Context, message Message) error {
 	p.sent = &message
 	if deadline, ok := ctx.Deadline(); ok {
 		p.deadline = deadline
+	}
+	// The adapter reads the context before it reaches the broker, so this one
+	// does too: a fake that published under a context with no time left would
+	// let a whole suite pass over sends the real client never makes.
+	if err := ctx.Err(); err != nil {
+		p.ctxErr = err
+		return err
+	}
+	if p.onSend != nil {
+		p.onSend()
 	}
 	return p.refuse
 }

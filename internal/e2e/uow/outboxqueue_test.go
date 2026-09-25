@@ -121,6 +121,49 @@ func TestReschedule_countsTheAttemptAndReleasesTheRowWithoutPublishingIt(t *test
 	}
 }
 
+// The two counts of a row answer two different questions. The attempt moves the
+// backoff, and the refusal is what gives up on the row after ten: a broker that
+// was out leaves attempts behind it and must not bring that end forward.
+func TestRefuse_countsTheRefusalApartFromTheAttemptThatDidNotPublish(t *testing.T) {
+	ctx, pool, unit := open(t)
+	queue := postgres.NewOutboxQueue(pool)
+	host := walletWithEvents(ctx, t, unit, 1)
+	past := time.Now().Add(-time.Second)
+	claimed := claim(ctx, t, queue, host.events[0])
+	if err := queue.Reschedule(ctx, host.events[0], claimed.LeaseToken, past); err != nil {
+		t.Fatalf("Reschedule = %v, want nil", err)
+	}
+	afterRetry := claim(ctx, t, queue, host.events[0])
+	if afterRetry.Attempts != 1 || afterRetry.Refusals != 0 {
+		t.Fatalf("attempts = %d and refusals = %d after a transitory failure, want 1 and 0", afterRetry.Attempts, afterRetry.Refusals)
+	}
+	if err := queue.Refuse(ctx, host.events[0], afterRetry.LeaseToken, past); err != nil {
+		t.Fatalf("Refuse = %v, want nil", err)
+	}
+	assertNotPublished(ctx, t, host.events[0])
+	afterRefusal := claim(ctx, t, queue, host.events[0])
+	if afterRefusal.Attempts != 2 || afterRefusal.Refusals != 1 {
+		t.Fatalf("attempts = %d and refusals = %d after a permanent refusal, want 2 and 1", afterRefusal.Attempts, afterRefusal.Refusals)
+	}
+}
+
+// A write the lease no longer allows writes nothing at all, and that holds for
+// the refusal as much as for the confirmation.
+func TestRefuse_countsNothingWhenTheTokenHasMovedOn(t *testing.T) {
+	ctx, pool, unit := open(t)
+	queue := postgres.NewOutboxQueue(pool)
+	host := walletWithEvents(ctx, t, unit, 1)
+	stale := claim(ctx, t, queue, host.events[0])
+	expire(ctx, t, host.events[0])
+	fresh := claim(ctx, t, queue, host.events[0])
+	if err := queue.Refuse(ctx, host.events[0], stale.LeaseToken, time.Now()); !errors.Is(err, storage.ErrLeaseLost) {
+		t.Fatalf("Refuse under the stale token = %v, want ErrLeaseLost", err)
+	}
+	if fresh.Refusals != 0 {
+		t.Fatalf("refusals = %d, want the stale write to have counted nothing", fresh.Refusals)
+	}
+}
+
 // The database is the one that refuses a row that is both published and given
 // up on, whatever the relay asks for.
 func TestKill_leavesTheRowUnpublishedAndTheDatabaseRefusesBothAtOnce(t *testing.T) {

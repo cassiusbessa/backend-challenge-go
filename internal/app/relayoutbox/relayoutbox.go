@@ -21,14 +21,13 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 )
 
-// deadAfter is how many attempts a row survives: the tenth that ends in a
-// permanent refusal gives up on it and releases the wallet.
+// deadAfter is how many permanent refusals a row survives: the tenth gives up
+// on it and releases the wallet.
 //
-// What counts is the attempt column, which rises on every attempt that did not
-// publish. A permanent refusal is answered the same way every time, so a row
-// that meets one meets it again on the next attempt; a transient failure mixed
-// in only brings the end forward, and a row nobody can publish is one nothing
-// behind it should wait for.
+// What counts is the refusal column and not the attempt one. A broker that was
+// out for a while leaves a row with nine attempts behind it and no refusal at
+// all, and counting those would let a single refusal — a credential that expired
+// mid-rotation, say — be the tenth and kill a row nothing is wrong with.
 const deadAfter = 10
 
 // sendShare is the fraction of the lease the send is given. The deadline of the
@@ -159,15 +158,26 @@ func (s *Service) confirm(ctx context.Context, claimed storage.OutboxRow) error 
 // permanent one gives up on the row, and everything else comes back on the
 // backoff.
 func (s *Service) setBack(ctx context.Context, claimed storage.OutboxRow, refusal error) error {
-	if s.publisher.Permanent(refusal) && claimed.Attempts+1 >= deadAfter {
+	permanent := s.publisher.Permanent(refusal)
+	if permanent && claimed.Refusals+1 >= deadAfter {
 		return s.kill(ctx, claimed)
 	}
 	next := s.clock.Now().Add(Backoff(claimed.Attempts))
-	if err := s.queue.Reschedule(ctx, claimed.EventID, claimed.LeaseToken, next); err != nil {
+	if err := s.setAside(ctx, claimed, permanent, next); err != nil {
 		return s.lost(ctx, claimed, "reschedule", err)
 	}
-	s.report(ctx, claimed, statusOf(s.publisher.Permanent(refusal)))
+	s.report(ctx, claimed, statusOf(permanent))
 	return nil
+}
+
+// setAside puts the row back on the queue. The backoff is moved by every
+// attempt; the refusal is counted apart, because it is the permanent one alone
+// that the limit of ten is about.
+func (s *Service) setAside(ctx context.Context, claimed storage.OutboxRow, permanent bool, next time.Time) error {
+	if permanent {
+		return s.queue.Refuse(ctx, claimed.EventID, claimed.LeaseToken, next)
+	}
+	return s.queue.Reschedule(ctx, claimed.EventID, claimed.LeaseToken, next)
 }
 
 func statusOf(permanent bool) string {

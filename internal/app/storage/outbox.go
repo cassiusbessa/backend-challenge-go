@@ -34,7 +34,12 @@ type OutboxCandidate struct {
 }
 
 // OutboxRow is one event as the relay claims it: the bytes to publish, the
-// trace to link the send to, and the attempts already made on it.
+// trace to link the send to, and the two counts already on it.
+//
+// Attempts is every attempt that did not publish, and it is what moves the
+// backoff. Refusals is only the permanent ones, and it is what gives up on the
+// row: a broker that was out for a while must not bring the end of a row
+// forward.
 //
 // LeaseToken is the token this claim wrote. Every write that follows carries it
 // back, and a row whose token has moved on refuses them all.
@@ -46,6 +51,7 @@ type OutboxRow struct {
 	TraceID    string
 	SpanID     string
 	Attempts   int64
+	Refusals   int64
 	LeaseToken string
 }
 
@@ -81,7 +87,15 @@ type OutboxQueue interface {
 
 	// Reschedule releases the lease and moves the next attempt, counting the
 	// attempt that did not publish. It marks the row neither published nor dead.
+	//
+	// It is the answer to a transitory failure: the broker may well take the
+	// same bytes on the next turn.
 	Reschedule(ctx context.Context, id identity.EventID, token string, next time.Time) error
+
+	// Refuse is the same reschedule for a refusal the broker will not take back,
+	// and it counts that refusal apart. Ten of them give up on the row; the
+	// attempts in between only move the backoff.
+	Refuse(ctx context.Context, id identity.EventID, token string, next time.Time) error
 
 	// Kill marks the row dead and releases the wallet, so the events behind it
 	// go on. The row stays in the database, with the same event identity and the

@@ -60,7 +60,8 @@ UPDATE outbox_events
             AND (lease_until IS NULL OR lease_until < now())
           FOR UPDATE SKIP LOCKED)
  RETURNING event_id, wallet_id, event_type, payload,
-           coalesce(trace_id, ''), coalesce(span_id, ''), attempt_count, lease_token`
+           coalesce(trace_id, ''), coalesce(span_id, ''),
+           attempt_count, refusal_count, lease_token`
 
 // The three ends of one turn. Each is guarded by the token of the claim, so a
 // replica whose lease was taken over writes nothing at all.
@@ -75,9 +76,19 @@ UPDATE outbox_events
        lease_token = NULL, lease_until = NULL
  WHERE event_id = $1 AND lease_token = $2 AND published_at IS NULL AND dead_at IS NULL`
 
+	// The same reschedule, and the refusal counted apart. Only the permanent one
+	// counts here, because it is the permanent one the limit of ten is about.
+	refuseOutboxEvent = `
+UPDATE outbox_events
+   SET next_attempt_at = $3, attempt_count = attempt_count + 1,
+       refusal_count = refusal_count + 1,
+       lease_token = NULL, lease_until = NULL
+ WHERE event_id = $1 AND lease_token = $2 AND published_at IS NULL AND dead_at IS NULL`
+
 	killOutboxEvent = `
 UPDATE outbox_events
    SET dead_at = $3, attempt_count = attempt_count + 1,
+       refusal_count = refusal_count + 1,
        lease_token = NULL, lease_until = NULL
  WHERE event_id = $1 AND lease_token = $2 AND published_at IS NULL AND dead_at IS NULL`
 )
@@ -142,7 +153,7 @@ func (q *OutboxQueue) Claim(ctx context.Context, id identity.EventID, lease time
 	var row claimedOutboxRow
 	err = pool.QueryRow(ctx, claimOutboxEvent, id.String(), interval(lease)).Scan(
 		&row.eventID, &row.walletID, &row.eventType, &row.payload,
-		&row.traceID, &row.spanID, &row.attempts, &row.leaseToken,
+		&row.traceID, &row.spanID, &row.attempts, &row.refusals, &row.leaseToken,
 	)
 	if err != nil {
 		return storage.OutboxRow{}, missingOutboxEvent("claim outbox event", err)
@@ -166,6 +177,7 @@ type claimedOutboxRow struct {
 	traceID    string
 	spanID     string
 	attempts   int64
+	refusals   int64
 	leaseToken string
 }
 
@@ -182,6 +194,7 @@ func (r claimedOutboxRow) row() (storage.OutboxRow, error) {
 		TraceID:    r.traceID,
 		SpanID:     r.spanID,
 		Attempts:   r.attempts,
+		Refusals:   r.refusals,
 		LeaseToken: r.leaseToken,
 	}, nil
 }
@@ -192,6 +205,10 @@ func (q *OutboxQueue) Confirm(ctx context.Context, id identity.EventID, token st
 
 func (q *OutboxQueue) Reschedule(ctx context.Context, id identity.EventID, token string, next time.Time) error {
 	return q.guarded(ctx, "reschedule outbox event", rescheduleOutboxEvent, id, token, next)
+}
+
+func (q *OutboxQueue) Refuse(ctx context.Context, id identity.EventID, token string, next time.Time) error {
+	return q.guarded(ctx, "refuse outbox event", refuseOutboxEvent, id, token, next)
 }
 
 func (q *OutboxQueue) Kill(ctx context.Context, id identity.EventID, token string, at time.Time) error {
