@@ -50,7 +50,7 @@ func TestOpenWallet_recordsWalletOpeningAndEntryInOneCommit(t *testing.T) {
 	player := newID()
 	answered, status := open(ctx, t, base, bearer, body(player, "1000.00", "BRL"))
 	if status != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", status)
+		t.Fatalf("status of the opening with a balance = %d, want 201", status)
 	}
 	if answered.Balance.Amount != "1000.00" || answered.Balance.Currency != "BRL" {
 		t.Fatalf("balance = %+v, want {1000.00 BRL}", answered.Balance)
@@ -70,7 +70,7 @@ func TestOpenWallet_atZeroRecordsNeitherTransactionNorEntry(t *testing.T) {
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
 	answered, status := open(ctx, t, base, bearer, body(newID(), "0.00", "BRL"))
 	if status != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", status)
+		t.Fatalf("status of the opening at zero = %d, want 201", status)
 	}
 	if answered.Balance.Amount != "0.00" {
 		t.Fatalf("balance = %s, want 0.00", answered.Balance.Amount)
@@ -121,46 +121,40 @@ func TestOpenWallet_acceptsTheSamePlayerInAnotherCurrency(t *testing.T) {
 func TestOpenWallet_refusesEveryAmountOutsideTheContractWithoutWriting(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	before := countWallets(ctx, t)
 	for _, amount := range []string{"", "NaN", "Infinity", "2.5e1", "-25.00", "25.005"} {
 		t.Run("amount "+amount+" is refused", func(t *testing.T) {
-			refusal, status := openRefusal(ctx, t, base, bearer, body(newID(), amount, "BRL"))
+			player := newID()
+			refusal, status := openRefusal(ctx, t, base, bearer, body(player, amount, "BRL"))
 			if status != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", status)
 			}
 			if refusal.FailureCode != "" {
 				t.Fatalf("failureCode = %s, want empty for invalid input", refusal.FailureCode)
 			}
+			assertNoWalletOf(ctx, t, player)
 		})
-	}
-	if got := countWallets(ctx, t); got != before {
-		t.Fatalf("wallets = %d, want the %d from before: invalid input writes nothing", got, before)
 	}
 }
 
 func TestOpenWallet_refusesAProviderByPermissionWithoutCreatingAWallet(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, providerClient, providerSecret)
-	before := countWallets(ctx, t)
-	_, status := openRefusal(ctx, t, base, bearer, body(newID(), "1000.00", "BRL"))
+	player := newID()
+	_, status := openRefusal(ctx, t, base, bearer, body(player, "1000.00", "BRL"))
 	if status != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", status)
 	}
-	if got := countWallets(ctx, t); got != before {
-		t.Fatalf("wallets = %d, want the %d from before", got, before)
-	}
+	assertNoWalletOf(ctx, t, player)
 }
 
 func TestOpenWallet_refusesAnAbsentCredential(t *testing.T) {
 	ctx, base := start(t)
-	before := countWallets(ctx, t)
-	_, status := openRefusal(ctx, t, base, "", body(newID(), "1000.00", "BRL"))
+	player := newID()
+	_, status := openRefusal(ctx, t, base, "", body(player, "1000.00", "BRL"))
 	if status != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", status)
 	}
-	if got := countWallets(ctx, t); got != before {
-		t.Fatalf("wallets = %d, want the %d from before", got, before)
-	}
+	assertNoWalletOf(ctx, t, player)
 }
 
 func TestOpenWallet_refusesAnExpiredCredential(t *testing.T) {
@@ -176,8 +170,11 @@ func TestOpenWallet_refusesAnExpiredCredential(t *testing.T) {
 // clock of the IdP is not the clock of this process.
 func waitUntilRefused(ctx context.Context, t *testing.T, base, bearer string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	const window = 20 * time.Second
+	deadline := time.Now().Add(window)
+	attempts := 0
 	for time.Now().Before(deadline) {
+		attempts++
 		_, status := openRefusal(ctx, t, base, bearer, body(newID(), "1.00", "BRL"))
 		if status == http.StatusUnauthorized {
 			return
@@ -187,7 +184,7 @@ func waitUntilRefused(ctx context.Context, t *testing.T, base, bearer string) {
 		}
 		time.Sleep(time.Second)
 	}
-	t.Fatalf("the border kept accepting the token past its expiry")
+	t.Fatalf("the border still accepted the token on %d attempts across %s, want it refused past the expiry", attempts, window)
 }
 
 func TestReadWallet_answersTheStoredBalanceAndVersion(t *testing.T) {
@@ -195,7 +192,7 @@ func TestReadWallet_answersTheStoredBalanceAndVersion(t *testing.T) {
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
 	opened, status := open(ctx, t, base, bearer, body(newID(), "1000.00", "BRL"))
 	if status != http.StatusCreated {
-		t.Fatalf("opening = %d, want 201", status)
+		t.Fatalf("opening before the read = %d, want 201", status)
 	}
 	answered, status := read(ctx, t, base, bearer, opened.ID)
 	if status != http.StatusOK {
@@ -213,16 +210,16 @@ func TestReadWallet_answersTheStoredBalanceAndVersion(t *testing.T) {
 func TestReadWallet_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	before := countWallets(ctx, t)
-	status, mediaType := readRefusal(ctx, t, base, bearer, newID())
+	asked := newID()
+	status, mediaType := readRefusal(ctx, t, base, bearer, asked)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", status)
 	}
 	if mediaType != problem.MediaType {
 		t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
 	}
-	if got := countWallets(ctx, t); got != before {
-		t.Fatalf("wallets = %d, want the %d from before: a read writes nothing", got, before)
+	if got := count(ctx, t, "SELECT count(*) FROM wallets WHERE id = $1", asked); got != 0 {
+		t.Fatalf("wallets for the identity read = %d, want 0: a read writes nothing", got)
 	}
 }
 
@@ -231,7 +228,7 @@ func TestReadWallet_refusesAProviderByPermission(t *testing.T) {
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	opened, status := open(ctx, t, base, internal, body(newID(), "1000.00", "BRL"))
 	if status != http.StatusCreated {
-		t.Fatalf("opening = %d, want 201", status)
+		t.Fatalf("opening before the provider is refused = %d, want 201", status)
 	}
 	provider := tokenFor(ctx, t, providerClient, providerSecret)
 	status, _ = readRefusal(ctx, t, base, provider, opened.ID)
@@ -434,8 +431,13 @@ func assertOpeningEntry(ctx context.Context, t *testing.T, walletID string, cent
 	}
 }
 
-func countWallets(ctx context.Context, t *testing.T) int64 {
-	return count(ctx, t, "SELECT count(*) FROM wallets")
+// assertNoWalletOf scopes the count to the player of the case. Counting the whole
+// table would read the rows of every suite sharing this database.
+func assertNoWalletOf(ctx context.Context, t *testing.T, player string) {
+	t.Helper()
+	if got := count(ctx, t, "SELECT count(*) FROM wallets WHERE player_id = $1", player); got != 0 {
+		t.Fatalf("wallets of the player = %d, want 0: the refusal writes nothing", got)
+	}
 }
 
 func countTransactions(ctx context.Context, t *testing.T, walletID string) int64 {

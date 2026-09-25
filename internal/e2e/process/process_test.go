@@ -68,7 +68,7 @@ func TestLiveStaysUpWhenQueueIsUnknown(t *testing.T) {
 	}
 	ready := statusCode(ctx, t, base+"/health/ready")
 	if ready != http.StatusServiceUnavailable {
-		t.Fatalf("ready = %d, want 503", ready)
+		t.Fatalf("ready with an unknown queue = %d, want 503", ready)
 	}
 }
 
@@ -85,7 +85,27 @@ func TestReadyFallsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	}
 	ready := statusCode(ctx, t, base+"/health/ready")
 	if ready != http.StatusServiceUnavailable {
-		t.Fatalf("ready = %d, want 503", ready)
+		t.Fatalf("ready with the database unreachable = %d, want 503", ready)
+	}
+}
+
+// The wager routes of this delivery are served. Without a credential they answer
+// 401, which is the guard refusing the request and not a route that is not there,
+// and the reconciliation route still answers 404 because it is not delivered.
+func TestWagerRoutesAreServedAndReconciliationIsNot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	base := startProcess(t, createQueue(ctx, t))
+	submit := statusOf(ctx, t, http.MethodPost, base+"/wagering/transactions")
+	if submit != http.StatusUnauthorized {
+		t.Fatalf("POST /wagering/transactions = %d, want 401 from the guard", submit)
+	}
+	read := statusOf(ctx, t, http.MethodGet, base+"/wagering/transactions/33333333-3333-4333-8333-333333333333")
+	if read != http.StatusUnauthorized {
+		t.Fatalf("GET /wagering/transactions/{transactionId} = %d, want 401 from the guard", read)
+	}
+	if got := statusCode(ctx, t, base+"/reconciliation"); got != http.StatusNotFound {
+		t.Fatalf("GET /reconciliation = %d, want 404 while it is not delivered", got)
 	}
 }
 
@@ -170,7 +190,12 @@ func envOr(key, fallback string) string {
 
 func statusCode(ctx context.Context, t *testing.T, rawURL string) int {
 	t.Helper()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	return statusOf(ctx, t, http.MethodGet, rawURL)
+}
+
+func statusOf(ctx context.Context, t *testing.T, method, rawURL string) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
