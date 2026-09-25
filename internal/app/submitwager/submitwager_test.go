@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -158,11 +159,14 @@ func assertRejectedRow(t *testing.T, ledgerBook *book, want wager.FailureCode) {
 	}
 }
 
+// The dispatch has one arm per kind the provider sends. The internal OPENING is
+// the one it has none for, and it is refused before this when the transaction is
+// built: reaching here means the vocabulary grew a kind with no arm.
 func TestDecisionOf_refusesAKindThisUseCaseDoesNotSettle(t *testing.T) {
 	t.Parallel()
 	owner := walletWith(t, "1000.00")
-	job := reversal(t, owner)
-	if _, err := decisionOf(owner, job); !errors.Is(err, ErrKindNotAccepted) {
+	job := internalOpening(t, owner)
+	if _, err := decisionOf(owner, job, wager.Reference{}); !errors.Is(err, ErrKindNotAccepted) {
 		t.Fatalf("decisionOf = %v, want %v", err, ErrKindNotAccepted)
 	}
 }
@@ -217,16 +221,43 @@ func TestSubmit_refusesAnotherBodyUnderTheSameKey(t *testing.T) {
 	assertRows(t, book, 1, 0)
 }
 
+// PENDING is the only status that is neither terminal nor a recorded wait, and
+// the schema refuses to write it. The guard stays so a row in a status the switch
+// does not know answers a retry instead of falling through in silence.
 func TestSubmit_refusesWhileTheRecordedOperationIsNotTerminal(t *testing.T) {
 	t.Parallel()
 	book := bookWith(t, "1000.00")
 	cmd := commandOf(t, wager.KindBet, "25.00")
-	waiting := processedState(t, cmd)
-	waiting.Status = wager.PendingReference
-	book.keep(t, cmd, waiting)
+	inFlight := processedState(t, cmd)
+	inFlight.Status = wager.Pending
+	book.keep(t, cmd, inFlight)
 	_, err := service(t, book).Submit(context.Background(), cmd)
 	if !errors.Is(err, ErrOutcomeInFlight) {
 		t.Fatalf("Submit while the recorded operation is not terminal = %v, want %v", err, ErrOutcomeInFlight)
+	}
+}
+
+// A wait is durable and lasts until its deadline, so the same key and the same
+// body answer the wait already recorded instead of a retry that would have the
+// provider hammer the route for fifteen minutes.
+func TestSubmit_replaysTheRecordedWaitInsteadOfAskingForARetry(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	cmd := citingCommand(t, wager.KindWin, "50.00")
+	book.keep(t, cmd, waitingState(t, cmd))
+	result := submit(t, book, cmd)
+	if result.Status != wager.PendingReference {
+		t.Fatalf("status = %s, want PENDING_REFERENCE", result.Status)
+	}
+	if !result.IdempotentReplay {
+		t.Fatalf("replay = %t, want true for the second arrival of a recorded wait", result.IdempotentReplay)
+	}
+	if !result.ObservedBalance.Currency().IsZero() {
+		t.Fatalf("observed balance = %s, want none: no commit closed the wait", result.ObservedBalance.Amount())
+	}
+	assertRows(t, book, 1, 0)
+	if len(book.balances) != 0 {
+		t.Fatalf("balance writes = %d, want 0: replaying a wait moves nothing", len(book.balances))
 	}
 }
 
@@ -343,7 +374,7 @@ func TestSubmit_refusesWhenAnIdentityCannotBeMinted(t *testing.T) {
 	t.Parallel()
 	broken := errors.New("mint: entropy exhausted")
 	book := bookWith(t, "1000.00")
-	service := New(book, book, brokenMinter{err: broken}, frozenClock{})
+	service := New(book, book, brokenMinter{err: broken}, frozenClock{}, schedule{})
 	_, err := service.Submit(context.Background(), commandOf(t, wager.KindBet, "25.00"))
 	if !errors.Is(err, broken) {
 		t.Fatalf("Submit with an unmintable identity = %v, want %v", err, broken)
@@ -362,7 +393,23 @@ func submit(t *testing.T, ledgerBook *book, cmd Command) Result {
 
 func service(t *testing.T, ledgerBook *book) *Service {
 	t.Helper()
-	return New(ledgerBook, ledgerBook, fixedMinter(t), frozenClock{})
+	return New(ledgerBook, ledgerBook, fixedMinter(t), frozenClock{}, schedule{})
+}
+
+// schedule is the policy of the wait with no draw in it: the deadline is the TTL
+// of the rule and the first attempt is the instant of entry, so a case about the
+// wait reads instants and not a range.
+type schedule struct{}
+
+func (schedule) DeadlineAt(entered time.Time) time.Time {
+	return entered.Add(15 * time.Minute)
+}
+
+func (schedule) NextAttemptAt(_ int64, now, deadline time.Time) time.Time {
+	if now.After(deadline) {
+		return deadline
+	}
+	return now
 }
 
 func assertRefused(t *testing.T, ledgerBook *book, cmd Command, want wager.FailureCode) {
@@ -448,6 +495,16 @@ type book struct {
 	// of the winning row.
 	outside      *wager.State
 	outsideReads int
+
+	// cited is what the lookup of the operation a submission names answers, keyed
+	// by provider and external identifier.
+	cited map[string]wager.State
+	// reversed says the cited operation already carries a PROCESSED reversal.
+	reversed map[string]bool
+	// calls is the order the repositories were asked in, which is what pins the
+	// wallet before the cited operation and the cited operation before the
+	// question of the reversal.
+	calls []string
 }
 
 type balanceWrite struct {
@@ -505,6 +562,8 @@ func stateOf(recorded *wager.Transaction) wager.State {
 		Status:              recorded.Status(),
 		FailureCode:         recorded.FailureCode(),
 		ObservedBalance:     recorded.ObservedBalance(),
+		NextAttemptAt:       recorded.NextAttemptAt(),
+		ReferenceDeadlineAt: recorded.ReferenceDeadlineAt(),
 		CreatedAt:           recorded.CreatedAt(),
 		UpdatedAt:           recorded.UpdatedAt(),
 	}
@@ -531,6 +590,7 @@ func (r walletRows) Insert(context.Context, *wallet.Wallet) error {
 }
 
 func (r walletRows) GetForUpdate(_ context.Context, id identity.WalletID) (wallet.State, error) {
+	r.book.calls = append(r.book.calls, "wallet")
 	owner := r.book.owner
 	if owner == nil || owner.ID() != id {
 		return wallet.State{}, storage.ErrWalletNotFound
@@ -577,16 +637,23 @@ func (r transactionRows) ByKey(_ context.Context, provider identity.ProviderID, 
 	return found, nil
 }
 
-// The five ports of the reference wait are part of the same repository and are
-// not reached from a submission yet: nothing here cites another operation.
-func (r transactionRows) ByExternalID(context.Context, identity.ProviderID, identity.ExternalTransactionID) (wager.State, error) {
-	return wager.State{}, storage.ErrTransactionNotFound
+func (r transactionRows) ByExternalID(_ context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (wager.State, error) {
+	r.book.calls = append(r.book.calls, "cited")
+	found, ok := r.book.cited[provider.String()+"|"+external.String()]
+	if !ok {
+		return wager.State{}, storage.ErrTransactionNotFound
+	}
+	return found, nil
 }
 
-func (r transactionRows) HasProcessedReversal(context.Context, identity.ProviderID, identity.ExternalTransactionID) (bool, error) {
-	return false, nil
+func (r transactionRows) HasProcessedReversal(_ context.Context, provider identity.ProviderID, cited identity.ExternalTransactionID) (bool, error) {
+	r.book.calls = append(r.book.calls, "reversal")
+	return r.book.reversed[provider.String()+"|"+cited.String()], nil
 }
 
+// The two ports of the worker belong to the same repository and are never
+// reached from a submission: the submission writes the wait, and the worker is
+// the one that claims it back.
 func (r transactionRows) ClaimWait(context.Context, identity.TransactionID, time.Time) (storage.Wait, error) {
 	return storage.Wait{}, storage.ErrTransactionNotFound
 }
@@ -634,7 +701,12 @@ func (b *book) TransactionByKey(context.Context, identity.ProviderID, identity.I
 
 func bookWith(t *testing.T, balance string) *book {
 	t.Helper()
-	return &book{owner: walletWith(t, balance), stored: map[string]wager.State{}}
+	return &book{
+		owner:    walletWith(t, balance),
+		stored:   map[string]wager.State{},
+		cited:    map[string]wager.State{},
+		reversed: map[string]bool{},
+	}
 }
 
 func walletWith(t *testing.T, balance string) *wallet.Wallet {
@@ -712,19 +784,20 @@ func rejectedState(t *testing.T, cmd Command, code wager.FailureCode) wager.Stat
 func recordedState(t *testing.T, cmd Command) wager.State {
 	t.Helper()
 	return wager.State{
-		ID:             transactionOf(t),
-		Kind:           cmd.Kind,
-		PlayerID:       cmd.PlayerID,
-		WalletID:       cmd.WalletID,
-		Amount:         cmd.Amount,
-		ProviderID:     cmd.ProviderID,
-		ExternalID:     cmd.ExternalID,
-		IdempotencyKey: cmd.IdempotencyKey,
-		BodyHash:       bodyhash.Of(cmd.business()),
-		RoundID:        cmd.RoundID,
-		GameID:         cmd.GameID,
-		CreatedAt:      frozen,
-		UpdatedAt:      frozen,
+		ID:                  transactionOf(t),
+		Kind:                cmd.Kind,
+		PlayerID:            cmd.PlayerID,
+		WalletID:            cmd.WalletID,
+		Amount:              cmd.Amount,
+		ProviderID:          cmd.ProviderID,
+		ExternalID:          cmd.ExternalID,
+		IdempotencyKey:      cmd.IdempotencyKey,
+		BodyHash:            bodyhash.Of(cmd.business()),
+		RoundID:             cmd.RoundID,
+		GameID:              cmd.GameID,
+		ReferenceExternalID: cmd.ReferenceExternalID,
+		CreatedAt:           frozen,
+		UpdatedAt:           frozen,
 	}
 }
 
@@ -732,28 +805,23 @@ func statePointer(state wager.State) *wager.State {
 	return &state
 }
 
-// reversal is a kind this delivery does not settle, built straight from the
-// domain: the border refuses it before the use case, so no command reaches here
-// carrying one.
-func reversal(t *testing.T, owner *wallet.Wallet) pending {
+// internalOpening is the one kind the dispatch has no arm for. It is built by
+// rehydration and not by the constructor, because the constructor refuses an
+// OPENING arriving from a provider before the dispatch ever sees it.
+func internalOpening(t *testing.T, owner *wallet.Wallet) pending {
 	t.Helper()
-	op, err := wager.NewExternal(wager.ExternalSpec{
-		ID:                  transactionOf(t),
-		ProviderID:          providerOf(t),
-		ExternalID:          externalOf(t),
-		IdempotencyKey:      keyValueOf(t),
-		BodyHash:            "hash",
-		PlayerID:            owner.PlayerID(),
-		WalletID:            owner.ID(),
-		RoundID:             roundOf(t),
-		GameID:              gameOf(t),
-		Kind:                wager.KindRollback,
-		Amount:              moneyOf(t, "25.00", "BRL"),
-		ReferenceExternalID: externalOf(t),
-		At:                  frozen,
+	op, err := wager.Rehydrate(wager.State{
+		ID:        transactionOf(t),
+		Kind:      wager.KindOpening,
+		PlayerID:  owner.PlayerID(),
+		WalletID:  owner.ID(),
+		Amount:    moneyOf(t, "25.00", "BRL"),
+		Status:    wager.Pending,
+		CreatedAt: frozen,
+		UpdatedAt: frozen,
 	})
 	if err != nil {
-		t.Fatalf("wager.NewExternal = %v, want nil", err)
+		t.Fatalf("wager.Rehydrate = %v, want nil", err)
 	}
 	return pending{op: op, move: wager.Movement{EntryID: entryOf(t), At: frozen}}
 }
@@ -886,6 +954,292 @@ func gameOf(t *testing.T) identity.GameID {
 	return id
 }
 
+// citedExternalOf is the identifier every citing case below names, told apart
+// from the identifier of the operation doing the citing.
+func citedExternalOf(t *testing.T) identity.ExternalTransactionID {
+	t.Helper()
+	id, err := identity.ParseExternalTransactionID("cited-1")
+	if err != nil {
+		t.Fatalf("ParseExternalTransactionID of the cited operation = %v, want nil", err)
+	}
+	return id
+}
+
+// citingCommand is one operation that names another, which is what a reversal
+// always is and a WIN may be.
+func citingCommand(t *testing.T, kind wager.Kind, amount string) Command {
+	t.Helper()
+	cmd := commandOf(t, kind, amount)
+	cmd.ReferenceExternalID = citedExternalOf(t)
+	return cmd
+}
+
+// waitingState is the wait an earlier commit recorded under that key: the row is
+// durable, no balance was observed, and the deadline was written on entry.
+func waitingState(t *testing.T, cmd Command) wager.State {
+	t.Helper()
+	state := recordedState(t, cmd)
+	state.Status = wager.PendingReference
+	state.NextAttemptAt = frozen
+	state.ReferenceDeadlineAt = frozen.Add(15 * time.Minute)
+	return state
+}
+
+// cite files the operation a submission names, as an earlier commit recorded it.
+func (b *book) cite(t *testing.T, state wager.State) {
+	t.Helper()
+	b.cited[state.ProviderID.String()+"|"+state.ExternalID.String()] = state
+}
+
+// citedProcessed is the cited operation as a commit that went through left it:
+// of the same provider, player, wallet and round as the one citing it.
+func citedProcessed(t *testing.T, kind wager.Kind, amount string) wager.State {
+	t.Helper()
+	return wager.State{
+		ID:              transactionOf(t),
+		Kind:            kind,
+		PlayerID:        playerOf(t),
+		WalletID:        walletOf(t),
+		Amount:          moneyOf(t, amount, "BRL"),
+		ProviderID:      providerOf(t),
+		ExternalID:      citedExternalOf(t),
+		IdempotencyKey:  keyValueOf(t),
+		BodyHash:        "hash of the cited operation",
+		RoundID:         roundOf(t),
+		GameID:          gameOf(t),
+		Status:          wager.Processed,
+		ObservedBalance: moneyOf(t, "1000.00", "BRL"),
+		CreatedAt:       frozen,
+		UpdatedAt:       frozen,
+	}
+}
+
+// The hash answers the business, and the operation a submission cites is part of
+// it: two arrivals alike in everything else but naming different operations are
+// different business and must not replay one another.
+func TestBusiness_answersAnotherHashForAnotherCitedOperation(t *testing.T) {
+	t.Parallel()
+	plain := commandOf(t, wager.KindWin, "50.00")
+	citing := citingCommand(t, wager.KindWin, "50.00")
+	other := citing
+	other.ReferenceExternalID = externalOf(t)
+	hashes := map[string]string{
+		"citing nothing":       bodyhash.Of(plain.business()),
+		"citing one operation": bodyhash.Of(citing.business()),
+		"citing another":       bodyhash.Of(other.business()),
+	}
+	assertDistinct(t, hashes)
+	repeated := bodyhash.Of(citingCommand(t, wager.KindWin, "50.00").business())
+	if got := bodyhash.Of(citing.business()); got != repeated {
+		t.Fatalf("hash of a second arrival citing the same operation = %s, want %s", got, repeated)
+	}
+}
+
+func assertDistinct(t *testing.T, hashes map[string]string) {
+	t.Helper()
+	seen := map[string]string{}
+	for name, hash := range hashes {
+		if before, taken := seen[hash]; taken {
+			t.Fatalf("%q and %q answered the same hash, want one per business", before, name)
+		}
+		seen[hash] = name
+	}
+}
+
+// The cited operation is read under the lock already taken, and never before it:
+// its status moves only under the lock of the wallet it belongs to.
+func TestSubmit_readsTheWalletThenTheCitedOperationThenTheReversal(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	book.cite(t, citedProcessed(t, wager.KindBet, "25.00"))
+	submit(t, book, citingCommand(t, wager.KindRefund, "25.00"))
+	want := []string{"wallet", "cited", "reversal"}
+	if !slices.Equal(book.calls, want) {
+		t.Fatalf("repositories asked in the order %v, want %v", book.calls, want)
+	}
+}
+
+// A WIN citing no operation never asks for one, so a submission that ends inside
+// its own request opens no query it does not need.
+func TestSubmit_readsNoCitedOperationForAnOperationThatNamesNone(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	submit(t, book, commandOf(t, wager.KindWin, "50.00"))
+	want := []string{"wallet"}
+	if !slices.Equal(book.calls, want) {
+		t.Fatalf("repositories asked in the order %v, want %v", book.calls, want)
+	}
+}
+
+// The question of the reversal belongs to a reversal. A WIN citing an operation
+// does not ask it, because no rule of a WIN reads the answer.
+func TestSubmit_asksAboutTheReversalOnlyForAReversal(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	book.cite(t, citedProcessed(t, wager.KindBet, "25.00"))
+	submit(t, book, citingCommand(t, wager.KindWin, "50.00"))
+	want := []string{"wallet", "cited"}
+	if !slices.Equal(book.calls, want) {
+		t.Fatalf("repositories asked in the order %v, want %v", book.calls, want)
+	}
+}
+
+// The three kinds that cite another operation reach the function of the domain
+// that owns them, and each one both concludes and is refused.
+func TestSubmit_settlesTheThreeKindsThatCiteAnotherOperation(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		cited     wager.State
+		reversed  bool
+		command   func(*testing.T) Command
+		balance   string
+		direction ledger.Direction
+	}{
+		{
+			name:      "a refund of a processed bet credits the whole amount",
+			cited:     citedProcessed(t, wager.KindBet, "25.00"),
+			command:   func(t *testing.T) Command { return citingCommand(t, wager.KindRefund, "25.00") },
+			balance:   "1025.00",
+			direction: ledger.Credit,
+		},
+		{
+			name:      "a rollback of a processed win debits it back",
+			cited:     citedProcessed(t, wager.KindWin, "50.00"),
+			command:   func(t *testing.T) Command { return citingCommand(t, wager.KindRollback, "50.00") },
+			balance:   "950.00",
+			direction: ledger.Debit,
+		},
+		{
+			name:      "a win citing a processed bet credits",
+			cited:     citedProcessed(t, wager.KindBet, "25.00"),
+			command:   func(t *testing.T) Command { return citingCommand(t, wager.KindWin, "50.00") },
+			balance:   "1050.00",
+			direction: ledger.Credit,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			book := bookWith(t, "1000.00")
+			book.cite(t, tc.cited)
+			result := submit(t, book, tc.command(t))
+			if result.Status != wager.Processed {
+				t.Fatalf("status = %s, want PROCESSED", result.Status)
+			}
+			if result.ObservedBalance.Amount() != tc.balance {
+				t.Fatalf("observed balance = %s, want %s", result.ObservedBalance.Amount(), tc.balance)
+			}
+			assertRows(t, book, 1, 1)
+			assertEntry(t, book.entries[0], tc.direction, tc.command(t).Amount.Amount(), tc.balance)
+		})
+	}
+}
+
+func TestSubmit_refusesTheThreeKindsThatCiteAnotherOperationWithTheirTokens(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		cited    wager.State
+		reversed bool
+		command  func(*testing.T) Command
+		want     wager.FailureCode
+	}{
+		{
+			name:    "a refund that is not the whole bet is refused",
+			cited:   citedProcessed(t, wager.KindBet, "25.00"),
+			command: func(t *testing.T) Command { return citingCommand(t, wager.KindRefund, "10.00") },
+			want:    wager.ReversalAmountMismatch,
+		},
+		{
+			name:     "a second reversal of the same operation is refused",
+			cited:    citedProcessed(t, wager.KindBet, "25.00"),
+			reversed: true,
+			command:  func(t *testing.T) Command { return citingCommand(t, wager.KindRollback, "25.00") },
+			want:     wager.AlreadyReversed,
+		},
+		{
+			name:    "a win citing an operation of another round is refused",
+			cited:   citedOfAnotherRound(t),
+			command: func(t *testing.T) Command { return citingCommand(t, wager.KindWin, "50.00") },
+			want:    wager.ReferenceMismatch,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			book := bookWith(t, "1000.00")
+			book.cite(t, tc.cited)
+			if tc.reversed {
+				book.reversed[providerOf(t).String()+"|"+citedExternalOf(t).String()] = true
+			}
+			assertRefused(t, book, tc.command(t), tc.want)
+			assertRejectedRow(t, book, tc.want)
+		})
+	}
+}
+
+// citedOfAnotherRound is an operation that arrived and does not close with the one
+// citing it, which is the refusal and not the wait.
+func citedOfAnotherRound(t *testing.T) wager.State {
+	t.Helper()
+	state := citedProcessed(t, wager.KindBet, "25.00")
+	other, err := identity.ParseRoundID("round-2")
+	if err != nil {
+		t.Fatalf("ParseRoundID of the other round = %v, want nil", err)
+	}
+	state.RoundID = other
+	return state
+}
+
+// An operation whose cited one has not arrived records the wait and nothing else:
+// no entry, no balance and no version, with the deadline written once.
+func TestSubmit_recordsTheWaitWhenTheCitedOperationHasNotArrived(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	result := submit(t, book, citingCommand(t, wager.KindWin, "50.00"))
+	if result.Status != wager.PendingReference {
+		t.Fatalf("status = %s, want PENDING_REFERENCE", result.Status)
+	}
+	if result.IdempotentReplay {
+		t.Fatalf("replay = %t, want false on the first arrival", result.IdempotentReplay)
+	}
+	if !result.ObservedBalance.Currency().IsZero() {
+		t.Fatalf("observed balance = %s, want none: no commit closed the operation", result.ObservedBalance.Amount())
+	}
+	assertRows(t, book, 1, 0)
+	if len(book.balances) != 0 {
+		t.Fatalf("balance writes = %d, want 0: entering the wait moves no balance", len(book.balances))
+	}
+	assertWaitWritten(t, book)
+}
+
+// The deadline is the instant of entry plus the TTL, and the first attempt is
+// scheduled inside it.
+func assertWaitWritten(t *testing.T, ledgerBook *book) {
+	t.Helper()
+	for _, state := range ledgerBook.stored {
+		if !state.ReferenceDeadlineAt.Equal(frozen.Add(15 * time.Minute)) {
+			t.Fatalf("deadline = %s, want %s", state.ReferenceDeadlineAt, frozen.Add(15*time.Minute))
+		}
+		if state.NextAttemptAt.IsZero() || state.NextAttemptAt.After(state.ReferenceDeadlineAt) {
+			t.Fatalf("next attempt = %s, want an instant inside the wait", state.NextAttemptAt)
+		}
+	}
+}
+
+// A reversal citing an operation that ended badly is refused at once, with no
+// wait recorded: no later arrival changes what that operation already is.
+func TestSubmit_refusesACitedOperationThatEndedBadlyWithoutRecordingAWait(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	refused := citedProcessed(t, wager.KindBet, "25.00")
+	refused.Status = wager.Rejected
+	refused.FailureCode = wager.InsufficientFunds
+	refused.ObservedBalance = money.Money{}
+	book.cite(t, refused)
+	assertRefused(t, book, citingCommand(t, wager.KindRefund, "25.00"), wager.ReferenceUnsuccessful)
+	assertRejectedRow(t, book, wager.ReferenceUnsuccessful)
+}
+
 // The tests below call the helpers of the use case directly, each at the branch
 // that makes it its own step. Submit already proves they compose; what is asserted
 // here is the decision each one owns.
@@ -910,7 +1264,7 @@ func TestPending_stampsTheInjectedInstantAndTheBusinessHash(t *testing.T) {
 func TestPending_refusesWhenAnIdentityCannotBeMinted(t *testing.T) {
 	t.Parallel()
 	broken := errors.New("mint: entropy exhausted")
-	failing := New(bookWith(t, "1000.00"), bookWith(t, "1000.00"), brokenMinter{err: broken}, frozenClock{})
+	failing := New(bookWith(t, "1000.00"), bookWith(t, "1000.00"), brokenMinter{err: broken}, frozenClock{}, schedule{})
 	if _, err := failing.pending(commandOf(t, wager.KindBet, "25.00")); !errors.Is(err, broken) {
 		t.Fatalf("pending with an unmintable identity = %v, want %v", err, broken)
 	}
@@ -1021,13 +1375,14 @@ func TestOutcomeOf_replaysTheRecordedOutcomeForTheSameBody(t *testing.T) {
 	}
 }
 
-// A row that is not terminal has no outcome to replay, so the arrival is told to
-// come back instead of being answered from a decision nobody made yet.
+// A row that is neither terminal nor a wait has no outcome to answer, so the
+// arrival is told to come back instead of being answered from a decision nobody
+// made yet.
 func TestOutcomeOf_answersTransientWhileTheRecordedOperationIsNotTerminal(t *testing.T) {
 	t.Parallel()
 	cmd := commandOf(t, wager.KindBet, "25.00")
 	inFlight := processedState(t, cmd)
-	inFlight.Status = wager.PendingReference
+	inFlight.Status = wager.Pending
 	if _, err := outcomeOf(inFlight, bodyhash.Of(cmd.business())); !errors.Is(err, ErrOutcomeInFlight) {
 		t.Fatalf("outcomeOf a row that is not terminal = %v, want %v", err, ErrOutcomeInFlight)
 	}
@@ -1221,7 +1576,7 @@ func movedBy(t *testing.T, ledgerBook *book, kind wager.Kind, amount string) (pe
 	if err != nil {
 		t.Fatalf("Rehydrate of the locked wallet = %v, want nil", err)
 	}
-	decision, err := decisionOf(owner, job)
+	decision, err := decisionOf(owner, job, wager.Reference{})
 	if err != nil {
 		t.Fatalf("decisionOf = %v, want nil", err)
 	}
@@ -1308,4 +1663,172 @@ func TestAfterRace_answersTheFailureItselfWhenNoWinningRowCanExplainIt(t *testin
 	if !answered.IdempotentReplay {
 		t.Fatalf("replay marker = %t, want true", answered.IdempotentReplay)
 	}
+}
+
+// The six helpers below carry no branch, so no mutant of theirs can be made to
+// survive. What can go wrong in them is a field landing in the wrong place, and
+// what catches that is comparing the whole value they build.
+
+// spec is the only place the command becomes what the aggregate accepts. The
+// comparison is on the whole struct so that a field swapped for its neighbour
+// fails here instead of surfacing as a wrong row much later.
+func TestSpec_carriesEveryFieldOfTheCommandIntoTheSpec(t *testing.T) {
+	t.Parallel()
+	cmd := commandOf(t, wager.KindBet, "25.00")
+	got := cmd.spec(transactionOf(t), "the-hash", frozen)
+	want := wager.ExternalSpec{
+		ID:             transactionOf(t),
+		ProviderID:     cmd.ProviderID,
+		ExternalID:     cmd.ExternalID,
+		IdempotencyKey: cmd.IdempotencyKey,
+		BodyHash:       "the-hash",
+		PlayerID:       cmd.PlayerID,
+		WalletID:       cmd.WalletID,
+		RoundID:        cmd.RoundID,
+		GameID:         cmd.GameID,
+		Kind:           cmd.Kind,
+		Amount:         cmd.Amount,
+		At:             frozen,
+	}
+	if got != want {
+		t.Fatalf("spec = %+v, want %+v", got, want)
+	}
+}
+
+// This delivery settles nothing that cites another operation, so the spec it
+// builds names no reference. The wait is what would fill it.
+func TestSpec_namesNoCitedOperation(t *testing.T) {
+	t.Parallel()
+	got := commandOf(t, wager.KindBet, "25.00").spec(transactionOf(t), "the-hash", frozen)
+	if !got.ReferenceExternalID.IsZero() {
+		t.Fatalf("reference = %s, want none: this delivery cites nothing", got.ReferenceExternalID)
+	}
+}
+
+// The hash covers the business and nothing else. The key is scoped to the
+// provider and kept out on purpose: HTTP and the queue carry it differently and
+// must still produce one hash.
+func TestBusiness_leavesTheKeyAndTheReferenceOutOfTheHashInput(t *testing.T) {
+	t.Parallel()
+	cmd := commandOf(t, wager.KindBet, "25.00")
+	got := cmd.business()
+	want := bodyhash.Business{
+		ProviderID: cmd.ProviderID,
+		ExternalID: cmd.ExternalID,
+		PlayerID:   cmd.PlayerID,
+		WalletID:   cmd.WalletID,
+		RoundID:    cmd.RoundID,
+		GameID:     cmd.GameID,
+		Kind:       cmd.Kind,
+		Amount:     cmd.Amount,
+	}
+	if got != want {
+		t.Fatalf("business = %+v, want %+v", got, want)
+	}
+}
+
+// Two commands that differ only by the key are one business, and the hash says
+// so. This is what makes the same operation arriving twice a replay instead of a
+// conflict.
+func TestBusiness_answersTheSameValueForAnotherKey(t *testing.T) {
+	t.Parallel()
+	first := commandOf(t, wager.KindBet, "25.00")
+	second := commandOf(t, wager.KindBet, "25.00")
+	second.IdempotencyKey = keyNamed(t, "another-key")
+	if first.business() != second.business() {
+		t.Fatalf("business of another key = %+v, want the %+v of the same operation", second.business(), first.business())
+	}
+}
+
+// resultOf is what the border answers, read off the transaction that was just
+// recorded. It never says replay: only replayOf does.
+func TestResultOf_carriesTheRecordedOutcomeOfTheTransaction(t *testing.T) {
+	t.Parallel()
+	cmd := commandOf(t, wager.KindBet, "25.00")
+	recorded := rehydrated(t, processedState(t, cmd))
+	got := resultOf(recorded)
+	want := Result{
+		TransactionID:   transactionOf(t),
+		Kind:            cmd.Kind,
+		Status:          wager.Processed,
+		ExternalID:      cmd.ExternalID,
+		Amount:          cmd.Amount,
+		ObservedBalance: moneyOf(t, observedBackThen, "BRL"),
+	}
+	if got != want {
+		t.Fatalf("resultOf = %+v, want %+v", got, want)
+	}
+}
+
+// The replay answers the outcome that was recorded and the balance observed back
+// then, and the marker is the single thing that tells it from the first
+// completion.
+func TestReplayOf_marksTheSameOutcomeAsAReplay(t *testing.T) {
+	t.Parallel()
+	recorded := rehydrated(t, processedState(t, commandOf(t, wager.KindBet, "25.00")))
+	want := resultOf(recorded)
+	want.IdempotentReplay = true
+	if got := replayOf(recorded); got != want {
+		t.Fatalf("replayOf = %+v, want %+v", got, want)
+	}
+}
+
+// The instant comes from the injected clock and is read once, so the transaction
+// and its entry are stamped with the same one.
+func TestAt_answersTheInstantOfTheInjectedClock(t *testing.T) {
+	t.Parallel()
+	job := jobOf(t, bookWith(t, "1000.00"), wager.KindBet, "25.00")
+	if got := job.at(); !got.Equal(frozen) {
+		t.Fatalf("instant = %s, want the injected %s", got, frozen)
+	}
+}
+
+// settle owns the transactional boundary, and the two outcomes it has to keep
+// apart share no branch: a rule that refused is durable and commits, while a
+// failure undoes the whole SQL transaction.
+func TestSettle_commitsADurableRejectionAndUndoesAFailure(t *testing.T) {
+	t.Parallel()
+	refusing := bookWith(t, "10.00")
+	decided, err := service(t, refusing).settle(context.Background(), jobOf(t, refusing, wager.KindBet, "25.00"))
+	if err != nil {
+		t.Fatalf("settle of a rule refusal = %v, want the rejection in the settlement", err)
+	}
+	assertToken(t, decided.rejection, wager.InsufficientFunds)
+	assertCommits(t, refusing, 1, 0)
+
+	failing := bookWith(t, "1000.00")
+	failing.lostWrite = true
+	_, err = service(t, failing).settle(context.Background(), jobOf(t, failing, wager.KindBet, "25.00"))
+	if !errors.Is(err, storage.ErrLostWrite) {
+		t.Fatalf("settle with the balance write past the lock = %v, want %v", err, storage.ErrLostWrite)
+	}
+	assertCommits(t, failing, 0, 1)
+}
+
+func assertCommits(t *testing.T, ledgerBook *book, commits, rollbacks int) {
+	t.Helper()
+	if ledgerBook.commits != commits {
+		t.Fatalf("commits = %d, want %d", ledgerBook.commits, commits)
+	}
+	if ledgerBook.rollbacks != rollbacks {
+		t.Fatalf("rollbacks = %d, want %d", ledgerBook.rollbacks, rollbacks)
+	}
+}
+
+func rehydrated(t *testing.T, state wager.State) *wager.Transaction {
+	t.Helper()
+	recorded, err := wager.Rehydrate(state)
+	if err != nil {
+		t.Fatalf("Rehydrate of the recorded state = %v, want nil", err)
+	}
+	return recorded
+}
+
+func keyNamed(t *testing.T, text string) identity.IdempotencyKey {
+	t.Helper()
+	parsed, err := identity.ParseIdempotencyKey(text)
+	if err != nil {
+		t.Fatalf("ParseIdempotencyKey = %v, want nil", err)
+	}
+	return parsed
 }

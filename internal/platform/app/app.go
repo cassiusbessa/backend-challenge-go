@@ -12,6 +12,8 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwallet"
+	"github.com/junglegaming/backend-challenge-go/internal/app/referencewait"
+	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
@@ -21,6 +23,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/mint"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/referenceworker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/walletapi"
@@ -87,6 +90,13 @@ func business() []fx.Option {
 		fx.Provide(func() openwallet.Clock { return clock.UTC{} }),
 		fx.Provide(func() submitwager.Minter { return mint.UUIDv7{} }),
 		fx.Provide(func() submitwager.Clock { return clock.UTC{} }),
+		fx.Provide(newSchedule),
+		fx.Provide(func(schedule referencewait.Schedule) submitwager.Schedule { return schedule }),
+		fx.Provide(func(schedule referencewait.Schedule) resolvereference.Schedule { return schedule }),
+		fx.Provide(func() resolvereference.Minter { return mint.UUIDv7{} }),
+		fx.Provide(func() resolvereference.Clock { return clock.UTC{} }),
+		fx.Provide(resolvereference.New),
+		fx.Provide(newReferenceWorker),
 		fx.Provide(openwallet.New),
 		fx.Provide(readwallet.New),
 		fx.Provide(submitwager.New),
@@ -99,6 +109,18 @@ func business() []fx.Option {
 		fx.Provide(newWagerReporter),
 		fx.Invoke(register),
 	}
+}
+
+// newSchedule is the single policy of the wait: the use case that writes one and
+// the worker that closes it read the same deadline and the same backoff.
+func newSchedule(cfg config.Config) referencewait.Schedule {
+	return referencewait.New(cfg.ReferenceTTL, referencewait.FullJitter)
+}
+
+// newReferenceWorker is the first background component of the process. It scans
+// the queue of waits and hands each candidate to the use case that decides it.
+func newReferenceWorker(cfg config.Config, reads storage.Reads, resolver *resolvereference.Service, pipe *telemetry.Pipeline) *referenceworker.Worker {
+	return referenceworker.New(reads, resolver, clock.UTC{}, pipe.Logger, cfg.ReferenceInterval)
 }
 
 func newUnitOfWork(pool *postgres.Pool) storage.UnitOfWork {
@@ -149,6 +171,7 @@ type wiring struct {
 	Submitter     *submitwager.Service
 	WagerReader   *readwager.Service
 	WagerReporter *wagerapi.Reporter
+	Reference     *referenceworker.Worker
 }
 
 func register(lc fx.Lifecycle, parts wiring) {
@@ -156,6 +179,10 @@ func register(lc fx.Lifecycle, parts wiring) {
 	lc.Append(fx.Hook{OnStart: parts.Pipeline.Start, OnStop: parts.Pipeline.Shutdown})
 	lc.Append(fx.Hook{OnStart: parts.Postgres.Open, OnStop: parts.Postgres.Close})
 	lc.Append(fx.Hook{OnStart: parts.Queue.Open})
+	// The worker comes up after the pool and before the listener, so the shutdown
+	// takes them in the other order: the port stops accepting first, and the
+	// worker stops claiming after it, both inside the same deadline.
+	lc.Append(fx.Hook{OnStart: parts.Reference.Start, OnStop: parts.Reference.Stop})
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			parts.Server.Use(routes(parts))

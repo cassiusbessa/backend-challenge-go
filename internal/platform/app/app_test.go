@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +16,8 @@ import (
 
 	"go.uber.org/fx"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
+	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
@@ -290,4 +293,42 @@ func waitRefused(t *testing.T, rawURL string) {
 		_ = res.Body.Close()
 	}
 	t.Fatalf("%s kept accepting connections after SIGTERM", rawURL)
+}
+
+// The schedule of the wait is built once and shared by the use case that writes
+// one and the worker that closes it, so the TTL it measures has to be the one the
+// configuration names.
+func TestNewSchedule_measuresTheWaitWithTheConfiguredTTL(t *testing.T) {
+	t.Parallel()
+	entered := time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
+	schedule := newSchedule(config.Config{ReferenceTTL: 30 * time.Second})
+	if got := schedule.DeadlineAt(entered); !got.Equal(entered.Add(30 * time.Second)) {
+		t.Fatalf("deadline = %s, want the entry plus the configured 30s", got)
+	}
+	next := schedule.NextAttemptAt(0, entered, schedule.DeadlineAt(entered))
+	if next.Before(entered) || next.After(schedule.DeadlineAt(entered)) {
+		t.Fatalf("next attempt = %s, want an instant inside the wait", next)
+	}
+}
+
+// The worker is assembled from the read side, the use case and the logger of the
+// process, and what it comes back as is a component that has not started: the
+// lifecycle is what starts it.
+func TestNewReferenceWorker_answersAWorkerTheLifecycleStarts(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{ReferenceInterval: time.Millisecond}
+	pipe := &telemetry.Pipeline{Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	// The stop of a worker that never started is the whole assertion: it reaches
+	// the assembled worker, so a constructor that answered nothing would not get
+	// this far.
+	worker := newReferenceWorker(cfg, emptyReads{}, resolvereference.New(nil, nil, nil, nil), pipe)
+	if err := worker.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop of a worker the lifecycle never started = %v, want nil", err)
+	}
+}
+
+// emptyReads is the read side of a process with nothing waiting, which is all the
+// assembled worker is asked for here.
+type emptyReads struct {
+	storage.Reads
 }

@@ -20,15 +20,20 @@ import (
 )
 
 var (
-	// ErrKindNotAccepted is a kind this delivery does not settle. The border
-	// refuses those before the use case, so reaching here means the border let
-	// one through: it is a defect, not a rule refusing the operation, and it
-	// carries no failureCode.
+	// ErrKindNotAccepted is a kind this use case has no function for. Only the
+	// internal OPENING is one today, and it is refused before this, when the
+	// transaction is built. Reaching here means the vocabulary grew a kind the
+	// dispatch was not given an arm for: it is a defect, not a rule refusing the
+	// operation, and it carries no failureCode.
 	ErrKindNotAccepted error = defect{errors.New("submitwager: kind is not settled by this use case")}
 
-	// ErrOutcomeInFlight is a transaction recorded under that key which is not
-	// terminal yet, so it has no outcome to replay. It is transient: the provider
-	// sends the same key again.
+	// ErrOutcomeInFlight is a transaction recorded under that key which is neither
+	// terminal nor a recorded wait, so it has nothing to answer. It is transient:
+	// the provider sends the same key again.
+	//
+	// Only PENDING is such a status, and the CHECK of the schema refuses to write
+	// it. The guard stays so that a row in a status this switch does not know
+	// answers a retry instead of falling through in silence.
 	ErrOutcomeInFlight error = transient{errors.New("submitwager: recorded operation is not terminal yet")}
 
 	// ErrRaceUnresolved is the row that won the key no longer being there when the
@@ -66,20 +71,32 @@ type Minter interface {
 	EntryID() (identity.LedgerEntryID, error)
 }
 
+// Schedule answers the two instants a wait is written with: when it expires, and
+// when it is first attempted.
+//
+// The policy behind them is not of this use case: it is shared with the worker
+// that closes the wait, so both read the same deadline and the same backoff.
+type Schedule interface {
+	DeadlineAt(entered time.Time) time.Time
+	NextAttemptAt(attempts int64, now, deadline time.Time) time.Time
+}
+
 // Command is the operation the provider sent, with every field already parsed.
 //
-// It names no cited operation: this delivery settles what ends inside its own
-// request, so no action it drives can ask to wait for another one.
+// ReferenceExternalID keeps its zero value when the operation cites no other
+// one, which is the shape of a BET, a LOSS and a WIN that credits right away. A
+// reversal always carries it.
 type Command struct {
-	ProviderID     identity.ProviderID
-	ExternalID     identity.ExternalTransactionID
-	IdempotencyKey identity.IdempotencyKey
-	PlayerID       identity.PlayerID
-	WalletID       identity.WalletID
-	RoundID        identity.RoundID
-	GameID         identity.GameID
-	Kind           wager.Kind
-	Amount         money.Money
+	ProviderID          identity.ProviderID
+	ExternalID          identity.ExternalTransactionID
+	IdempotencyKey      identity.IdempotencyKey
+	PlayerID            identity.PlayerID
+	WalletID            identity.WalletID
+	RoundID             identity.RoundID
+	GameID              identity.GameID
+	Kind                wager.Kind
+	Amount              money.Money
+	ReferenceExternalID identity.ExternalTransactionID
 }
 
 // Result is the outcome as the border answers it. ObservedBalance is the balance
@@ -123,14 +140,15 @@ func (r Replayed) IdempotentReplay() bool {
 // Service coordinates the settlement. The zero value is not used: New is the only
 // constructor.
 type Service struct {
-	uow    storage.UnitOfWork
-	reads  storage.Reads
-	minter Minter
-	clock  Clock
+	uow      storage.UnitOfWork
+	reads    storage.Reads
+	minter   Minter
+	clock    Clock
+	schedule Schedule
 }
 
-func New(uow storage.UnitOfWork, reads storage.Reads, minter Minter, clock Clock) *Service {
-	return &Service{uow: uow, reads: reads, minter: minter, clock: clock}
+func New(uow storage.UnitOfWork, reads storage.Reads, minter Minter, clock Clock, schedule Schedule) *Service {
+	return &Service{uow: uow, reads: reads, minter: minter, clock: clock, schedule: schedule}
 }
 
 // Submit records the operation and answers the outcome. A rule refusing it comes
@@ -187,31 +205,36 @@ func (s *Service) pending(cmd Command) (pending, error) {
 
 func (c Command) spec(id identity.TransactionID, hash string, at time.Time) wager.ExternalSpec {
 	return wager.ExternalSpec{
-		ID:             id,
-		ProviderID:     c.ProviderID,
-		ExternalID:     c.ExternalID,
-		IdempotencyKey: c.IdempotencyKey,
-		BodyHash:       hash,
-		PlayerID:       c.PlayerID,
-		WalletID:       c.WalletID,
-		RoundID:        c.RoundID,
-		GameID:         c.GameID,
-		Kind:           c.Kind,
-		Amount:         c.Amount,
-		At:             at,
+		ID:                  id,
+		ProviderID:          c.ProviderID,
+		ExternalID:          c.ExternalID,
+		IdempotencyKey:      c.IdempotencyKey,
+		BodyHash:            hash,
+		PlayerID:            c.PlayerID,
+		WalletID:            c.WalletID,
+		RoundID:             c.RoundID,
+		GameID:              c.GameID,
+		Kind:                c.Kind,
+		Amount:              c.Amount,
+		ReferenceExternalID: c.ReferenceExternalID,
+		At:                  at,
 	}
 }
 
+// business is what the hash answers: the operation the provider asked for,
+// including the one it cites. Two arrivals alike in everything else but naming
+// different operations are different business, and neither replays the other.
 func (c Command) business() bodyhash.Business {
 	return bodyhash.Business{
-		ProviderID: c.ProviderID,
-		ExternalID: c.ExternalID,
-		PlayerID:   c.PlayerID,
-		WalletID:   c.WalletID,
-		RoundID:    c.RoundID,
-		GameID:     c.GameID,
-		Kind:       c.Kind,
-		Amount:     c.Amount,
+		ProviderID:          c.ProviderID,
+		ExternalID:          c.ExternalID,
+		PlayerID:            c.PlayerID,
+		WalletID:            c.WalletID,
+		RoundID:             c.RoundID,
+		GameID:              c.GameID,
+		Kind:                c.Kind,
+		Amount:              c.Amount,
+		ReferenceExternalID: c.ReferenceExternalID,
 	}
 }
 
@@ -284,9 +307,22 @@ func outcomeOf(state wager.State, hash string) (settlement, error) {
 	}
 	outcome, terminal := recorded.Replay()
 	if !terminal {
-		return settlement{}, ErrOutcomeInFlight
+		return waitingOf(recorded)
 	}
 	return settlement{result: replayOf(recorded), rejection: refusalOf(outcome)}, nil
+}
+
+// waitingOf answers the wait already recorded under that key.
+//
+// A wait is durable and lasts until its deadline, so answering it as a transient
+// failure would tell the provider to send the same operation again in a moment
+// for as long as fifteen minutes. It answers the recorded wait instead, marked as
+// a replay and with no observed balance: no commit closed it, so there is none.
+func waitingOf(recorded *wager.Transaction) (settlement, error) {
+	if recorded.Status() != wager.PendingReference {
+		return settlement{}, ErrOutcomeInFlight
+	}
+	return settlement{result: replayOf(recorded)}, nil
 }
 
 // refusalOf answers the recorded refusal, marked as a replay, or nil when the
@@ -308,11 +344,82 @@ func (s *Service) apply(ctx context.Context, tx storage.Tx, job pending) (settle
 	if err != nil {
 		return settlement{}, err
 	}
-	decision, err := decisionOf(owner, job)
+	reference, err := citedFor(ctx, tx, job)
+	if err != nil {
+		return settlement{}, err
+	}
+	decision, err := decisionOf(owner, job, reference)
 	if err != nil {
 		return s.reject(ctx, tx, job, err)
 	}
+	if decision.IsWaiting() {
+		return s.wait(ctx, tx, job)
+	}
 	return s.record(ctx, tx, job, moved{owner: owner, decision: decision, readVersion: state.Version})
+}
+
+// citedFor loads the operation this one names, and asks whether that operation
+// already carries a reversal. An operation that cites nothing goes through with
+// the empty reference, which no action reads.
+//
+// Both reads happen after the wallet is locked, and that is the whole point. The
+// only volatile field of the cited operation is its status, and the status moves
+// only under the lock of the wallet it belongs to. A cited operation that can be
+// accepted at all is one of this very wallet, so under this lock the read is the
+// consistent one; when it is not of this wallet the answer is REFERENCE_MISMATCH,
+// and consistency does not change it.
+func citedFor(ctx context.Context, tx storage.Tx, job pending) (wager.Reference, error) {
+	named, cites := job.op.ReferenceExternalID()
+	if !cites {
+		return wager.Reference{}, nil
+	}
+	state, err := tx.Transactions().ByExternalID(ctx, job.op.ProviderID(), named)
+	if errors.Is(err, storage.ErrTransactionNotFound) {
+		// The cited operation has not arrived through the other channel yet. The
+		// domain reads the absence as the decision to wait.
+		return wager.Reference{}, nil
+	}
+	if err != nil {
+		return wager.Reference{}, err
+	}
+	cited, err := wager.Rehydrate(state)
+	if err != nil {
+		return wager.Reference{}, err
+	}
+	return reversalOf(ctx, tx, job, cited, named)
+}
+
+// reversalOf asks whether the cited operation already carries a reversal that
+// reached PROCESSED, which only a reversal needs to know.
+//
+// The question decides on its own, unlike the two indexes of idempotency: it is
+// asked after the lock, so the reversal arriving second reaches it only once the
+// first has committed and is therefore visible to it.
+func reversalOf(ctx context.Context, tx storage.Tx, job pending, cited *wager.Transaction, named identity.ExternalTransactionID) (wager.Reference, error) {
+	if !job.op.Kind().IsReversal() {
+		return wager.Reference{Cited: cited}, nil
+	}
+	reversed, err := tx.Transactions().HasProcessedReversal(ctx, job.op.ProviderID(), named)
+	if err != nil {
+		return wager.Reference{}, err
+	}
+	return wager.Reference{Cited: cited, AlreadyReversed: reversed}, nil
+}
+
+// wait records the operation as waiting for the one it cites.
+//
+// Nothing moves: no entry, no balance and no version. The deadline is written
+// here, once, and the worker that closes the wait never writes it again.
+func (s *Service) wait(ctx context.Context, tx storage.Tx, job pending) (settlement, error) {
+	at := job.at()
+	deadline := s.schedule.DeadlineAt(at)
+	if err := job.op.WaitForReference(s.schedule.NextAttemptAt(0, at, deadline), deadline, at); err != nil {
+		return settlement{}, err
+	}
+	if err := tx.Transactions().Insert(ctx, job.op); err != nil {
+		return settlement{}, err
+	}
+	return settlement{result: resultOf(job.op)}, nil
 }
 
 // absentWallet turns the absence of the wallet into the token of the catalog. It
@@ -327,17 +434,21 @@ func absentWallet(err error) error {
 
 // decisionOf names the function of the kind, which is the whole choice the use
 // case makes: it writes no SQL and emits no event.
-func decisionOf(owner *wallet.Wallet, job pending) (wager.Decision, error) {
+//
+// A WIN citing no operation credits right away, and the empty reference it is
+// handed is never read.
+func decisionOf(owner *wallet.Wallet, job pending, reference wager.Reference) (wager.Decision, error) {
 	switch job.op.Kind() {
 	case wager.KindBet:
 		return wager.Bet(owner, job.op, job.move)
 	case wager.KindWin:
-		// A WIN citing no operation credits right away. The command names none, so
-		// the empty reference is never read: the delivery that brings the wait
-		// loads the cited operation and passes it here.
-		return wager.Win(owner, job.op, wager.Reference{}, job.move)
+		return wager.Win(owner, job.op, reference, job.move)
 	case wager.KindLoss:
 		return wager.Loss(owner, job.op)
+	case wager.KindRefund:
+		return wager.Refund(owner, job.op, reference, job.move)
+	case wager.KindRollback:
+		return wager.Rollback(owner, job.op, reference, job.move)
 	}
 	return wager.Decision{}, ErrKindNotAccepted
 }
