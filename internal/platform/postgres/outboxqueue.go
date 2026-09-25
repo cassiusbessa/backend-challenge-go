@@ -18,10 +18,15 @@ import (
 // The NOT EXISTS is what serializes one wallet without serializing the others,
 // and a dead row leaves it along with a published one — which is how the tenth
 // permanent refusal releases the wallet instead of stopping everything behind
-// it. The pair (created_at, event_id) breaks the tie, because two events of the
-// same commit carry the same instant.
+// it.
 //
-// The partial index of the third migration serves exactly this predicate, so
+// The order is the sequence the database assigns at the insert, which happens
+// under the lock of that wallet: it is therefore the order of the commits, and
+// it needs no tie-break. The instant the event happened is not that order —
+// it is read before the lock, so two operations of one wallet can commit in
+// the opposite order of their instants. go-reads says the same of the ledger.
+//
+// The partial index of the fourth migration serves exactly this predicate, so
 // the published rows — the overwhelming majority of a table the relay keeps up
 // with — are not walked.
 const selectDueOutboxEvents = `
@@ -34,8 +39,8 @@ SELECT event_id, wallet_id
          SELECT 1 FROM outbox_events older
           WHERE older.wallet_id = o.wallet_id
             AND older.published_at IS NULL AND older.dead_at IS NULL
-            AND (older.created_at, older.event_id) < (o.created_at, o.event_id))
- ORDER BY o.created_at, o.event_id
+            AND older.publish_seq < o.publish_seq)
+ ORDER BY o.publish_seq
  LIMIT $1`
 
 // The claim. The token is new on every turn and minted by the database, so it

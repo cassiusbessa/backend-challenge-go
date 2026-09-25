@@ -39,6 +39,38 @@ func TestDue_offersTheNextRowOnceTheOneAheadIsDead(t *testing.T) {
 	}
 }
 
+// The order of publication is the order of the commits and not the order of the
+// instants the events carry. The instant is read before the wallet is locked, so
+// two operations of one wallet can commit in the opposite order of their
+// instants; the sequence the database assigns at the insert cannot.
+func TestDue_ordersByTheCommitAndNotByTheInstantTheEventCarries(t *testing.T) {
+	ctx, pool, unit := open(t)
+	queue := postgres.NewOutboxQueue(pool)
+	opened := opening(t)
+	// The commit that lands first carries the later instant, which is what an
+	// operation that read the clock first and then lost the race for the lock
+	// leaves behind.
+	first := processedEventAt(t, opened, opened.transaction.UpdatedAt().Add(time.Minute))
+	if err := unit.Within(ctx, func(tx storage.Tx) error {
+		if err := writeSet(ctx, tx, opened); err != nil {
+			return err
+		}
+		return tx.Outbox().Insert(ctx, first)
+	}); err != nil {
+		t.Fatalf("write the first commit = %v, want nil", err)
+	}
+	second := processedEventAt(t, opened, opened.transaction.UpdatedAt())
+	if err := unit.Within(ctx, func(tx storage.Tx) error {
+		return tx.Outbox().Insert(ctx, second)
+	}); err != nil {
+		t.Fatalf("write the second commit = %v, want nil", err)
+	}
+	offered := candidatesOf(ctx, t, queue, opened.wallet.ID())
+	if len(offered) != 1 || offered[0].EventID != first.ID() {
+		t.Fatalf("candidate = %v, want %s, the event of the commit that landed first", offered, first.ID())
+	}
+}
+
 func TestClaim_isSkippedByTheSecondReplicaAndComesBackWhenTheLeaseExpires(t *testing.T) {
 	ctx, pool, unit := open(t)
 	queue := postgres.NewOutboxQueue(pool)

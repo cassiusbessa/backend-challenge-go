@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
@@ -64,10 +65,15 @@ func writeSet(ctx context.Context, tx storage.Tx, opened set) error {
 
 func processedEvent(t *testing.T, opened set) event.Envelope {
 	t.Helper()
+	return processedEventAt(t, opened, opened.transaction.UpdatedAt())
+}
+
+func processedEventAt(t *testing.T, opened set, at time.Time) event.Envelope {
+	t.Helper()
 	built, err := event.NewProcessed(event.Spec{
 		ID:          eventOf(t, newID()),
 		AggregateID: opened.wallet.ID(),
-		At:          opened.transaction.UpdatedAt(),
+		At:          at,
 	}, opened.transaction)
 	if err != nil {
 		t.Fatalf("event.NewProcessed = %v, want nil", err)

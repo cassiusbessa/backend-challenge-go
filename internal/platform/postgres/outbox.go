@@ -14,7 +14,7 @@ const insertOutboxEvent = `
 INSERT INTO outbox_events (
     event_id, event_type, wallet_id, payload, correlation_id, trace_id, span_id,
     created_at, next_attempt_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())`
 
 // outbox writes the event rows of one open transaction. There is no update and
 // no delete here: what the relay writes afterwards belongs to ports of its own,
@@ -26,7 +26,11 @@ type outbox struct {
 // Insert records the event beside the balance it came from, with the
 // correlation of the request and the trace of the commit that wrote it. The row
 // is publishable from the instant it is committed, so the first attempt is due
-// at the instant the event happened.
+// at once.
+//
+// The instant of that first attempt is the clock of the database and not the
+// one of the process: the scan compares it against now(), and two clocks in one
+// comparison make a row that is due here and not there.
 //
 // A commit outside any span still writes the row: the trace of an event is what
 // links it back, not what makes it valid.
