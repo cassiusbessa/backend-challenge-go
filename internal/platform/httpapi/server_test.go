@@ -20,7 +20,7 @@ import (
 func TestOtherRoutesReturn404(t *testing.T) {
 	t.Parallel()
 	handler, _ := testHandler(t)
-	paths := []string{"/wagers", "/wagering/transactions", "/reconciliation", "/debug/pprof/"}
+	paths := []string{"/wagers", "/reconciliation", "/debug/pprof/"}
 	for _, path := range paths {
 		t.Run(path+" answers 404", func(t *testing.T) {
 			got := codeOf(t, handler, path)
@@ -44,6 +44,24 @@ func TestHandler_servesTheWalletRoutes(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /wallets = %d, want the route to answer", rec.Code)
+	}
+}
+
+// The wager routes of this delivery are served too. The span name is the pattern
+// of the route and not the path, so a transaction identity does not give every
+// request a series of its own.
+func TestHandler_servesTheWagerRoutes(t *testing.T) {
+	t.Parallel()
+	handler, _ := testHandler(t)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/wagering/transactions", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /wagering/transactions = %d, want the route to answer", rec.Code)
+	}
+	got := codeOf(t, handler, "/wagering/transactions/33333333-3333-4333-8333-333333333333")
+	if got != http.StatusOK {
+		t.Fatalf("GET /wagering/transactions/{transactionId} = %d, want the route to answer", got)
 	}
 }
 
@@ -169,14 +187,16 @@ func testHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 		}
 	})
 	handler := Handler(Routes{
-		Live:       http.HandlerFunc(Live),
-		Ready:      NewReady(okProbe{}, okProbe{}),
-		Metrics:    MetricsHandler(reg),
-		OpenWallet: answering(http.StatusCreated),
-		ReadWallet: answering(http.StatusOK),
-		Logger:     slog.New(telemetry.Allow(slog.NewJSONHandler(buf, nil))),
-		Tracer:     provider.Tracer("test"),
-		Latency:    latency,
+		Live:            http.HandlerFunc(Live),
+		Ready:           NewReady(okProbe{}, okProbe{}),
+		Metrics:         MetricsHandler(reg),
+		OpenWallet:      answering(http.StatusCreated),
+		ReadWallet:      answering(http.StatusOK),
+		SubmitWager:     answering(http.StatusCreated),
+		ReadTransaction: answering(http.StatusOK),
+		Logger:          slog.New(telemetry.Allow(slog.NewJSONHandler(buf, nil))),
+		Tracer:          provider.Tracer("test"),
+		Latency:         latency,
 	})
 	return handler, buf
 }
