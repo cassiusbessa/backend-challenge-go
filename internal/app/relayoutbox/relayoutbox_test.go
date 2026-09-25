@@ -36,13 +36,14 @@ func TestRelay_publishesUnderTheTokenOfItsOwnClaim(t *testing.T) {
 func TestRelay_givesTheSendLessTimeThanTheLease(t *testing.T) {
 	t.Parallel()
 	sender := &publisher{}
-	// The context of the turn stands for the lease: a send whose deadline falls
-	// inside this one is a send that ends while the row is still this replica's.
+	queue := queueWith(t)
+	// The context of the turn stands for the lease: a write whose deadline falls
+	// inside this one is a write that ends while the row is still this replica's.
 	// Both deadlines are read off contexts rather than off the clock, so the case
 	// asserts the window and not the instant the suite happened to run at.
 	holding, cancel := context.WithTimeout(context.Background(), lease)
 	defer cancel()
-	service := New(queueWith(t), sender, noSpan, frozenClock{}, quietLogger(), lease)
+	service := New(queue, sender, noSpan, frozenClock{}, quietLogger(), lease)
 	if err := service.Relay(holding, candidate(t)); err != nil {
 		t.Fatalf("Relay = %v, want nil", err)
 	}
@@ -50,11 +51,20 @@ func TestRelay_givesTheSendLessTimeThanTheLease(t *testing.T) {
 	if !ok {
 		t.Fatalf("deadline of the turn = %t, want the one the case set", ok)
 	}
-	if !sender.deadline.Before(leaseEnds) {
-		t.Fatalf("send deadline = %s, want it before the end of the lease at %s", sender.deadline, leaseEnds)
-	}
+	assertInsideTheLease(t, sender.deadline, leaseEnds, "send")
+	assertInsideTheLease(t, queue.confirmDeadline, leaseEnds, "confirmation")
 	if sender.ctxErr != nil {
 		t.Fatalf("context of the send = %v, want a live one", sender.ctxErr)
+	}
+}
+
+// assertInsideTheLease reads one of the two windows of the turn. Both are the
+// same fraction of the lease, and both exist so that this replica is never still
+// writing over a row the lease no longer covers.
+func assertInsideTheLease(t *testing.T, deadline, leaseEnds time.Time, what string) {
+	t.Helper()
+	if !deadline.After(time.Time{}) || !deadline.Before(leaseEnds) {
+		t.Fatalf("deadline of the %s = %s, want one before the end of the lease at %s", what, deadline, leaseEnds)
 	}
 }
 
@@ -350,18 +360,19 @@ func allowingLogger(into *bytes.Buffer) *slog.Logger {
 // queue is the publication queue in memory: it hands out one claimed row and
 // records which of the three ends of the turn was written.
 type queue struct {
-	claimed       storage.OutboxRow
-	claimErr      error
-	confirmErr    error
-	confirmCtxErr error
-	setBackErr    error
-	killErr       error
-	confirmed     string
-	rescheduled   bool
-	refused       bool
-	killed        bool
-	next          time.Time
-	claimedLease  time.Duration
+	claimed         storage.OutboxRow
+	claimErr        error
+	confirmErr      error
+	confirmCtxErr   error
+	confirmDeadline time.Time
+	setBackErr      error
+	killErr         error
+	confirmed       string
+	rescheduled     bool
+	refused         bool
+	killed          bool
+	next            time.Time
+	claimedLease    time.Duration
 }
 
 func (q *queue) Due(context.Context, int) ([]storage.OutboxCandidate, error) {
@@ -378,6 +389,7 @@ func (q *queue) Claim(_ context.Context, _ identity.EventID, lease time.Duration
 
 func (q *queue) Confirm(ctx context.Context, _ identity.EventID, token string, _ time.Time) error {
 	q.confirmCtxErr = ctx.Err()
+	q.confirmDeadline, _ = ctx.Deadline()
 	if q.confirmErr != nil {
 		return q.confirmErr
 	}

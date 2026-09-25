@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/aws/smithy-go"
 	awshttp "github.com/aws/smithy-go/transport/http"
 )
 
@@ -34,6 +35,11 @@ func TestPermanent_readsWhatMayCompleteLaterAsWorthRepeating(t *testing.T) {
 		"a throttled request":                 responseError(http.StatusTooManyRequests),
 		"an error of no known shape":          errors.New("connection reset by peer"),
 		"no error at all":                     nil,
+		// The three the status rule alone would read as a refusal: SNS answers
+		// each with a 400, and none of them is about the bytes that were sent.
+		"throttling the SDK names by code": carried(http.StatusBadRequest, &smithy.GenericAPIError{Code: "ThrottledException"}),
+		"throttling of the key":            carried(http.StatusBadRequest, &types.KMSThrottlingException{}),
+		"a request that timed out":         carried(http.StatusBadRequest, &smithy.GenericAPIError{Code: "RequestTimeout"}),
 	}
 	for name, err := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -56,8 +62,16 @@ func chained(err error) error {
 // responseError is the shape the SDK hands over when the API answered a status
 // and no modelled error came with it.
 func responseError(status int) error {
+	return carried(status, errors.New("the broker answered"))
+}
+
+// carried is that same shape with the refusal the API sent inside it, which is
+// how every coded and modelled error arrives: the status and the code reach the
+// classification together, and a case that handed over only one of the two
+// would pass over a rule that reads the other.
+func carried(status int, err error) error {
 	return &awshttp.ResponseError{
 		Response: &awshttp.Response{Response: &http.Response{StatusCode: status}},
-		Err:      errors.New("the broker answered"),
+		Err:      err,
 	}
 }
