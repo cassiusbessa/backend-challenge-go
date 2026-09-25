@@ -65,6 +65,45 @@ Saldo inicial positivo grava carteira, transação `OPENING` já `PROCESSED` e o
 
 A segunda carteira do mesmo jogador na mesma moeda responde 409, decidido pela unicidade do banco e não por consulta prévia. Carteira inexistente na URL responde 404. Entrada inválida responde 400 sem gravar linha. Todo corpo de erro é `application/problem+json` conforme a RFC 9457, e `failureCode` aparece em extensão só quando a recusa é de regra de negócio.
 
+## Rotas de aposta
+
+`POST /wagering/transactions` liquida a operação do provedor e `GET /wagering/transactions/{transactionId}` devolve o resultado gravado. As duas exigem token de provedor: o cliente interno recebe 403 nelas, e o provedor continua recebendo 403 nas rotas de carteira.
+
+Esta entrega aceita `BET`, `LOSS` e `WIN` sem operação citada. `REFUND`, `ROLLBACK` e qualquer corpo com `referenceExternalTransactionId` respondem 400 como entrada não aceita, sem gravar linha — a entrega da referência pendente troca essa recusa pela espera.
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=provider-a \
+  -d client_secret=provider-a-local | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+
+curl -i -X POST http://localhost:8090/wagering/transactions \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: key-0001' \
+  -d '{"providerId":"provider-a","externalTransactionId":"ext-0001",
+       "playerId":"3f8c4a2e-1b5d-4e7a-9c3f-2d6b8a1e5c40","walletId":"<id da carteira>",
+       "roundId":"round-0001","gameId":"crash","kind":"BET",
+       "money":{"amount":"25.00","currency":"BRL"}}'
+```
+
+O `providerId` do corpo não autoriza: vale o cliente do token, e um corpo declarando outro provedor responde 403 sem gravar linha. A chave de idempotência vem no cabeçalho `Idempotency-Key`; sem ela a resposta é 400 e nada é gravado.
+
+A primeira conclusão responde 201, com `Location` apontando o recurso criado e o saldo observado no commit. `BET` debita e grava o lançamento no mesmo commit da transação; `WIN` sem operação citada credita; `LOSS` termina `PROCESSED` com quantia zero, sem lançamento e sem mudar a versão da carteira.
+
+A mesma chave com o mesmo corpo responde 200 com `idempotentReplay: true` e o saldo observado na conclusão original — não o saldo atual. A mesma chave com outro corpo responde 422 `IDEMPOTENCY_CONFLICT`, e o mesmo `externalTransactionId` com outra chave responde 422 `DUPLICATE_EXTERNAL_TRANSACTION`. Nenhuma das duas grava segunda linha: quem decide a duplicidade é o índice único do banco, não uma consulta prévia que duas réplicas vencem ao mesmo tempo.
+
+`INSUFFICIENT_FUNDS`, `PLAYER_WALLET_MISMATCH` e `CURRENCY_MISMATCH` gravam a transação `REJECTED` com o token, sem lançamento e sem mexer no saldo. **A rejeição durável ocupa a chave de idempotência**: reenviar a mesma chave com o mesmo corpo devolve a mesma recusa, agora marcada como replay, e tentar de novo de verdade exige chave nova. `WALLET_NOT_FOUND`, `OPENING_NOT_ALLOWED` e `AMOUNT_NOT_ALLOWED_FOR_KIND` recusam sem gravar linha, porque a linha correspondente violaria as invariantes da tabela.
+
+Duas apostas simultâneas na mesma carteira se serializam pelo lock da linha: a segunda lê o saldo já commitado e, se não couber, sai com `INSUFFICIENT_FUNDS`. Carteiras diferentes não esperam uma pela outra.
+
+A consulta devolve o resultado gravado ao provedor dono:
+
+```bash
+curl -s http://localhost:8090/wagering/transactions/<transactionId> \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Ela responde 200 com estado, quantia, saldo observado quando houver e `failureCode` quando o estado é `REJECTED` — a leitura concluiu, então não é problem details. Transação de outro provedor responde 404 igual a uma inexistente: nem o corpo nem o status revelam que o registro existe.
+
 ## Broker
 
 Com o LocalStack saudável:

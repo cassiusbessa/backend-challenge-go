@@ -15,10 +15,13 @@ Este documento registra as decisões do desenho inteiro. Nem tudo está escrito 
 | Pool `pgx` compartilhado, unit of work em `READ COMMITTED`, repositórios de carteira, transação e lançamento | implementado |
 | Borda HTTP de erro em `application/problem+json`, com o mapa de status no adaptador | implementado |
 | Autorização por token do IdP nas rotas de carteira: `POST /wallets` e `GET /wallets/:walletId` | implementado |
-| Idempotência, lock pessimista, as cinco ações de aposta e as rotas de `/wagering/transactions` | decidido, não implementado |
-| Referência pendente, reversões | decidido, não implementado |
+| Idempotência persistente: chave com escopo no provedor, hash canônico do corpo de negócio, replay do resultado gravado e os dois conflitos decididos pelo índice único | implementado |
+| Lock pessimista da carteira com guarda de versão, e escrita perdida tratada como falha transitória | implementado |
+| `BET`, `LOSS` e `WIN` sem referência por HTTP, em `POST /wagering/transactions` e `GET /wagering/transactions/{transactionId}` | implementado |
+| Autorização das rotas de aposta pelo papel de provedor, com o `providerId` do corpo conferido contra o cliente do token | implementado |
+| `WIN` com referência, `REFUND`, `ROLLBACK`, `PENDING_REFERENCE`, TTL e worker da espera | decidido, não implementado |
 | Inbox, outbox, consumidor SQS, publisher SNS | decidido, não implementado |
-| Autorização das rotas de aposta, ledger paginado, reconciliação | decidido, não implementado |
+| Ledger paginado, reconciliação | decidido, não implementado |
 
 A ordem de entrega está em `openspec/changes/`. As regras que governam cada decisão estão em `.claude/rules/`.
 
