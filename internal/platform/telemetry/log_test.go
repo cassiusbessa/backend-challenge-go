@@ -66,6 +66,8 @@ func TestAllowed_answersOnlyForTheListedKeys(t *testing.T) {
 	cases := map[string]bool{
 		"walletId":      true,
 		"failureCode":   true,
+		"stack":         true,
+		"error":         true,
 		"authorization": false,
 		"amount":        false,
 	}
@@ -76,6 +78,26 @@ func TestAllowed_answersOnlyForTheListedKeys(t *testing.T) {
 				t.Fatalf("allowed(%q) = %v, want %v", key, got, want)
 			}
 		})
+	}
+}
+
+// The chain of a failure reaches the collector. It is the line that says which
+// operation could not be made and why, and a filter that dropped it would leave
+// the message alone to answer both.
+func TestAllow_keepsTheChainOfAFailure(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(Allow(slog.NewJSONHandler(&buf, nil)))
+	logger.Error("relay an outbox event",
+		slog.String("error", "publish event: acquire connection: context deadline exceeded"),
+		slog.String("body", `{"amount":"25.00"}`),
+	)
+	line := buf.String()
+	if !strings.Contains(line, "acquire connection") {
+		t.Fatalf("log = %s, want the chain of the failure in it", line)
+	}
+	if strings.Contains(line, "25.00") {
+		t.Fatalf("log = %s, want the body left out of it", line)
 	}
 }
 

@@ -50,6 +50,12 @@ var allowedKeys = map[string]struct{}{
 	// The stack of an infrastructure failure, captured once. A business
 	// rejection never carries one.
 	"stack": {},
+	// The chain of that same failure, which reads as the trail go-errors
+	// builds — "publish event: acquire connection: …". It is let through for
+	// the same reason as the stack, and under the same guarantee: go-errors
+	// keeps amount, balance, key, body and header out of the message, so what
+	// arrives here is operations and causes, never a value.
+	"error": {},
 }
 
 type allowHandler struct {
