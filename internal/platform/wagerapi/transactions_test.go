@@ -56,6 +56,66 @@ func assertFirstCompletion(t *testing.T, answered externalTransaction) {
 	}
 }
 
+// The operation that was accepted and is waiting answers a code of its own: the
+// row is durable and nothing moved, so it is neither the 201 of a completion nor
+// problem details, and there is no observed balance to answer.
+func TestSubmit_answers202PointingAtTheResourceOfAWaitingOperation(t *testing.T) {
+	t.Parallel()
+	use := &submitter{result: waiting(t)}
+	recorder := post(t, use, "provider-a", submission(nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status of an operation that waits = %d, want 202", recorder.Code)
+	}
+	if got := recorder.Header().Get("Location"); got != Route+"/"+transactionID {
+		t.Fatalf("location of the wait = %s, want %s", got, Route+"/"+transactionID)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type = %s, want application/json and not problem details", got)
+	}
+	assertWaitAnswered(t, recorder)
+}
+
+// The body of a wait names the status and carries nothing a decision would have
+// put there: no token, because no rule refused it, and no balance, because no
+// commit closed it.
+func assertWaitAnswered(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	answered := answerOf(t, recorder)
+	if answered.Status != "PENDING_REFERENCE" {
+		t.Fatalf("status = %s, want PENDING_REFERENCE", answered.Status)
+	}
+	if answered.FailureCode != "" {
+		t.Fatalf("failureCode = %s, want none: no rule refused the operation", answered.FailureCode)
+	}
+	assertNoBalance(t, recorder)
+}
+
+// assertNoBalance reads the body itself: an absent balance leaves the field out
+// altogether, which a decoded zero value cannot tell from a balance of zero.
+func assertNoBalance(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if strings.Contains(recorder.Body.String(), "observedBalance") {
+		t.Fatalf("body = %s, want no balance for an outcome that carries none", recorder.Body.String())
+	}
+}
+
+// The replay of a wait answers 200 like any other replay, marked, and still with
+// no balance behind it.
+func TestSubmit_answers200OnTheReplayOfAWait(t *testing.T) {
+	t.Parallel()
+	replayed := waiting(t)
+	replayed.IdempotentReplay = true
+	recorder := post(t, &submitter{result: replayed}, "provider-a", submission(nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status of the replayed wait = %d, want 200", recorder.Code)
+	}
+	answered := answerOf(t, recorder)
+	if answered.Status != "PENDING_REFERENCE" || !answered.IdempotentReplay {
+		t.Fatalf("answered = %+v, want the wait marked as a replay", answered)
+	}
+	assertNoBalance(t, recorder)
+}
+
 func TestSubmit_answers200OnTheMarkedReplay(t *testing.T) {
 	t.Parallel()
 	use := &submitter{result: settled(t, true)}
@@ -207,6 +267,29 @@ func TestRead_answers200WithTheTokenOfARejectedTransaction(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "observedBalance") {
 		t.Fatalf("body = %s, want no balance for a transaction that carries none", recorder.Body.String())
+	}
+}
+
+// A transaction still waiting reads back as itself: the read concluded, so it is
+// 200 with that status, it carries no balance, and it asks the read model for
+// nothing but the row.
+func TestRead_answers200WithTheWaitAndNoBalance(t *testing.T) {
+	t.Parallel()
+	rows := &reader{view: view(t, wager.PendingReference, "")}
+	recorder := get(t, rows, "provider-a", transactionID)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status of a waiting transaction = %d, want 200", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got == problem.MediaType {
+		t.Fatalf("content type of a waiting transaction = %s, want it not to be problem details", got)
+	}
+	answered := answerOf(t, recorder)
+	if answered.Status != "PENDING_REFERENCE" || answered.FailureCode != "" {
+		t.Fatalf("answered = %+v, want PENDING_REFERENCE with no token", answered)
+	}
+	assertNoBalance(t, recorder)
+	if rows.calls != 1 {
+		t.Fatalf("read model calls = %d, want the 1 read and nothing else", rows.calls)
 	}
 }
 
@@ -419,6 +502,20 @@ func settled(t *testing.T, replay bool) submitwager.Result {
 	}
 }
 
+// waiting is the outcome of an operation that was accepted and is waiting for
+// the one it cites: the row is durable and no commit closed it, so it carries no
+// balance.
+func waiting(t *testing.T) submitwager.Result {
+	t.Helper()
+	return submitwager.Result{
+		TransactionID: transactionOf(t),
+		Kind:          wager.KindWin,
+		Status:        wager.PendingReference,
+		ExternalID:    externalOf(t),
+		Amount:        amountOf(t, "50.00"),
+	}
+}
+
 func view(t *testing.T, status wager.Status, observed string) storage.TransactionView {
 	t.Helper()
 	found := storage.TransactionView{
@@ -529,6 +626,18 @@ func TestAnswer_pointsAtTheResourceOnlyOnTheFirstCompletion(t *testing.T) {
 	}
 	if got := replay.Header().Get("Location"); got != "" {
 		t.Fatalf("Location of a replay = %q, want none: the replay created nothing", got)
+	}
+}
+
+// statusOf is what tells the two first outcomes apart: the completion created the
+// resource and decided it, and the wait created it without deciding it.
+func TestStatusOf_tellsTheWaitApartFromTheCompletion(t *testing.T) {
+	t.Parallel()
+	if got := statusOf(settled(t, false)); got != http.StatusCreated {
+		t.Fatalf("statusOf a completion = %d, want 201", got)
+	}
+	if got := statusOf(waiting(t)); got != http.StatusAccepted {
+		t.Fatalf("statusOf an operation that waits = %d, want 202", got)
 	}
 }
 

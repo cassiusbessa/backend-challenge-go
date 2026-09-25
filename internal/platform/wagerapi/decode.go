@@ -45,16 +45,6 @@ func invalid(name string) error {
 	return refusedField{name: name, why: "is not valid"}
 }
 
-// notAccepted is input this delivery does not take yet. It is not a business
-// rejection: the answer carries no token and claims no rule refused the
-// operation.
-//
-// It exists to be removed by the delivery that brings the wait for a cited
-// operation, which is what the two reversals need.
-func notAccepted(name string) error {
-	return refusedField{name: name, why: "is not accepted by this delivery"}
-}
-
 // submitRequest is the body of POST /wagering/transactions. Money crosses the
 // contract as a decimal string of two places, never as a JSON number.
 type submitRequest struct {
@@ -69,10 +59,10 @@ type submitRequest struct {
 		Amount   string `json:"amount"`
 		Currency string `json:"currency"`
 	} `json:"money"`
-	// The reference stays raw so the border can tell an absent key from a present
-	// one. encoding/json leaves both a missing field and an explicit null as the
-	// zero value of a string or a pointer, and a present key is exactly what this
-	// delivery has to refuse.
+	// The reference stays raw so the border can tell an absent field from one that
+	// is there and empty. An operation citing none leaves the field out; one that
+	// cites another carries an identifier, and an empty or malformed value is
+	// refused rather than read as citing nothing.
 	ReferenceExternalTransactionID json.RawMessage `json:"referenceExternalTransactionId"`
 }
 
@@ -87,37 +77,22 @@ func decodeSubmit(w http.ResponseWriter, r *http.Request) (submitwager.Command, 
 	if err != nil {
 		return submitwager.Command{}, invalid(idempotencyHeader)
 	}
-	if err := body.accepted(); err != nil {
-		return submitwager.Command{}, err
-	}
 	return body.command(key)
-}
-
-// accepted refuses what this delivery does not settle: an operation citing
-// another one, which needs a wait nothing here can close, and the two reversals,
-// which never exist without that wait.
-func (b submitRequest) accepted() error {
-	if len(b.ReferenceExternalTransactionID) > 0 {
-		return notAccepted("referenceExternalTransactionId")
-	}
-	if b.Kind == wager.KindRefund.String() || b.Kind == wager.KindRollback.String() {
-		return notAccepted("kind")
-	}
-	return nil
 }
 
 func (b submitRequest) command(key identity.IdempotencyKey) (submitwager.Command, error) {
 	var parse fields
 	cmd := submitwager.Command{
-		ProviderID:     parse.provider(b.ProviderID),
-		ExternalID:     parse.external(b.ExternalTransactionID),
-		IdempotencyKey: key,
-		PlayerID:       parse.player(b.PlayerID),
-		WalletID:       parse.wallet(b.WalletID),
-		RoundID:        parse.round(b.RoundID),
-		GameID:         parse.game(b.GameID),
-		Kind:           parse.kind(b.Kind),
-		Amount:         parse.money(b.Money.Amount, b.Money.Currency),
+		ProviderID:          parse.provider(b.ProviderID),
+		ExternalID:          parse.external(b.ExternalTransactionID),
+		IdempotencyKey:      key,
+		PlayerID:            parse.player(b.PlayerID),
+		WalletID:            parse.wallet(b.WalletID),
+		RoundID:             parse.round(b.RoundID),
+		GameID:              parse.game(b.GameID),
+		Kind:                parse.kind(b.Kind),
+		Amount:              parse.money(b.Money.Amount, b.Money.Currency),
+		ReferenceExternalID: parse.reference(b.ReferenceExternalTransactionID),
 	}
 	if parse.err != nil {
 		return submitwager.Command{}, parse.err
@@ -185,6 +160,32 @@ func (f *fields) round(text string) identity.RoundID {
 func (f *fields) game(text string) identity.GameID {
 	parsed, err := identity.ParseGameID(text)
 	f.keep(err, "gameId")
+	return parsed
+}
+
+// referenceField is the one field of the body that may be absent altogether,
+// which is why its name is spelled once and read back twice.
+const referenceField = "referenceExternalTransactionId"
+
+// reference parses the operation the body cites, and answers the zero identifier
+// for a body that cites none.
+//
+// An absent field and an explicit null both mean citing nothing, which is what
+// go-idempotency says of a null: it does not enter the business at all. A field
+// that is there and is not an identifier is refused as invalid input, because a
+// body that meant to cite an operation and spelled it wrong must not settle as
+// though it cited none.
+func (f *fields) reference(raw json.RawMessage) identity.ExternalTransactionID {
+	if len(raw) == 0 || string(raw) == "null" {
+		return identity.ExternalTransactionID{}
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		f.keep(err, referenceField)
+		return identity.ExternalTransactionID{}
+	}
+	parsed, err := identity.ParseExternalTransactionID(text)
+	f.keep(err, referenceField)
 	return parsed
 }
 

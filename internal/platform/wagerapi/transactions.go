@@ -10,6 +10,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
@@ -55,9 +56,10 @@ type transactionResponse struct {
 	IdempotentReplay      bool         `json:"idempotentReplay,omitempty"`
 }
 
-// Submit serves POST /wagering/transactions. The operation ends PROCESSED or
-// REJECTED in one commit, and the first completion answers 201 pointing at the
-// resource while a replay answers 200.
+// Submit serves POST /wagering/transactions. The operation ends PROCESSED,
+// REJECTED or PENDING_REFERENCE in one commit: the first completion answers 201
+// pointing at the resource, one that is accepted and waits answers 202 pointing
+// at it too, and a replay of either answers 200.
 func Submit(submitter Submitter, reporter *Reporter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cmd, err := decodeSubmit(w, r)
@@ -130,8 +132,15 @@ func speaksFor(r *http.Request, declared identity.ProviderID) error {
 	return nil
 }
 
-// answer writes the outcome. The status describes the request and not the row: the
-// first completion created the resource, and a replay found it already there.
+// answer writes the outcome. The status describes the request and not the row:
+// the first completion created the resource, one that was accepted and is
+// waiting created it too without deciding it, and a replay found it already
+// there.
+//
+// The wait answers its own code rather than 201 with the status in the body:
+// stacking the two under one number would make the provider read the body to
+// learn whether money moved, and telling that apart is the whole point of a code
+// of its own.
 func answer(w http.ResponseWriter, settled submitwager.Result) {
 	body := settledResponse(settled)
 	if settled.IdempotentReplay {
@@ -139,7 +148,16 @@ func answer(w http.ResponseWriter, settled submitwager.Result) {
 		return
 	}
 	w.Header().Set("Location", Route+"/"+settled.TransactionID.String())
-	write(w, http.StatusCreated, body)
+	write(w, statusOf(settled), body)
+}
+
+// statusOf answers the code of a first outcome: the wait was accepted and not
+// completed, and no rule refused it, so it is neither 201 nor problem details.
+func statusOf(settled submitwager.Result) int {
+	if settled.Status == wager.PendingReference {
+		return http.StatusAccepted
+	}
+	return http.StatusCreated
 }
 
 func settledResponse(settled submitwager.Result) transactionResponse {

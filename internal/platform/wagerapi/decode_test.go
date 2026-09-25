@@ -130,43 +130,72 @@ func TestDecodeSubmit_refusesABodyItCannotRead(t *testing.T) {
 	}
 }
 
-// What cites another operation needs the wait, and the wait belongs to the next
-// delivery. The refusal is not a business rejection: no rule refused anything, so
-// the answer carries no token.
-func TestDecodeSubmit_refusesWhatThisDeliveryDoesNotAccept(t *testing.T) {
+// The three cases an earlier delivery refused as input it did not take now reach
+// the use case: the reversals and the operation that cites another are what the
+// wait was brought in for.
+func TestDecodeSubmit_takesTheReversalsAndTheOperationThatCitesAnother(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name  string
-		body  map[string]any
-		field string
+		name string
+		body map[string]any
+		kind wager.Kind
 	}{
-		{name: "a refund is refused", body: map[string]any{"kind": "REFUND"}, field: "kind"},
-		{name: "a rollback is refused", body: map[string]any{"kind": "ROLLBACK"}, field: "kind"},
 		{
-			name:  "a win citing a bet is refused",
-			body:  map[string]any{"kind": "WIN", "referenceExternalTransactionId": "bet-1"},
-			field: "referenceExternalTransactionId",
+			name: "a refund citing an operation is taken",
+			body: map[string]any{"kind": "REFUND", "referenceExternalTransactionId": "bet-1"},
+			kind: wager.KindRefund,
 		},
 		{
-			name:  "a win citing null is refused",
-			body:  map[string]any{"kind": "WIN", "referenceExternalTransactionId": nil},
-			field: "referenceExternalTransactionId",
+			name: "a rollback citing an operation is taken",
+			body: map[string]any{"kind": "ROLLBACK", "referenceExternalTransactionId": "bet-1"},
+			kind: wager.KindRollback,
 		},
 		{
-			name:  "a win citing the empty string is refused",
-			body:  map[string]any{"kind": "WIN", "referenceExternalTransactionId": ""},
-			field: "referenceExternalTransactionId",
+			name: "a win citing a bet is taken",
+			body: map[string]any{"kind": "WIN", "referenceExternalTransactionId": "bet-1"},
+			kind: wager.KindWin,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := decode(t, submission(tc.body), "key-1")
-			assertInvalidInput(t, err)
-			detail := detailOf(err)
-			if !strings.HasPrefix(detail, tc.field) || !strings.Contains(detail, "not accepted") {
-				t.Fatalf("detail = %q, want %s named as not accepted", detail, tc.field)
+			cmd, err := decode(t, submission(tc.body), "key-1")
+			if err != nil {
+				t.Fatalf("decodeSubmit of %s = %v, want nil", tc.name, err)
+			}
+			if cmd.Kind != tc.kind {
+				t.Fatalf("kind = %s, want %s", cmd.Kind, tc.kind)
+			}
+			if cmd.ReferenceExternalID.String() != "bet-1" {
+				t.Fatalf("cited operation = %s, want bet-1", cmd.ReferenceExternalID)
 			}
 		})
+	}
+}
+
+// An operation citing none carries the zero identifier, which is what the use
+// case reads as having nothing to wait for.
+func TestDecodeSubmit_leavesTheCitedOperationEmptyForABodyThatNamesNone(t *testing.T) {
+	t.Parallel()
+	cmd, err := decode(t, submission(map[string]any{"kind": "WIN"}), "key-1")
+	if err != nil {
+		t.Fatalf("decodeSubmit of a body citing none = %v, want nil", err)
+	}
+	if !cmd.ReferenceExternalID.IsZero() {
+		t.Fatalf("cited operation = %s, want none", cmd.ReferenceExternalID)
+	}
+}
+
+// The cited operation spelled wrong is invalid input: the answer carries no
+// token, because no rule refused anything and no row was written.
+func TestDecodeSubmit_refusesACitedOperationOutOfFormat(t *testing.T) {
+	t.Parallel()
+	for _, spelling := range []any{"", "   ", 42} {
+		body := submission(map[string]any{"kind": "WIN", "referenceExternalTransactionId": spelling})
+		_, err := decode(t, body, "key-1")
+		assertInvalidInput(t, err)
+		if got := detailOf(err); !strings.HasPrefix(got, "referenceExternalTransactionId") {
+			t.Fatalf("detail = %q, want the cited operation named", got)
+		}
 	}
 }
 
@@ -304,49 +333,59 @@ const (
 	transactionID = "33333333-3333-4333-8333-333333333333"
 )
 
-// accepted is the gate of this delivery, and the bet is what passes it.
-func TestAccepted_takesTheOperationThisDeliverySettles(t *testing.T) {
+// The reference names an operation the body cites. An absent field and an
+// explicit null both mean citing none, which is what go-idempotency says of a
+// null: it does not enter the business at all.
+func TestReference_readsAnAbsentFieldAndANullAsCitingNothing(t *testing.T) {
 	t.Parallel()
-	if err := acceptedBody().accepted(); err != nil {
-		t.Fatalf("accepted of a bet = %v, want nil", err)
-	}
-}
-
-// The two arms name different fields: a cited operation needs a wait nothing here
-// can close, and the two reversals never exist without that wait.
-func TestAccepted_refusesWhatThisDeliveryCannotSettle(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name  string
-		body  submitRequest
-		field string
-	}{
-		{name: "a citing operation is refused", body: citing(acceptedBody(), `"bet-1"`), field: "referenceExternalTransactionId"},
-		{name: "a refund is refused", body: kindOf(acceptedBody(), wager.KindRefund.String()), field: "kind"},
-		{name: "a rollback is refused", body: kindOf(acceptedBody(), wager.KindRollback.String()), field: "kind"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.body.accepted()
-			if err == nil {
-				t.Fatalf("accepted of %s = nil, want the field refused", tc.name)
-			}
-			if !strings.HasPrefix(err.Error(), "wagerapi: "+tc.field+" ") {
-				t.Fatalf("refusal of %s = %q, want %s named first", tc.name, err.Error(), tc.field)
-			}
-		})
-	}
-}
-
-// The reference is refused for being present at all, so an empty JSON string and
-// an explicit null are refused beside a real identifier.
-func TestAccepted_refusesACitedOperationHoweverItIsSpelled(t *testing.T) {
-	t.Parallel()
-	for _, spelling := range []string{`"bet-1"`, `""`, `null`} {
-		if err := citing(acceptedBody(), spelling).accepted(); err == nil {
-			t.Fatalf("accepted of a reference spelled %s = nil, want it refused", spelling)
+	for _, spelling := range []string{"", "null"} {
+		var parse fields
+		cited := parse.reference(rawOf(spelling))
+		if parse.err != nil {
+			t.Fatalf("reference spelled %q = %v, want nil", spelling, parse.err)
+		}
+		if !cited.IsZero() {
+			t.Fatalf("reference spelled %q = %s, want no cited operation", spelling, cited)
 		}
 	}
+}
+
+func TestReference_readsTheIdentifierOfTheOperationTheBodyCites(t *testing.T) {
+	t.Parallel()
+	var parse fields
+	cited := parse.reference(rawOf(`"bet-1"`))
+	if parse.err != nil {
+		t.Fatalf("reference = %v, want nil", parse.err)
+	}
+	if cited.String() != "bet-1" {
+		t.Fatalf("reference = %s, want bet-1", cited)
+	}
+}
+
+// A body that meant to cite an operation and spelled it wrong is refused, and
+// never settled as though it cited none.
+func TestReference_refusesAFieldThatIsThereAndIsNotAnIdentifier(t *testing.T) {
+	t.Parallel()
+	for _, spelling := range []string{`""`, `"   "`, `42`, `{}`, `[]`, `true`} {
+		var parse fields
+		cited := parse.reference(rawOf(spelling))
+		if parse.err == nil {
+			t.Fatalf("reference spelled %s = nil, want it refused", spelling)
+		}
+		if !strings.HasPrefix(parse.err.Error(), "wagerapi: referenceExternalTransactionId ") {
+			t.Fatalf("refusal of %s = %q, want the field named", spelling, parse.err.Error())
+		}
+		if !cited.IsZero() {
+			t.Fatalf("reference beside the refusal = %s, want the zero identifier", cited)
+		}
+	}
+}
+
+func rawOf(spelling string) json.RawMessage {
+	if spelling == "" {
+		return nil
+	}
+	return json.RawMessage(spelling)
 }
 
 // command builds the whole command before it looks at the refusal, so a body with
@@ -423,16 +462,6 @@ func acceptedBody() submitRequest {
 	if err := json.Unmarshal([]byte(submission(nil)), &body); err != nil {
 		panic(err)
 	}
-	return body
-}
-
-func citing(body submitRequest, spelling string) submitRequest {
-	body.ReferenceExternalTransactionID = json.RawMessage(spelling)
-	return body
-}
-
-func kindOf(body submitRequest, kind string) submitRequest {
-	body.Kind = kind
 	return body
 }
 
