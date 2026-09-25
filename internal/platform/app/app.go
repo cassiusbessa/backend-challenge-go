@@ -12,6 +12,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwallet"
+	"github.com/junglegaming/backend-challenge-go/internal/app/receivewager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/referencewait"
 	"github.com/junglegaming/backend-challenge-go/internal/app/relayoutbox"
 	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
@@ -29,6 +30,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/referenceworker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerapi"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerqueue"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/walletapi"
 )
 
@@ -75,6 +77,7 @@ func New(cfg config.Config, opts ...fx.Option) *fx.App {
 		fx.Provide(probe.NewPostgres),
 		fx.Provide(probe.NewQueue),
 		fx.Provide(broker.NewTopic),
+		fx.Provide(broker.NewIngress),
 		fx.Provide(func(p *probe.Postgres) httpapi.PostgresChecker { return p }),
 		fx.Provide(func(q *probe.Queue) httpapi.QueueChecker { return q }),
 		fx.Provide(httpapi.NewReady),
@@ -117,6 +120,10 @@ func business() []fx.Option {
 		fx.Provide(newGuard),
 		fx.Provide(newReporter),
 		fx.Provide(newWagerReporter),
+		fx.Provide(wagerqueue.NewMetrics),
+		fx.Provide(newQueueReporter),
+		fx.Provide(newReceiver),
+		fx.Provide(newConsumer),
 		fx.Invoke(register),
 	}
 }
@@ -144,6 +151,27 @@ func newRelay(cfg config.Config, queue storage.OutboxQueue, topic *broker.Topic,
 // publication queue and hands each candidate to the use case that relays it.
 func newOutboxRelay(cfg config.Config, queue storage.OutboxQueue, relay *relayoutbox.Service, pipe *telemetry.Pipeline) *outboxrelay.Relay {
 	return outboxrelay.New(queue, relay, pipe.Logger, cfg.OutboxInterval)
+}
+
+// newReceiver is the use case of the ingress: it authorizes the message by the
+// identity the broker observed and hands the operation to the submission, which
+// records the message in the very commit that moves the balance.
+func newReceiver(senders *authz.Senders, submitter *submitwager.Service) *receivewager.Service {
+	return receivewager.New(senders, submitter)
+}
+
+func newQueueReporter(pipe *telemetry.Pipeline, metrics *wagerqueue.Metrics) *wagerqueue.Reporter {
+	return wagerqueue.NewReporter(pipe.Logger, pipe.Tracer, metrics)
+}
+
+// newConsumer is the third background component of the process. It polls the
+// ingress queue and hands each message to the use case that decides it.
+func newConsumer(cfg config.Config, ingress *broker.Ingress, receiver *receivewager.Service, reporter *wagerqueue.Reporter) *wagerqueue.Consumer {
+	return wagerqueue.NewConsumer(ingress, receiver, reporter, wagerqueue.Timing{
+		Poll:       cfg.QueuePoll,
+		Visibility: cfg.QueueVisibility,
+		Timeout:    cfg.QueueTimeout,
+	})
 }
 
 func newOutboxQueue(pool *postgres.Pool) storage.OutboxQueue {
@@ -206,6 +234,8 @@ type wiring struct {
 	Reference     *referenceworker.Worker
 	Topic         *broker.Topic
 	Outbox        *outboxrelay.Relay
+	Ingress       *broker.Ingress
+	Consumer      *wagerqueue.Consumer
 }
 
 func register(lc fx.Lifecycle, parts wiring) {
@@ -214,12 +244,17 @@ func register(lc fx.Lifecycle, parts wiring) {
 	lc.Append(fx.Hook{OnStart: parts.Postgres.Open, OnStop: parts.Postgres.Close})
 	lc.Append(fx.Hook{OnStart: parts.Queue.Open})
 	lc.Append(fx.Hook{OnStart: parts.Topic.Open})
-	// The two background components come up after the pool and before the
+	lc.Append(fx.Hook{OnStart: parts.Ingress.Open})
+	// The three background components come up after the pool and before the
 	// listener, so the shutdown takes them in the other order: the port stops
-	// accepting first, and each of them stops claiming after it, all inside the
-	// same deadline.
+	// accepting first, and each of them stops claiming or fetching after it, all
+	// inside the same deadline.
+	//
+	// None of the three holds the startup back over an empty queue: a process that
+	// has nothing to do yet still has to answer the port.
 	lc.Append(fx.Hook{OnStart: parts.Reference.Start, OnStop: parts.Reference.Stop})
 	lc.Append(fx.Hook{OnStart: parts.Outbox.Start, OnStop: parts.Outbox.Stop})
+	lc.Append(fx.Hook{OnStart: parts.Consumer.Start, OnStop: parts.Consumer.Stop})
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			parts.Server.Use(routes(parts))

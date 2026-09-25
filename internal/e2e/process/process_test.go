@@ -176,6 +176,7 @@ func integrationEnv(queueURL string) map[string]string {
 		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
 		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
 		"SQS_QUEUE_URL":               queueURL,
+		"SQS_DLQ_URL":                 queueURL,
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  envOr("IDP_ISSUER", "http://localhost:8080/realms/junglegaming"),
 		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),

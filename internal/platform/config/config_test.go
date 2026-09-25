@@ -50,6 +50,7 @@ func TestLoadRejectsBlankRequiredValues(t *testing.T) {
 		"DATABASE_URL",
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
+		"SQS_DLQ_URL",
 		"SNS_ENDPOINT",
 		"SNS_TOPIC_ARN",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -174,6 +175,54 @@ func TestLoad_defaultsTheRelayWhenNobodySetIt(t *testing.T) {
 	}
 }
 
+// The three windows of the ingress consumer, with the defaults of the queue the
+// apply provisions: a wait of 20s under an invisibility of 30s.
+func TestLoad_defaultsTheIngressConsumerWhenNobodySetIt(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load with no queue knob set = %v, want nil", err)
+	}
+	if cfg.QueuePoll != 20*time.Second {
+		t.Fatalf("QueuePoll = %s, want 20s", cfg.QueuePoll)
+	}
+	if cfg.QueueVisibility != 30*time.Second {
+		t.Fatalf("QueueVisibility = %s, want 30s", cfg.QueueVisibility)
+	}
+	if cfg.QueueTimeout != 8*time.Second {
+		t.Fatalf("QueueTimeout = %s, want 8s", cfg.QueueTimeout)
+	}
+}
+
+// The relation between the three is an invariant and not three numbers: the
+// invisibility has to cover the wait of the poll plus the decision, and violating
+// it has a silent consequence — the fetch answers empty and still consumes a
+// delivery, so the message burns its budget without ever being processed.
+func TestLoad_defaultsTheIngressWindowsInTheOrderTheInvariantAsks(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load = %v, want nil", err)
+	}
+	if cfg.QueueVisibility <= cfg.QueuePoll {
+		t.Fatalf("visibility %s, want it past the poll of %s", cfg.QueueVisibility, cfg.QueuePoll)
+	}
+	if cfg.QueuePoll+cfg.QueueTimeout > cfg.QueueVisibility {
+		t.Fatalf("poll %s plus timeout %s, want them inside the visibility of %s", cfg.QueuePoll, cfg.QueueTimeout, cfg.QueueVisibility)
+	}
+}
+
+// The dead-letter queue is required beside the ingress one: a consumer that cannot
+// abandon a message would hold a poisoned one in front of its wallet forever.
+func TestLoad_refusesToComeUpWithoutTheAddressOfTheDeadLetterQueue(t *testing.T) {
+	t.Parallel()
+	_, err := Load(envWith("", "SQS_DLQ_URL"))
+	var missing MissingError
+	if !errors.As(err, &missing) || missing.Key != "SQS_DLQ_URL" {
+		t.Fatalf("Load with no dead-letter address = %v, want MissingError on SQS_DLQ_URL", err)
+	}
+}
+
 // The topic is what the relay publishes to, so a process without it cannot do
 // the work it would be coming up for.
 func TestLoad_refusesToComeUpWithoutTheAddressOfTheTopic(t *testing.T) {
@@ -231,6 +280,7 @@ func envWith(value, override string) func(string) string {
 		"DATABASE_URL":                "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable",
 		"SQS_ENDPOINT":                "http://localhost:4566",
 		"SQS_QUEUE_URL":               "http://localhost:4566/000000000000/wager-transactions.fifo",
+		"SQS_DLQ_URL":                 "http://localhost:4566/000000000000/wager-transactions-dlq.fifo",
 		"SNS_ENDPOINT":                "http://localhost:4566",
 		"SNS_TOPIC_ARN":               "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "localhost:4317",

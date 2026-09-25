@@ -8,20 +8,21 @@ import (
 )
 
 type Config struct {
-	HTTPAddr        string
-	DatabaseURL     string
-	SQSEndpoint     string
-	SQSQueueURL     string
-	SNSEndpoint     string
-	SNSTopicARN     string
-	OTELEndpoint    string
-	IDPIssuer       string
-	IDPJWKSURL      string
-	ClientsPath     string
-	SendersPath     string
-	SampleRatio     float64
-	ShutdownTimeout time.Duration
-	PPROFAddr       string
+	HTTPAddr         string
+	DatabaseURL      string
+	SQSEndpoint      string
+	SQSQueueURL      string
+	SQSDeadLetterURL string
+	SNSEndpoint      string
+	SNSTopicARN      string
+	OTELEndpoint     string
+	IDPIssuer        string
+	IDPJWKSURL       string
+	ClientsPath      string
+	SendersPath      string
+	SampleRatio      float64
+	ShutdownTimeout  time.Duration
+	PPROFAddr        string
 
 	// ReferenceTTL is how long an operation waits for the one it cites before the
 	// clock closes the wait. go-reference-wait fixes the default at fifteen
@@ -39,6 +40,18 @@ type Config struct {
 	// wait out the default.
 	OutboxInterval time.Duration
 	OutboxLease    time.Duration
+
+	// The three windows of the ingress consumer, and the relation between them is
+	// an invariant rather than three numbers: the invisibility has to cover the
+	// wait of the long poll plus the time it takes to decide a message, and the
+	// timeout of that decision sits below what is left.
+	//
+	// The defaults match the queue the apply provisions — a wait of 20s under an
+	// invisibility of 30s — and the integration suite shortens them so a case does
+	// not wait out the default.
+	QueuePoll       time.Duration
+	QueueVisibility time.Duration
+	QueueTimeout    time.Duration
 }
 
 type MissingError struct {
@@ -77,6 +90,7 @@ func (c Config) Validate() error {
 		"IDP_ISSUER":                  c.IDPIssuer,
 		"CLIENTS_PATH":                c.ClientsPath,
 		"QUEUE_SENDERS_PATH":          c.SendersPath,
+		"SQS_DLQ_URL":                 c.SQSDeadLetterURL,
 	})
 }
 
@@ -86,6 +100,7 @@ func read(getenv func(string) string) map[string]string {
 		"DATABASE_URL",
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
+		"SQS_DLQ_URL",
 		"SNS_ENDPOINT",
 		"SNS_TOPIC_ARN",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -100,6 +115,9 @@ func read(getenv func(string) string) map[string]string {
 		"REFERENCE_INTERVAL",
 		"OUTBOX_INTERVAL",
 		"OUTBOX_LEASE",
+		"QUEUE_POLL",
+		"QUEUE_VISIBILITY",
+		"QUEUE_TIMEOUT",
 	}
 	out := make(map[string]string, len(keys))
 	for _, key := range keys {
@@ -114,6 +132,10 @@ func require(raw map[string]string) error {
 		"DATABASE_URL",
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
+		// The dead-letter queue is required beside the ingress one: a consumer
+		// that cannot abandon a message would hold a poisoned one in front of its
+		// wallet forever.
+		"SQS_DLQ_URL",
 		"SNS_ENDPOINT",
 		"SNS_TOPIC_ARN",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -146,26 +168,31 @@ func build(raw map[string]string) (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		HTTPAddr:        raw["HTTP_ADDR"],
-		DatabaseURL:     raw["DATABASE_URL"],
-		SQSEndpoint:     raw["SQS_ENDPOINT"],
-		SQSQueueURL:     raw["SQS_QUEUE_URL"],
-		SNSEndpoint:     raw["SNS_ENDPOINT"],
-		SNSTopicARN:     raw["SNS_TOPIC_ARN"],
-		OTELEndpoint:    raw["OTEL_EXPORTER_OTLP_ENDPOINT"],
-		IDPIssuer:       raw["IDP_ISSUER"],
-		IDPJWKSURL:      parseJWKSURL(raw["IDP_JWKS_URL"], raw["IDP_ISSUER"]),
-		ClientsPath:     raw["CLIENTS_PATH"],
-		SendersPath:     raw["QUEUE_SENDERS_PATH"],
-		SampleRatio:     ratio,
-		ShutdownTimeout: timing.shutdown,
-		PPROFAddr:       parsePPROF(raw["PPROF_ADDR"]),
+		HTTPAddr:         raw["HTTP_ADDR"],
+		DatabaseURL:      raw["DATABASE_URL"],
+		SQSEndpoint:      raw["SQS_ENDPOINT"],
+		SQSQueueURL:      raw["SQS_QUEUE_URL"],
+		SQSDeadLetterURL: raw["SQS_DLQ_URL"],
+		SNSEndpoint:      raw["SNS_ENDPOINT"],
+		SNSTopicARN:      raw["SNS_TOPIC_ARN"],
+		OTELEndpoint:     raw["OTEL_EXPORTER_OTLP_ENDPOINT"],
+		IDPIssuer:        raw["IDP_ISSUER"],
+		IDPJWKSURL:       parseJWKSURL(raw["IDP_JWKS_URL"], raw["IDP_ISSUER"]),
+		ClientsPath:      raw["CLIENTS_PATH"],
+		SendersPath:      raw["QUEUE_SENDERS_PATH"],
+		SampleRatio:      ratio,
+		ShutdownTimeout:  timing.shutdown,
+		PPROFAddr:        parsePPROF(raw["PPROF_ADDR"]),
 
 		ReferenceTTL:      timing.referenceTTL,
 		ReferenceInterval: timing.referenceInterval,
 
 		OutboxInterval: timing.outboxInterval,
 		OutboxLease:    timing.outboxLease,
+
+		QueuePoll:       timing.queuePoll,
+		QueueVisibility: timing.queueVisibility,
+		QueueTimeout:    timing.queueTimeout,
 	}, nil
 }
 
@@ -177,6 +204,9 @@ type timing struct {
 	referenceInterval time.Duration
 	outboxInterval    time.Duration
 	outboxLease       time.Duration
+	queuePoll         time.Duration
+	queueVisibility   time.Duration
+	queueTimeout      time.Duration
 }
 
 // knob is one duration of the configuration: the key it is set by, the default
@@ -198,6 +228,9 @@ func durations(raw map[string]string) (timing, error) {
 		{"REFERENCE_INTERVAL", defaultReferenceInterval, &out.referenceInterval},
 		{"OUTBOX_INTERVAL", defaultOutboxInterval, &out.outboxInterval},
 		{"OUTBOX_LEASE", defaultOutboxLease, &out.outboxLease},
+		{"QUEUE_POLL", defaultQueuePoll, &out.queuePoll},
+		{"QUEUE_VISIBILITY", defaultQueueVisibility, &out.queueVisibility},
+		{"QUEUE_TIMEOUT", defaultQueueTimeout, &out.queueTimeout},
 	} {
 		value, err := parseDuration(each.key, raw[each.key], each.fallback)
 		if err != nil {
@@ -227,6 +260,18 @@ const (
 const (
 	defaultOutboxInterval = time.Second
 	defaultOutboxLease    = 30 * time.Second
+)
+
+// The defaults of the ingress consumer, which are the ones the queue the apply
+// provisions is configured with. The invisibility covers the wait of the poll plus
+// the ten seconds left, and the timeout of a decision sits below those ten: a
+// message that volunteered more work than that is given up on before its delivery
+// is spent, and the inbox is what keeps the delivery that follows from applying it
+// twice.
+const (
+	defaultQueuePoll       = 20 * time.Second
+	defaultQueueVisibility = 30 * time.Second
+	defaultQueueTimeout    = 8 * time.Second
 )
 
 // defaultShutdownTimeout is the deadline the process has to finish the request

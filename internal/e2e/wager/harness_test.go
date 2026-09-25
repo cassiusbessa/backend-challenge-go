@@ -123,6 +123,7 @@ func suiteEnv() map[string]string {
 		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
 		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
 		"SQS_QUEUE_URL":               envOr("SQS_QUEUE_URL", "http://localhost:4566/000000000000/wager-transactions.fifo"),
+		"SQS_DLQ_URL":                 envOr("SQS_DLQ_URL", "http://localhost:4566/000000000000/wager-transactions-dlq.fifo"),
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  issuer(),
 		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),

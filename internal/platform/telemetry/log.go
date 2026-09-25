@@ -47,6 +47,14 @@ var allowedKeys = map[string]struct{}{
 	"kind":          {},
 	"status":        {},
 	"failureCode":   {},
+	// The reason a message was abandoned to the dead-letter queue, from the
+	// closed set of tokens the ingress names, and the sender identity the broker
+	// registered on it. The second is let through because a map naming the wrong
+	// identity sends every legitimate message to the DLQ, and this line is the
+	// only place the true value can be read from. Neither is a credential: the
+	// identity is what the broker observed, not what the sender presented.
+	"reason": {},
+	"sender": {},
 	// The stack of an infrastructure failure, captured once. A business
 	// rejection never carries one.
 	"stack": {},

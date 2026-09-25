@@ -23,6 +23,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerqueue"
 )
 
 func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
@@ -120,6 +121,48 @@ func TestNew_comesUpWithTheRelayBesideTheReferenceWorker(t *testing.T) {
 	defer release()
 	if err := application.Stop(stopping); err != nil {
 		t.Fatalf("Stop = %v, want nil", err)
+	}
+}
+
+// The consumer comes up beside the other two background components and holds
+// nothing back: an ingress queue with nothing in it is the ordinary state of a
+// process that is keeping up, and the port has to answer whether or not there is
+// a message to decide.
+//
+// The case reaches the assembled consumer through the graph, so a constructor
+// this wiring forgot would fail here rather than at runtime.
+func TestNew_comesUpWithTheConsumerBesideTheOtherTwoBackgroundComponents(t *testing.T) {
+	t.Parallel()
+	cfg := loaded(t)
+	got := make(chan *wagerqueue.Consumer, 1)
+	application := New(cfg, fx.Invoke(func(consumer *wagerqueue.Consumer) { got <- consumer }))
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start over an empty ingress queue = %v, want nil", err)
+	}
+	if consumer := <-got; consumer == nil {
+		t.Fatalf("consumer in the graph = %v, want one beside the other two", consumer)
+	}
+	stopping, release := context.WithTimeout(context.Background(), stepWait)
+	defer release()
+	if err := application.Stop(stopping); err != nil {
+		t.Fatalf("Stop = %v, want nil", err)
+	}
+}
+
+// The ingress queue is what the consumer fetches from, so a configuration that
+// cannot name it stops the whole process rather than coming up with a consumer
+// that has nowhere to look.
+func TestNew_refusesToStartWithoutTheAddressOfTheIngressQueue(t *testing.T) {
+	t.Parallel()
+	cfg := loaded(t)
+	cfg.SQSQueueURL = ""
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	var missing config.MissingError
+	if err := New(cfg).Start(ctx); !errors.As(err, &missing) || missing.Key != "SQS_QUEUE_URL" {
+		t.Fatalf("Start with no ingress address = %v, want MissingError on SQS_QUEUE_URL", err)
 	}
 }
 
@@ -286,6 +329,7 @@ func testEnv(key string) string {
 		"DATABASE_URL":                "postgres://junglegaming:junglegaming@127.0.0.1:1/junglegaming?sslmode=disable",
 		"SQS_ENDPOINT":                "http://127.0.0.1:1",
 		"SQS_QUEUE_URL":               "http://127.0.0.1:1/000000000000/wager-transactions.fifo",
+		"SQS_DLQ_URL":                 "http://127.0.0.1:1/000000000000/wager-transactions-dlq.fifo",
 		"SNS_ENDPOINT":                "http://127.0.0.1:1",
 		"SNS_TOPIC_ARN":               "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "127.0.0.1:1",
