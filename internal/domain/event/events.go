@@ -1,12 +1,18 @@
 package event
 
 import (
+	"errors"
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 )
+
+// ErrMissingReference is a wait recorded over an operation that cites none. The
+// payload of WagerTransactionPendingReference names the cited operation and its
+// deadline, and neither has an empty form that a consumer could read.
+var ErrMissingReference = errors.New("event: pending reference cites no operation")
 
 // The four payloads. Each names the event it belongs to through eventType, so
 // the envelope constructor never takes a type from a caller.
@@ -133,8 +139,15 @@ func NewRejected(spec Spec, op *wager.Transaction) (Envelope, error) {
 }
 
 // NewPendingReference builds the event of a wait that was recorded.
+//
+// It answers [ErrMissingReference] for an operation that cites none: a wait
+// with nothing to wait for is not a wait, and the two fields of the payload
+// that name the cited operation have no empty form.
 func NewPendingReference(spec Spec, op *wager.Transaction) (Envelope, error) {
-	cited, _ := op.ReferenceExternalID()
+	cited, ok := op.ReferenceExternalID()
+	if !ok {
+		return Envelope{}, ErrMissingReference
+	}
 	return New(spec, PendingReferenceData{
 		TransactionID:                  op.ID().String(),
 		WalletID:                       op.WalletID().String(),

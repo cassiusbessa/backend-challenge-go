@@ -2,6 +2,7 @@ package event
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -62,6 +63,17 @@ func TestNewPendingReference_namesTheCitedOperationAndTheDeadline(t *testing.T) 
 	}
 	if data["referenceDeadlineAt"] != "2026-09-24T12:15:00Z" {
 		t.Fatalf("deadline = %v, want 2026-09-24T12:15:00Z", data["referenceDeadlineAt"])
+	}
+}
+
+// A wait with nothing to wait for is not a wait. Sending it would put an empty
+// identifier and a zero instant in two fields the consumer reads as the
+// operation being waited on.
+func TestNewPendingReference_refusesAnOperationThatCitesNone(t *testing.T) {
+	t.Parallel()
+	_, err := NewPendingReference(spec(t), external(t, betSpec(t)))
+	if !errors.Is(err, ErrMissingReference) {
+		t.Fatalf("NewPendingReference over an operation citing none = %v, want %v", err, ErrMissingReference)
 	}
 }
 
