@@ -187,7 +187,31 @@ func TestDuplicateOf_answersOnlyForTheThreeIndexesThisAdapterReadsBack(t *testin
 			}
 		})
 	}
-	if refusal := duplicateOf("wager_transactions_one_opening_per_wallet"); refusal != nil {
-		t.Fatalf("refusal of an index outside the three = %v, want nil", refusal)
+}
+
+// An index outside the three carries no answer: a token invented for it would
+// reach the provider with no rule behind it.
+func TestDuplicateOf_answersNothingForAnIndexOutsideTheThree(t *testing.T) {
+	t.Parallel()
+	for _, outside := range []string{"wager_transactions_one_opening_per_wallet", reversalUniqueIndex} {
+		if refusal := duplicateOf(outside); refusal != nil {
+			t.Fatalf("refusal of %s = %v, want nil: it is outside the three", outside, refusal)
+		}
+	}
+}
+
+// The index of one PROCESSED reversal per cited operation is deliberately not
+// mapped. ALREADY_REVERSED is decided by the query taken after the wallet is
+// locked, and a violation of the index is a failure: the transaction rolls back
+// whole and the resend meets that query answering the token.
+func TestWrap_leavesTheReversalIndexAsInfrastructureWithNoToken(t *testing.T) {
+	t.Parallel()
+	err := wrap("insert transaction", &pgconn.PgError{Code: uniqueViolation, ConstraintName: reversalUniqueIndex})
+	var rejection wager.Rejection
+	if errors.As(err, &rejection) {
+		t.Fatalf("wrap = %v with %s, want no failureCode for the reversal index", err, rejection.Code())
+	}
+	if frames := fault.Stack(err); len(frames) == 0 {
+		t.Fatalf("frames of the reversal index = %d, want the stack of an infrastructure failure", len(frames))
 	}
 }

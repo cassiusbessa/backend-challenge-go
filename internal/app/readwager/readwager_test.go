@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
@@ -90,6 +91,12 @@ func (r *rows) Transaction(_ context.Context, id identity.TransactionID, provide
 
 func (r *rows) Wallet(context.Context, identity.WalletID) (storage.WalletView, error) {
 	return storage.WalletView{}, storage.ErrWalletNotFound
+}
+
+// The queue of the waits is part of the same port and is never reached from a
+// read of one transaction.
+func (r *rows) DueWaits(context.Context, time.Time, int) ([]storage.WaitCandidate, error) {
+	return nil, nil
 }
 
 func (r *rows) TransactionByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {

@@ -19,7 +19,7 @@ const transactionColumns = `
 SELECT id, kind, player_id, wallet_id, amount_cents, currency,
        provider_id, external_id, idempotency_key, body_hash, round_id, game_id,
        reference_external_id, status, failure_code, observed_balance_cents,
-       next_attempt_at, reference_deadline_at, created_at, updated_at
+       next_attempt_at, reference_deadline_at, attempt_count, created_at, updated_at
   FROM wager_transactions`
 
 const selectTransactionByKey = transactionColumns + `
@@ -30,6 +30,24 @@ const selectTransactionByKey = transactionColumns + `
 // branch can tell the two apart.
 const selectTransactionOfProvider = transactionColumns + `
  WHERE id = $1 AND provider_id = $2`
+
+// The cited operation, found the way the provider names it. The provider is part
+// of the query for the same reason as above.
+const selectTransactionByExternalID = transactionColumns + `
+ WHERE provider_id = $1 AND external_id = $2`
+
+// The row of one wait, locked so that a single replica decides it. SKIP LOCKED
+// is what makes the replica that loses skip instead of queueing behind the one
+// that won, and the whole row comes back because the decision uses the state
+// re-read here and not the one the scan saw.
+// The schedule is part of the claim and not of a check afterwards: the scan takes
+// no lock, so two replicas reading the same instant both offer the same row, and
+// without this predicate the second one attempts a row whose next attempt the
+// first has just moved into the future.
+const lockWaitRow = transactionColumns + `
+ WHERE id = $1
+   AND next_attempt_at <= $2
+   FOR UPDATE SKIP LOCKED`
 
 // querier is what both scopes have in common. The open transaction and the pool
 // answer the same row for the same query.
@@ -59,6 +77,7 @@ type transactionRow struct {
 	observed    *int64
 	nextAttempt *time.Time
 	deadline    *time.Time
+	attempts    int64
 	createdAt   time.Time
 	updatedAt   time.Time
 }
@@ -69,9 +88,20 @@ func scanTransaction(ctx context.Context, from querier, query string, args ...an
 		&row.id, &row.kind, &row.playerID, &row.walletID, &row.cents, &row.currency,
 		&row.providerID, &row.externalID, &row.key, &row.bodyHash, &row.roundID, &row.gameID,
 		&row.reference, &row.status, &row.failure, &row.observed,
-		&row.nextAttempt, &row.deadline, &row.createdAt, &row.updatedAt,
+		&row.nextAttempt, &row.deadline, &row.attempts, &row.createdAt, &row.updatedAt,
 	)
 	return row, err
+}
+
+// wait is the row as the worker claims it: the state to rehydrate from, and the
+// attempts already made, which are the window of the backoff and never part of
+// the aggregate.
+func (r transactionRow) wait() (storage.Wait, error) {
+	state, err := r.state()
+	if err != nil {
+		return storage.Wait{}, err
+	}
+	return storage.Wait{State: state, Attempts: r.attempts}, nil
 }
 
 // state is the row as the aggregate rehydrates from it.

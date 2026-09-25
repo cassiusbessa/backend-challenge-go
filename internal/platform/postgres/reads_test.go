@@ -3,8 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
@@ -122,4 +125,128 @@ func keyIdentity(t *testing.T) identity.IdempotencyKey {
 		t.Fatalf("ParseIdempotencyKey = %v, want nil", err)
 	}
 	return parsed
+}
+
+// The scan of the queue answers nothing when the process has not opened the pool,
+// and it says so as the failure it is rather than an empty queue: a worker told
+// there is no work would sit idle over a queue it never read.
+func TestDueWaits_answersTheFailureWhenThePoolIsNotOpen(t *testing.T) {
+	t.Parallel()
+	due, err := NewReads(NewPool(config.Config{})).DueWaits(context.Background(), scanStamp(), 10)
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("DueWaits over a pool that is not open = %v, want %v", err, ErrPoolClosed)
+	}
+	if due != nil {
+		t.Fatalf("candidates beside the closed pool = %v, want none", due)
+	}
+}
+
+// Each row of the scan comes back as the pair the decision needs: the wait to
+// claim and the wallet to lock before it.
+func TestScanCandidates_answersThePairsTheDecisionLocksInOrder(t *testing.T) {
+	t.Parallel()
+	due, err := scanCandidates(&stubRows{rows: [][2]string{
+		{rowTransaction, rowWallet},
+		{"44444444-4444-4444-8444-444444444444", rowWallet},
+	}})
+	if err != nil {
+		t.Fatalf("scanCandidates = %v, want nil", err)
+	}
+	if len(due) != 2 {
+		t.Fatalf("candidates = %d, want 2", len(due))
+	}
+	if due[0].TransactionID.String() != rowTransaction || due[0].WalletID.String() != rowWallet {
+		t.Fatalf("first candidate = %+v, want the transaction and the wallet of the row", due[0])
+	}
+}
+
+// A walk that failed is not a short queue: answering the rows read so far would
+// have the worker take a partial scan for the whole of it.
+func TestScanCandidates_answersTheFailureOfTheWalkAndNoCandidates(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("connection reset by peer")
+	due, err := scanCandidates(&stubRows{rows: [][2]string{{rowTransaction, rowWallet}}, walk: broken})
+	if !errors.Is(err, broken) {
+		t.Fatalf("scanCandidates over a broken walk = %v, want %v", err, broken)
+	}
+	if due != nil {
+		t.Fatalf("candidates beside the broken walk = %v, want none", due)
+	}
+}
+
+// A row this context did not write is refused whole, with the operation named in
+// the chain: a wait whose identities do not parse is not a wait to decide.
+func TestScanCandidate_refusesARowOutsideTheVocabularyOfTheDomain(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		row  [2]string
+	}{
+		{name: "a transaction out of format is refused", row: [2]string{"not-a-uuid", rowWallet}},
+		{name: "a wallet out of format is refused", row: [2]string{rowTransaction, "not-a-uuid"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := scanCandidate(&stubRows{rows: [][2]string{tc.row}, at: -1})
+			if err == nil {
+				t.Fatalf("scanCandidate of %s = nil, want a refusal", tc.name)
+			}
+			if !strings.Contains(err.Error(), "read reference wait row") {
+				t.Fatalf("refusal of %s = %q, want the operation named in the chain", tc.name, err.Error())
+			}
+		})
+	}
+}
+
+// A row the driver could not hand over is the failure of the read, and the
+// operation is what places it: the walk and the scan of one row look alike in a
+// log line otherwise.
+func TestScanCandidate_answersTheFailureOfTheDriver(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("connection reset by peer")
+	_, err := scanCandidate(&stubRows{scan: broken, at: -1})
+	if !errors.Is(err, broken) {
+		t.Fatalf("scanCandidate over a broken row = %v, want %v", err, broken)
+	}
+	if !strings.Contains(err.Error(), "read reference wait row") {
+		t.Fatalf("failure of the driver = %q, want the operation named in the chain", err.Error())
+	}
+}
+
+// stubRows is the result set of one case: the pairs it hands over, and the
+// failures the driver may answer while it is walked or scanned.
+type stubRows struct {
+	pgx.Rows
+	rows [][2]string
+	at   int
+	scan error
+	walk error
+}
+
+func (r *stubRows) Next() bool {
+	if r.at >= len(r.rows) {
+		return false
+	}
+	r.at++
+	return r.at <= len(r.rows)
+}
+
+func (r *stubRows) Scan(into ...any) error {
+	if r.scan != nil {
+		return r.scan
+	}
+	row := r.rows[max(r.at-1, 0)]
+	*(into[0].(*string)) = row[0]
+	*(into[1].(*string)) = row[1]
+	return nil
+}
+
+func (r *stubRows) Err() error {
+	return r.walk
+}
+
+func (r *stubRows) Close() {}
+
+func scanStamp() time.Time {
+	return time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
 }

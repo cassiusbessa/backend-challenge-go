@@ -292,3 +292,37 @@ const (
 	rowProvider    = "provider-a"
 	rowHash        = "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"
 )
+
+// The claim answers the state to decide over and the attempts already made, which
+// are the window of the backoff and never part of the aggregate.
+func TestWait_answersTheStateBesideTheAttemptsTheRowCarries(t *testing.T) {
+	t.Parallel()
+	row := validRow()
+	row.attempts = 4
+	claimed, err := row.wait()
+	if err != nil {
+		t.Fatalf("wait = %v, want nil", err)
+	}
+	if claimed.Attempts != 4 {
+		t.Fatalf("attempts = %d, want the 4 the row carries", claimed.Attempts)
+	}
+	if claimed.State.ID.String() != rowTransaction {
+		t.Fatalf("state = %s, want the transaction of the row", claimed.State.ID)
+	}
+}
+
+// A row the domain cannot take back is refused whole: the wait beside the refusal
+// carries neither a state to decide over nor a count to schedule from.
+func TestWait_refusesARowWithAColumnOutsideItsVocabulary(t *testing.T) {
+	t.Parallel()
+	row := validRow()
+	row.attempts = 4
+	row.status = "PROCESSING"
+	claimed, err := row.wait()
+	if err == nil {
+		t.Fatalf("wait of an unknown status = %+v with no error, want a refusal", claimed)
+	}
+	if claimed.Attempts != 0 || !claimed.State.ID.IsZero() {
+		t.Fatalf("wait beside the refusal = %+v, want the zero value", claimed)
+	}
+}

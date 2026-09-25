@@ -106,6 +106,73 @@ type Transactions interface {
 	// ErrTransactionNotFound. The pair is the scope of the key: the same key from
 	// another provider is another operation.
 	ByKey(ctx context.Context, provider identity.ProviderID, key identity.IdempotencyKey) (wager.State, error)
+
+	// ByExternalID answers the operation that provider recorded under that
+	// external identifier, which is how a citing operation finds the one it
+	// cites, or ErrTransactionNotFound.
+	//
+	// The provider is part of the query and not of a check afterwards: an
+	// operation of somebody else answers the same absence as one that was never
+	// sent, so no branch can tell the two apart.
+	ByExternalID(ctx context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (wager.State, error)
+
+	// HasProcessedReversal reports whether the cited operation already carries a
+	// reversal that reached PROCESSED. A reversal that ended REJECTED or FAILED
+	// does not take the place, which is what the partial unique index of the
+	// schema says too.
+	//
+	// It is asked after the wallet is locked, so the reversal that arrives second
+	// only reaches it once the first has committed.
+	HasProcessedReversal(ctx context.Context, provider identity.ProviderID, cited identity.ExternalTransactionID) (bool, error)
+
+	// ClaimWait locks the row of one wait whose next attempt is due at that
+	// instant, so that a single replica decides it, and answers it re-read under
+	// that lock.
+	//
+	// A row another replica already holds is skipped rather than waited on, and
+	// answers ErrTransactionNotFound, the same as a row that is no longer there
+	// and as one whose next attempt has been moved past that instant: all three
+	// mean this replica does not decide this wait now, and it comes back as a
+	// candidate on the next scan.
+	ClaimWait(ctx context.Context, id identity.TransactionID, due time.Time) (Wait, error)
+
+	// EndWait writes the terminal decision over a row that was waiting, and
+	// answers ErrTransactionNotFound when no row in the wait matched.
+	//
+	// It never writes the deadline, which is written once on entry, and it never
+	// clears a field the destination status does not carry: a wait that ends
+	// PROCESSED carries a balance and no token, and one that ends REJECTED
+	// carries a token and no balance.
+	EndWait(ctx context.Context, decided *wager.Transaction) error
+
+	// RescheduleWait moves the next attempt of a wait that this attempt did not
+	// end, and answers ErrTransactionNotFound when no row in the wait matched.
+	//
+	// It writes the schedule and nothing else: the status is already the one it
+	// stays in, and the deadline was written on entry. Rescheduling is the second
+	// destination of one attempt, which is why the attempt is counted here too.
+	RescheduleWait(ctx context.Context, id identity.TransactionID, nextAttemptAt, at time.Time) error
+}
+
+// Wait is the row of one reference wait as the worker claims it.
+//
+// Attempts is the number of attempts already made on it. It is a metric and the
+// window of the backoff, never what ends the wait, and it is kept beside the
+// state instead of inside the aggregate for that reason.
+type Wait struct {
+	State    wager.State
+	Attempts int64
+}
+
+// WaitCandidate is one row the scan of the queue chose.
+//
+// The wallet comes from the scan because the decision locks the wallet before
+// the row of the wait, and that order cannot be taken from a row this replica
+// has not read yet. The wallet of a transaction never changes, so reading it
+// outside any lock answers the same identity the locked row carries.
+type WaitCandidate struct {
+	TransactionID identity.TransactionID
+	WalletID      identity.WalletID
 }
 
 // Entries writes the ledger row, which is only ever inserted.
@@ -162,4 +229,12 @@ type Reads interface {
 	// needs: the violation aborts its SQL transaction, so the winning row can
 	// only be read after the rollback.
 	TransactionByKey(ctx context.Context, provider identity.ProviderID, key identity.IdempotencyKey) (wager.State, error)
+
+	// DueWaits answers the waits whose scheduled instant has come, the earliest
+	// schedule first, up to the limit asked.
+	//
+	// It takes no lock and opens no transaction: it only chooses candidates, so a
+	// scan never stands between a submission and the wallet it moves. What the
+	// decision uses is the row re-read under the lock, not this one.
+	DueWaits(ctx context.Context, now time.Time, limit int) ([]WaitCandidate, error)
 }

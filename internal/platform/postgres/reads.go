@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
@@ -13,6 +15,19 @@ const selectWallet = `
 SELECT id, player_id, currency, balance_cents, version, created_at, updated_at
   FROM wallets
  WHERE id = $1`
+
+// The queue of the waits whose scheduled instant has come, earliest first.
+//
+// It takes no lock and opens no transaction: the scan only chooses candidates,
+// so it never stands between a submission and the wallet that submission moves.
+// The partial index of the second migration serves exactly this predicate, so
+// the terminal rows — the overwhelming majority of the table — are not walked.
+const selectDueWaits = `
+SELECT id, wallet_id
+  FROM wager_transactions
+ WHERE status = 'PENDING_REFERENCE' AND next_attempt_at <= $1
+ ORDER BY next_attempt_at
+ LIMIT $2`
 
 // Reads answers read models from the pool. A read opens no transaction and
 // writes nothing. The zero value is not used: NewReads is the only constructor.
@@ -71,6 +86,57 @@ func (r *Reads) TransactionByKey(ctx context.Context, provider identity.Provider
 		return wager.State{}, missingTransaction("read transaction by key", err)
 	}
 	return row.state()
+}
+
+// DueWaits answers the waits whose scheduled instant has come, the earliest
+// schedule first, up to the limit asked.
+//
+// The wallet travels with each candidate because the decision locks the wallet
+// before the row of the wait, and that order cannot be taken from a row the
+// caller has not read yet. The wallet of a transaction never changes, so reading
+// it here answers the same identity the locked row carries.
+func (r *Reads) DueWaits(ctx context.Context, now time.Time, limit int) ([]storage.WaitCandidate, error) {
+	pool, err := r.source.Querier()
+	if err != nil {
+		return nil, wrap("acquire pool", err)
+	}
+	rows, err := pool.Query(ctx, selectDueWaits, now, limit)
+	if err != nil {
+		return nil, wrap("scan reference waits", err)
+	}
+	defer rows.Close()
+	return scanCandidates(rows)
+}
+
+func scanCandidates(rows pgx.Rows) ([]storage.WaitCandidate, error) {
+	var due []storage.WaitCandidate
+	for rows.Next() {
+		candidate, err := scanCandidate(rows)
+		if err != nil {
+			return nil, err
+		}
+		due = append(due, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrap("scan reference waits", err)
+	}
+	return due, nil
+}
+
+func scanCandidate(rows pgx.Rows) (storage.WaitCandidate, error) {
+	var id, walletID string
+	if err := rows.Scan(&id, &walletID); err != nil {
+		return storage.WaitCandidate{}, wrap("read reference wait row", err)
+	}
+	var parse rowParser
+	candidate := storage.WaitCandidate{
+		TransactionID: parse.transactionID(id),
+		WalletID:      parse.walletID(walletID),
+	}
+	if parse.err != nil {
+		return storage.WaitCandidate{}, wrap("read reference wait row", parse.err)
+	}
+	return candidate, nil
 }
 
 // walletRow is the row as PostgreSQL hands it over, before the domain types

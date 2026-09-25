@@ -577,6 +577,28 @@ func (r transactionRows) ByKey(_ context.Context, provider identity.ProviderID, 
 	return found, nil
 }
 
+// The five ports of the reference wait are part of the same repository and are
+// not reached from a submission yet: nothing here cites another operation.
+func (r transactionRows) ByExternalID(context.Context, identity.ProviderID, identity.ExternalTransactionID) (wager.State, error) {
+	return wager.State{}, storage.ErrTransactionNotFound
+}
+
+func (r transactionRows) HasProcessedReversal(context.Context, identity.ProviderID, identity.ExternalTransactionID) (bool, error) {
+	return false, nil
+}
+
+func (r transactionRows) ClaimWait(context.Context, identity.TransactionID, time.Time) (storage.Wait, error) {
+	return storage.Wait{}, storage.ErrTransactionNotFound
+}
+
+func (r transactionRows) EndWait(context.Context, *wager.Transaction) error {
+	return storage.ErrTransactionNotFound
+}
+
+func (r transactionRows) RescheduleWait(context.Context, identity.TransactionID, time.Time, time.Time) error {
+	return storage.ErrTransactionNotFound
+}
+
 type entryRows struct {
 	book *book
 }
@@ -594,6 +616,12 @@ func (b *book) Wallet(context.Context, identity.WalletID) (storage.WalletView, e
 
 func (b *book) Transaction(context.Context, identity.TransactionID, identity.ProviderID) (storage.TransactionView, error) {
 	return storage.TransactionView{}, storage.ErrTransactionNotFound
+}
+
+// The queue of the waits is part of the same port and is never reached from a
+// submission: what scans it is the worker.
+func (b *book) DueWaits(context.Context, time.Time, int) ([]storage.WaitCandidate, error) {
+	return nil, nil
 }
 
 func (b *book) TransactionByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {

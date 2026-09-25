@@ -26,6 +26,20 @@ const (
 	keyUniqueIndex = "wager_transactions_one_per_provider_and_key"
 	// externalUniqueIndex is one transaction per provider and external id.
 	externalUniqueIndex = "wager_transactions_one_per_provider_and_external_id"
+
+	// reversalUniqueIndex is one PROCESSED reversal per cited operation. It is
+	// named here to be left out of duplicateOf on purpose, and the name is what
+	// makes that decision visible instead of absent.
+	//
+	// What decides ALREADY_REVERSED is the query taken after the wallet is
+	// locked, which the second reversal reaches only once the first has
+	// committed. The index behind it stays as an invariant of the database: a
+	// violation is infrastructure, the transaction rolls back whole, and the
+	// resend of the provider meets that query answering the token correctly.
+	// Mapping it would ask for a rejection to be written inside a transaction the
+	// violation already aborted, which would need a second transaction that can
+	// itself fail and leave nothing recorded.
+	reversalUniqueIndex = "wager_transactions_one_processed_reversal_per_reference"
 )
 
 // wrap is the boundary of this package: it names the operation and decides the

@@ -249,6 +249,28 @@ type transactionRows struct {
 
 // ByKey answers no row: an opening carries no idempotency key, so nothing in this
 // use case looks one up.
+// The three ports of the reference wait are part of the same repository and are
+// never reached from an opening: an OPENING cites no operation.
+func (r transactionRows) ByExternalID(context.Context, identity.ProviderID, identity.ExternalTransactionID) (wager.State, error) {
+	return wager.State{}, storage.ErrTransactionNotFound
+}
+
+func (r transactionRows) HasProcessedReversal(context.Context, identity.ProviderID, identity.ExternalTransactionID) (bool, error) {
+	return false, nil
+}
+
+func (r transactionRows) ClaimWait(context.Context, identity.TransactionID, time.Time) (storage.Wait, error) {
+	return storage.Wait{}, storage.ErrTransactionNotFound
+}
+
+func (r transactionRows) EndWait(context.Context, *wager.Transaction) error {
+	return storage.ErrTransactionNotFound
+}
+
+func (r transactionRows) RescheduleWait(context.Context, identity.TransactionID, time.Time, time.Time) error {
+	return storage.ErrTransactionNotFound
+}
+
 func (r transactionRows) ByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {
 	return wager.State{}, storage.ErrTransactionNotFound
 }
