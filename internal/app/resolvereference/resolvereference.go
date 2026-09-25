@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wallet"
 )
@@ -41,9 +43,11 @@ type Clock interface {
 	Now() time.Time
 }
 
-// Minter answers the identity of the entry a resumed operation writes.
+// Minter answers the identities of the entry a resumed operation writes and of
+// the events the commit that ends the wait emits.
 type Minter interface {
 	EntryID() (identity.LedgerEntryID, error)
+	EventID() (identity.EventID, error)
 }
 
 // Schedule answers when a wait that this attempt did not end is tried again.
@@ -179,7 +183,31 @@ func (s *Service) attempt(ctx context.Context, tx storage.Tx, claimed storage.Wa
 	if err != nil {
 		return err
 	}
-	return s.run(ctx, tx, attempt{waiting: waiting, owner: owner, claimed: claimed, readVersion: state.Version, now: now})
+	outcome, balance, err := s.eventIDs()
+	if err != nil {
+		return err
+	}
+	return s.run(ctx, tx, attempt{
+		waiting:     waiting,
+		owner:       owner,
+		claimed:     claimed,
+		readVersion: state.Version,
+		now:         now,
+		outcome:     outcome,
+		balance:     balance,
+	})
+}
+
+func (s *Service) eventIDs() (identity.EventID, identity.EventID, error) {
+	outcome, err := s.minter.EventID()
+	if err != nil {
+		return identity.EventID{}, identity.EventID{}, err
+	}
+	balance, err := s.minter.EventID()
+	if err != nil {
+		return identity.EventID{}, identity.EventID{}, err
+	}
+	return outcome, balance, nil
 }
 
 // attempt is one wait as this turn sees it: the transaction, the wallet it is
@@ -191,6 +219,24 @@ type attempt struct {
 	claimed     storage.Wait
 	readVersion int64
 	now         time.Time
+
+	// The identities of the events this attempt may emit. An attempt that only
+	// moves the schedule ends the turn without using either.
+	outcome identity.EventID
+	balance identity.EventID
+}
+
+// emitted is the commit this attempt closed, as the domain reads it. Entry is
+// the zero value and version is zero when the wait ended without moving money.
+func (a attempt) emitted(entry ledger.Entry, version int64) event.Commit {
+	return event.Commit{
+		OutcomeID:     a.outcome,
+		BalanceID:     a.balance,
+		Transaction:   a.waiting,
+		Entry:         entry,
+		WalletVersion: version,
+		At:            a.now,
+	}
 }
 
 func (s *Service) run(ctx context.Context, tx storage.Tx, turn attempt) error {
@@ -308,7 +354,10 @@ func (s *Service) close(ctx context.Context, tx storage.Tx, turn attempt, code w
 	if err := turn.waiting.Reject(code, at); err != nil {
 		return err
 	}
-	return tx.Transactions().EndWait(ctx, turn.waiting)
+	if err := tx.Transactions().EndWait(ctx, turn.waiting); err != nil {
+		return err
+	}
+	return storage.Record(ctx, tx, turn.emitted(ledger.Entry{}, 0))
 }
 
 // resume carries out the operation the wait was for: the credit of the WIN or
@@ -330,5 +379,8 @@ func (s *Service) resume(ctx context.Context, tx storage.Tx, turn attempt, decis
 	if err := tx.Transactions().EndWait(ctx, turn.waiting); err != nil {
 		return err
 	}
-	return tx.Entries().Insert(ctx, entry)
+	if err := tx.Entries().Insert(ctx, entry); err != nil {
+		return err
+	}
+	return storage.Record(ctx, tx, turn.emitted(entry, decision.Version()))
 }

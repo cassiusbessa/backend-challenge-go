@@ -27,6 +27,10 @@ func (UUIDv7) EntryID() (identity.LedgerEntryID, error) {
 	return identity.ParseLedgerEntryID(next())
 }
 
+func (UUIDv7) EventID() (identity.EventID, error) {
+	return identity.ParseEventID(next())
+}
+
 func next() string {
 	return uuid.NewV7().String()
 }

@@ -97,3 +97,23 @@ func filterAttrs(attrs []slog.Attr) []slog.Attr {
 func (h allowHandler) WithGroup(string) slog.Handler {
 	return h
 }
+
+// correlationKey is the context key the correlation of one operation travels
+// under. It is a type of its own so that no other package can collide with it.
+type correlationKey struct{}
+
+// WithCorrelation carries the correlation of one operation down the call. The
+// border decides it once — from the header of the request or from the trace —
+// and everything the operation writes reads it back from here instead of
+// deciding it again.
+func WithCorrelation(ctx context.Context, correlation string) context.Context {
+	return context.WithValue(ctx, correlationKey{}, correlation)
+}
+
+// Correlation answers the correlation carried by the context, or the empty
+// string when nothing put one there. The absence is not a failure: work that
+// no border started has no request to correlate with.
+func Correlation(ctx context.Context) string {
+	correlation, _ := ctx.Value(correlationKey{}).(string)
+	return correlation
+}

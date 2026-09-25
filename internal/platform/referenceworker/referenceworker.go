@@ -16,6 +16,7 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // batch is how many waits one scan takes. It bounds the work of a single turn
@@ -134,7 +135,12 @@ func (w *Worker) turn(ctx context.Context) {
 
 // decide hands one candidate to the use case and is the one place a failure of
 // it is logged: whoever decides the outcome logs it, and logs it once.
+//
+// The turn has no request behind it, so what correlates its lines and the events
+// its commit writes is the wait it decides — the same choice go-observability
+// makes for a message with no correlation of its own.
 func (w *Worker) decide(ctx context.Context, candidate storage.WaitCandidate) {
+	ctx = telemetry.WithCorrelation(ctx, candidate.TransactionID.String())
 	if err := w.resolver.Resolve(ctx, candidate); err != nil {
 		w.failed(ctx, "resolve a pending reference", err,
 			slog.String("transactionId", candidate.TransactionID.String()),

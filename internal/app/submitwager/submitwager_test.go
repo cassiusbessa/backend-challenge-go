@@ -10,6 +10,7 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/bodyhash"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
@@ -168,6 +169,65 @@ func TestDecisionOf_refusesAKindThisUseCaseDoesNotSettle(t *testing.T) {
 	job := internalOpening(t, owner)
 	if _, err := decisionOf(owner, job, wager.Reference{}); !errors.Is(err, ErrKindNotAccepted) {
 		t.Fatalf("decisionOf = %v, want %v", err, ErrKindNotAccepted)
+	}
+}
+
+func TestSubmit_recordsTheOutcomeAndTheBalanceOfASettledBet(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	submit(t, book, commandOf(t, wager.KindBet, "25.00"))
+	assertEvents(t, book, event.TypeProcessed, event.TypeBalanceChanged)
+}
+
+func TestSubmit_recordsOnlyTheOutcomeOfALossAndOfARejection(t *testing.T) {
+	t.Parallel()
+	settled := bookWith(t, "975.00")
+	submit(t, settled, commandOf(t, wager.KindLoss, "0.00"))
+	assertEvents(t, settled, event.TypeProcessed)
+
+	refused := bookWith(t, "10.00")
+	if _, err := service(t, refused).Submit(context.Background(), commandOf(t, wager.KindBet, "25.00")); err == nil {
+		t.Fatalf("Submit of a bet over 10.00 = nil, want INSUFFICIENT_FUNDS")
+	}
+	assertEvents(t, refused, event.TypeRejected)
+}
+
+func TestSubmit_recordsOnlyTheEventOfTheWaitWhenTheCitedOperationIsMissing(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, "1000.00")
+	cmd := commandOf(t, wager.KindWin, "50.00")
+	cmd.ReferenceExternalID = citedExternalOf(t)
+	submit(t, book, cmd)
+	assertEvents(t, book, event.TypePendingReference)
+}
+
+func TestSubmit_recordsNoEventForAReplayOrAConflict(t *testing.T) {
+	t.Parallel()
+	replayed := bookWith(t, "500.00")
+	cmd := commandOf(t, wager.KindBet, "25.00")
+	replayed.keep(t, cmd, processedState(t, cmd))
+	submit(t, replayed, cmd)
+	assertEvents(t, replayed)
+
+	conflicted := bookWith(t, "1000.00")
+	other := processedState(t, cmd)
+	other.BodyHash = "another hash"
+	conflicted.keep(t, cmd, other)
+	if _, err := service(t, conflicted).Submit(context.Background(), cmd); err == nil {
+		t.Fatalf("Submit of another body under the same key = nil, want IDEMPOTENCY_CONFLICT")
+	}
+	assertEvents(t, conflicted)
+}
+
+func assertEvents(t *testing.T, ledgerBook *book, want ...event.Type) {
+	t.Helper()
+	if len(ledgerBook.events) != len(want) {
+		t.Fatalf("events recorded = %d, want %d", len(ledgerBook.events), len(want))
+	}
+	for index, expected := range want {
+		if ledgerBook.events[index].Type() != expected {
+			t.Fatalf("event %d = %s, want %s", index, ledgerBook.events[index].Type(), expected)
+		}
 	}
 }
 
@@ -481,6 +541,7 @@ type book struct {
 	stored   map[string]wager.State
 	staged   []*wager.Transaction
 	entries  []ledger.Entry
+	events   []event.Envelope
 	balances []balanceWrite
 
 	commits   int
@@ -528,6 +589,7 @@ func (b *book) Within(_ context.Context, work func(storage.Tx) error) error {
 		b.staged = nil
 		b.entries = nil
 		b.balances = nil
+		b.events = nil
 		return err
 	}
 	b.commits++
@@ -579,6 +641,19 @@ func (b *book) Transactions() storage.Transactions {
 
 func (b *book) Entries() storage.Entries {
 	return entryRows{book: b}
+}
+
+func (b *book) Outbox() storage.Outbox {
+	return outboxRows{book: b}
+}
+
+type outboxRows struct {
+	book *book
+}
+
+func (r outboxRows) Insert(_ context.Context, envelope event.Envelope) error {
+	r.book.events = append(r.book.events, envelope)
+	return nil
 }
 
 type walletRows struct {
@@ -834,22 +909,45 @@ func (frozenClock) Now() time.Time {
 	return frozen
 }
 
+// minter hands out the fixed identities of one arrival. The events come out in
+// order, so a case can name which row carries which identifier.
 type minter struct {
 	transaction identity.TransactionID
 	entry       identity.LedgerEntryID
+	events      []identity.EventID
+	minted      int
 }
 
-func (m minter) TransactionID() (identity.TransactionID, error) {
+func (m *minter) TransactionID() (identity.TransactionID, error) {
 	return m.transaction, nil
 }
 
-func (m minter) EntryID() (identity.LedgerEntryID, error) {
+func (m *minter) EntryID() (identity.LedgerEntryID, error) {
 	return m.entry, nil
 }
 
-func fixedMinter(t *testing.T) minter {
+func (m *minter) EventID() (identity.EventID, error) {
+	minted := m.events[m.minted]
+	m.minted++
+	return minted, nil
+}
+
+func fixedMinter(t *testing.T) *minter {
 	t.Helper()
-	return minter{transaction: transactionOf(t), entry: entryOf(t)}
+	return &minter{
+		transaction: transactionOf(t),
+		entry:       entryOf(t),
+		events:      []identity.EventID{eventOf(t, "55555555-5555-4555-8555-555555555555"), eventOf(t, "66666666-6666-4666-8666-666666666666")},
+	}
+}
+
+func eventOf(t *testing.T, text string) identity.EventID {
+	t.Helper()
+	id, err := identity.ParseEventID(text)
+	if err != nil {
+		t.Fatalf("ParseEventID = %v, want nil", err)
+	}
+	return id
 }
 
 type brokenMinter struct {
@@ -862,6 +960,10 @@ func (m brokenMinter) TransactionID() (identity.TransactionID, error) {
 
 func (m brokenMinter) EntryID() (identity.LedgerEntryID, error) {
 	return identity.LedgerEntryID{}, m.err
+}
+
+func (m brokenMinter) EventID() (identity.EventID, error) {
+	return identity.EventID{}, m.err
 }
 
 func moneyOf(t *testing.T, amount, currency string) money.Money {

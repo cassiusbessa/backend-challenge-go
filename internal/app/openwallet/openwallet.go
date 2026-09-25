@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
@@ -25,6 +26,7 @@ type Minter interface {
 	WalletID() (identity.WalletID, error)
 	TransactionID() (identity.TransactionID, error)
 	EntryID() (identity.LedgerEntryID, error)
+	EventID() (identity.EventID, error)
 }
 
 // Command is the opening asked for. The currency is the one of the initial
@@ -83,7 +85,7 @@ func (s *Service) open(ctx context.Context, cmd Command) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := s.record(ctx, opened, movement, at); err != nil {
+	if err := s.record(ctx, opened, movement, minted, at); err != nil {
 		return Result{}, err
 	}
 	return resultOf(opened, movement), nil
@@ -101,20 +103,33 @@ func resultOf(opened *wallet.Wallet, movement wallet.Result) Result {
 // record writes everything in one commit, wallet first and transaction after,
 // which is the order go-wallet-concurrency fixes and the order the ledger
 // foreign key needs.
-func (s *Service) record(ctx context.Context, opened *wallet.Wallet, movement wallet.Result, at time.Time) error {
+func (s *Service) record(ctx context.Context, opened *wallet.Wallet, movement wallet.Result, minted identities, at time.Time) error {
 	return s.uow.Within(ctx, func(tx storage.Tx) error {
 		if err := tx.Wallets().Insert(ctx, opened); err != nil {
 			return err
 		}
 		entry, moved := movement.Entry()
 		if !moved {
+			// An opening at zero records the wallet alone: it writes no
+			// transaction and moves no balance, so it emits no event either.
 			return nil
 		}
-		return recordOpening(ctx, tx, opened, entry, at)
+		opening, err := recordOpening(ctx, tx, opened, entry, at)
+		if err != nil {
+			return err
+		}
+		return storage.Record(ctx, tx, event.Commit{
+			OutcomeID:     minted.outcome,
+			BalanceID:     minted.balance,
+			Transaction:   opening,
+			Entry:         entry,
+			WalletVersion: movement.Version(),
+			At:            at,
+		})
 	})
 }
 
-func recordOpening(ctx context.Context, tx storage.Tx, opened *wallet.Wallet, entry ledger.Entry, at time.Time) error {
+func recordOpening(ctx context.Context, tx storage.Tx, opened *wallet.Wallet, entry ledger.Entry, at time.Time) (*wager.Transaction, error) {
 	opening, err := wager.NewOpening(wager.OpeningSpec{
 		ID:       entry.TransactionID(),
 		PlayerID: opened.PlayerID(),
@@ -123,23 +138,29 @@ func recordOpening(ctx context.Context, tx storage.Tx, opened *wallet.Wallet, en
 		At:       at,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := opening.Process(entry.BalanceAfter(), at); err != nil {
-		return err
+		return nil, err
 	}
 	if err := tx.Transactions().Insert(ctx, opening); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Entries().Insert(ctx, entry)
+	if err := tx.Entries().Insert(ctx, entry); err != nil {
+		return nil, err
+	}
+	return opening, nil
 }
 
-// identities is the set one opening needs. The transaction and the entry are
-// minted even for an opening at zero, which simply does not use them.
+// identities is the set one opening needs. The transaction, the entry and the
+// two events are minted even for an opening at zero, which simply does not use
+// them.
 type identities struct {
 	wallet      identity.WalletID
 	transaction identity.TransactionID
 	entry       identity.LedgerEntryID
+	outcome     identity.EventID
+	balance     identity.EventID
 }
 
 func (s *Service) identities() (identities, error) {
@@ -155,5 +176,21 @@ func (s *Service) identities() (identities, error) {
 	if err != nil {
 		return identities{}, err
 	}
-	return identities{wallet: walletID, transaction: transactionID, entry: entryID}, nil
+	outcome, balance, err := s.eventIDs()
+	if err != nil {
+		return identities{}, err
+	}
+	return identities{wallet: walletID, transaction: transactionID, entry: entryID, outcome: outcome, balance: balance}, nil
+}
+
+func (s *Service) eventIDs() (identity.EventID, identity.EventID, error) {
+	outcome, err := s.minter.EventID()
+	if err != nil {
+		return identity.EventID{}, identity.EventID{}, err
+	}
+	balance, err := s.minter.EventID()
+	if err != nil {
+		return identity.EventID{}, identity.EventID{}, err
+	}
+	return outcome, balance, nil
 }

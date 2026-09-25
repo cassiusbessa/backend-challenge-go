@@ -9,6 +9,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
@@ -78,6 +79,7 @@ type Tx interface {
 	Wallets() Wallets
 	Transactions() Transactions
 	Entries() Entries
+	Outbox() Outbox
 }
 
 // Wallets reads the wallet row for writing and writes it.
@@ -178,6 +180,19 @@ type WaitCandidate struct {
 // Entries writes the ledger row, which is only ever inserted.
 type Entries interface {
 	Insert(ctx context.Context, entry ledger.Entry) error
+}
+
+// Outbox writes the event rows of the commit.
+//
+// Only the insert is here. The claim, the confirmation and the death of a row
+// belong to no business transaction at all: the relay takes each of them in a
+// short transaction of its own, so they are ports beside this one and not
+// methods of it.
+type Outbox interface {
+	// Insert records the event in the transaction that decided it, so the
+	// balance and the event live or die together. It publishes nothing: the
+	// broker is called by whoever reads a row that is already committed.
+	Insert(ctx context.Context, envelope event.Envelope) error
 }
 
 // WalletView is the read model of a wallet. A query answers it without

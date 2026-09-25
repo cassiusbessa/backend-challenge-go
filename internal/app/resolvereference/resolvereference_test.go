@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
@@ -133,6 +134,40 @@ func TestResolve_closesTheExpiredWaitWithTheTokenOfWhatWasMissing(t *testing.T) 
 			}
 			assertNothingMoved(t, book)
 		})
+	}
+}
+
+func TestResolve_recordsTheOutcomeAndTheBalanceOfAWaitThatWasCarriedOut(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+	book.cite(t, citedProcessed(t, wager.KindBet, "25.00"))
+	resolve(t, book)
+	assertEvents(t, book, event.TypeProcessed, event.TypeBalanceChanged)
+}
+
+func TestResolve_recordsOnlyTheRejectionOfAWaitTheClockClosed(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+	resolveAt(t, book, deadline)
+	assertEvents(t, book, event.TypeRejected)
+}
+
+func TestResolve_recordsNoEventForAnAttemptThatOnlyMovedTheSchedule(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+	resolveAt(t, book, deadline.Add(-time.Nanosecond))
+	assertEvents(t, book)
+}
+
+func assertEvents(t *testing.T, ledgerBook *book, want ...event.Type) {
+	t.Helper()
+	if len(ledgerBook.events) != len(want) {
+		t.Fatalf("events recorded = %d, want %d", len(ledgerBook.events), len(want))
+	}
+	for index, expected := range want {
+		if ledgerBook.events[index].Type() != expected {
+			t.Fatalf("event %d = %s, want %s", index, ledgerBook.events[index].Type(), expected)
+		}
 	}
 }
 
@@ -456,6 +491,7 @@ type book struct {
 	ended       []*wager.Transaction
 	rescheduled []schedulingWrite
 	entries     []ledger.Entry
+	events      []event.Envelope
 	balances    []int64
 	calls       []string
 
@@ -495,6 +531,7 @@ func (b *book) Within(_ context.Context, work func(storage.Tx) error) error {
 		b.rescheduled = nil
 		b.entries = nil
 		b.balances = nil
+		b.events = nil
 		return err
 	}
 	b.commits++
@@ -511,6 +548,19 @@ func (b *book) Transactions() storage.Transactions {
 
 func (b *book) Entries() storage.Entries {
 	return entryRows{book: b}
+}
+
+func (b *book) Outbox() storage.Outbox {
+	return outboxRows{book: b}
+}
+
+type outboxRows struct {
+	book *book
+}
+
+func (r outboxRows) Insert(_ context.Context, envelope event.Envelope) error {
+	r.book.events = append(r.book.events, envelope)
+	return nil
 }
 
 type walletRows struct {
@@ -720,21 +770,43 @@ func walletWith(t *testing.T) *wallet.Wallet {
 	return opened
 }
 
+// minter hands out the fixed identities of one attempt. The events come out in
+// order, so a case can name which row carries which identifier.
 type minter struct {
-	entry identity.LedgerEntryID
+	entry  identity.LedgerEntryID
+	events []identity.EventID
+	minted int
 }
 
-func (m minter) EntryID() (identity.LedgerEntryID, error) {
+func (m *minter) EntryID() (identity.LedgerEntryID, error) {
 	return m.entry, nil
 }
 
-func fixedMinter(t *testing.T) minter {
+func (m *minter) EventID() (identity.EventID, error) {
+	minted := m.events[m.minted]
+	m.minted++
+	return minted, nil
+}
+
+func fixedMinter(t *testing.T) *minter {
 	t.Helper()
 	id, err := identity.ParseLedgerEntryID("44444444-4444-4444-8444-444444444444")
 	if err != nil {
 		t.Fatalf("ParseLedgerEntryID = %v, want nil", err)
 	}
-	return minter{entry: id}
+	return &minter{
+		entry:  id,
+		events: []identity.EventID{eventOf(t, "55555555-5555-4555-8555-555555555555"), eventOf(t, "66666666-6666-4666-8666-666666666666")},
+	}
+}
+
+func eventOf(t *testing.T, text string) identity.EventID {
+	t.Helper()
+	id, err := identity.ParseEventID(text)
+	if err != nil {
+		t.Fatalf("ParseEventID = %v, want nil", err)
+	}
+	return id
 }
 
 type brokenMinter struct {
@@ -743,6 +815,10 @@ type brokenMinter struct {
 
 func (m brokenMinter) EntryID() (identity.LedgerEntryID, error) {
 	return identity.LedgerEntryID{}, m.err
+}
+
+func (m brokenMinter) EventID() (identity.EventID, error) {
+	return identity.EventID{}, m.err
 }
 
 // openingBalance is the balance every case starts from.

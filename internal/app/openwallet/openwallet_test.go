@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
@@ -38,6 +39,35 @@ func TestOpen_recordsTheOpeningAsProcessedWithTheObservedBalance(t *testing.T) {
 	}
 	if opening.ObservedBalance().Amount() != "1000.00" {
 		t.Fatalf("observed balance = %s, want 1000.00", opening.ObservedBalance().Amount())
+	}
+}
+
+func TestOpen_recordsTheOutcomeAndTheBalanceOfAnOpeningWithMoney(t *testing.T) {
+	t.Parallel()
+	book := &book{}
+	open(t, book, "1000.00")
+	assertEventTypes(t, book, event.TypeProcessed, event.TypeBalanceChanged)
+	if book.events[0].AggregateID() != book.wallets[0].ID() {
+		t.Fatalf("aggregate = %s, want the wallet %s", book.events[0].AggregateID(), book.wallets[0].ID())
+	}
+}
+
+func TestOpen_recordsNoEventForAnOpeningAtZero(t *testing.T) {
+	t.Parallel()
+	book := &book{}
+	open(t, book, "0.00")
+	assertEventTypes(t, book)
+}
+
+func assertEventTypes(t *testing.T, book *book, want ...event.Type) {
+	t.Helper()
+	if len(book.events) != len(want) {
+		t.Fatalf("events recorded = %d, want %d", len(book.events), len(want))
+	}
+	for index, expected := range want {
+		if book.events[index].Type() != expected {
+			t.Fatalf("event %d = %s, want %s", index, book.events[index].Type(), expected)
+		}
 	}
 }
 
@@ -185,6 +215,7 @@ type book struct {
 	wallets      []*wallet.Wallet
 	transactions []*wager.Transaction
 	entries      []ledger.Entry
+	events       []event.Envelope
 	commits      int
 	rollbacks    int
 	walletErr    error
@@ -200,6 +231,7 @@ func (b *book) Within(_ context.Context, work func(storage.Tx) error) error {
 		b.wallets = nil
 		b.transactions = nil
 		b.entries = nil
+		b.events = nil
 		return err
 	}
 	b.commits++
@@ -218,6 +250,19 @@ func (b *book) Transactions() storage.Transactions {
 
 func (b *book) Entries() storage.Entries {
 	return entryRows{book: b}
+}
+
+func (b *book) Outbox() storage.Outbox {
+	return outboxRows{book: b}
+}
+
+type outboxRows struct {
+	book *book
+}
+
+func (r outboxRows) Insert(_ context.Context, envelope event.Envelope) error {
+	r.book.events = append(r.book.events, envelope)
+	return nil
 }
 
 type walletRows struct {
@@ -301,22 +346,32 @@ func (frozenClock) Now() time.Time {
 	return frozen
 }
 
+// minter hands out the fixed identities of one opening. The events are handed
+// out in order, so a case can name which row carries which identifier.
 type minter struct {
 	wallet      identity.WalletID
 	transaction identity.TransactionID
 	entry       identity.LedgerEntryID
+	events      []identity.EventID
+	minted      int
 }
 
-func (m minter) WalletID() (identity.WalletID, error) {
+func (m *minter) WalletID() (identity.WalletID, error) {
 	return m.wallet, nil
 }
 
-func (m minter) TransactionID() (identity.TransactionID, error) {
+func (m *minter) TransactionID() (identity.TransactionID, error) {
 	return m.transaction, nil
 }
 
-func (m minter) EntryID() (identity.LedgerEntryID, error) {
+func (m *minter) EntryID() (identity.LedgerEntryID, error) {
 	return m.entry, nil
+}
+
+func (m *minter) EventID() (identity.EventID, error) {
+	minted := m.events[m.minted]
+	m.minted++
+	return minted, nil
 }
 
 type brokenMinter struct {
@@ -335,7 +390,11 @@ func (b brokenMinter) EntryID() (identity.LedgerEntryID, error) {
 	return identity.LedgerEntryID{}, b.err
 }
 
-func fixedMinter(t *testing.T) minter {
+func (b brokenMinter) EventID() (identity.EventID, error) {
+	return identity.EventID{}, b.err
+}
+
+func fixedMinter(t *testing.T) *minter {
 	t.Helper()
 	walletID, err := identity.ParseWalletID("11111111-1111-4111-8111-111111111111")
 	if err != nil {
@@ -349,7 +408,21 @@ func fixedMinter(t *testing.T) minter {
 	if err != nil {
 		t.Fatalf("ParseLedgerEntryID = %v, want nil", err)
 	}
-	return minter{wallet: walletID, transaction: transactionID, entry: entryID}
+	return &minter{
+		wallet:      walletID,
+		transaction: transactionID,
+		entry:       entryID,
+		events:      []identity.EventID{eventOf(t, "55555555-5555-4555-8555-555555555555"), eventOf(t, "66666666-6666-4666-8666-666666666666")},
+	}
+}
+
+func eventOf(t *testing.T, text string) identity.EventID {
+	t.Helper()
+	parsed, err := identity.ParseEventID(text)
+	if err != nil {
+		t.Fatalf("ParseEventID = %v, want nil", err)
+	}
+	return parsed
 }
 
 func playerOf(t *testing.T) identity.PlayerID {

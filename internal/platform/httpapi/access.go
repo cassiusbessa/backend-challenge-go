@@ -54,10 +54,20 @@ func (routes Routes) wrap(name string, next http.Handler) http.Handler {
 func (routes Routes) serve(ctx context.Context, name string, next http.Handler, w http.ResponseWriter, r *http.Request) {
 	ctx, span := routes.Tracer.Start(extract(ctx, r), name)
 	defer span.End()
+	// The correlation is decided here, before the handler runs, because what the
+	// operation writes carries it: an outbox row records the correlation of the
+	// request that produced it, and the access line at the end is too late.
+	ctx = telemetry.WithCorrelation(ctx, correlationOf(span, r))
 	started := time.Now()
 	writer := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 	next.ServeHTTP(writer, r.WithContext(ctx))
 	routes.finish(ctx, span, r, writer.status, time.Since(started))
+}
+
+// correlationOf answers the token of the request, which is the header when it is
+// a short opaque one and the trace otherwise.
+func correlationOf(span trace.Span, r *http.Request) string {
+	return telemetry.CorrelationID(r.Header.Get("X-Correlation-Id"), span.SpanContext().TraceID().String())
 }
 
 func extract(ctx context.Context, r *http.Request) context.Context {
@@ -67,7 +77,7 @@ func extract(ctx context.Context, r *http.Request) context.Context {
 func (routes Routes) finish(ctx context.Context, span trace.Span, r *http.Request, status int, elapsed time.Duration) {
 	markSpan(span, status)
 	routes.observe(ctx, r.Method, status, elapsed)
-	routes.log(ctx, span, r.Header.Get("X-Correlation-Id"), status)
+	routes.log(ctx, span, status)
 }
 
 func markSpan(span trace.Span, status int) {
@@ -97,12 +107,11 @@ func exemplify(observer prometheus.Observer, seconds float64, traceID string) {
 	ex.ObserveWithExemplar(seconds, prometheus.Labels{"trace_id": traceID})
 }
 
-func (routes Routes) log(ctx context.Context, span trace.Span, header string, status int) {
+func (routes Routes) log(ctx context.Context, span trace.Span, status int) {
 	sc := span.SpanContext()
-	traceID := sc.TraceID().String()
 	routes.Logger.LogAttrs(ctx, slog.LevelInfo, "request",
-		slog.String("correlationId", telemetry.CorrelationID(header, traceID)),
-		slog.String("trace_id", traceID),
+		slog.String("correlationId", telemetry.Correlation(ctx)),
+		slog.String("trace_id", sc.TraceID().String()),
 		slog.String("span_id", sc.SpanID().String()),
 		slog.String("status", strconv.Itoa(status)),
 	)

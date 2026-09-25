@@ -13,7 +13,9 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/bodyhash"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wallet"
@@ -69,6 +71,7 @@ type Clock interface {
 type Minter interface {
 	TransactionID() (identity.TransactionID, error)
 	EntryID() (identity.LedgerEntryID, error)
+	EventID() (identity.EventID, error)
 }
 
 // Schedule answers the two instants a wait is written with: when it expires, and
@@ -174,14 +177,33 @@ func (s *Service) submit(ctx context.Context, cmd Command) (Result, error) {
 }
 
 // pending is one operation on its way through the commit: the transaction the
-// domain built, and the entry identity and instant the movement will take.
+// domain built, the entry identity and instant the movement will take, and the
+// identities the events of the commit will carry.
+//
+// The event identities are minted for every arrival, and the ones an outcome
+// has no event for simply go unused — the same as the entry identity on a LOSS.
 type pending struct {
-	op   *wager.Transaction
-	move wager.Movement
+	op      *wager.Transaction
+	move    wager.Movement
+	outcome identity.EventID
+	balance identity.EventID
 }
 
 func (p pending) at() time.Time {
 	return p.move.At
+}
+
+// emitted is the commit this operation closed, as the domain reads it. Entry is
+// the zero value and version is the one the wallet kept when nothing moved.
+func (p pending) emitted(entry ledger.Entry, version int64) event.Commit {
+	return event.Commit{
+		OutcomeID:     p.outcome,
+		BalanceID:     p.balance,
+		Transaction:   p.op,
+		Entry:         entry,
+		WalletVersion: version,
+		At:            p.at(),
+	}
 }
 
 // pending builds the transaction. OPENING_NOT_ALLOWED, AMOUNT_NOT_ALLOWED_FOR_KIND
@@ -195,12 +217,20 @@ func (s *Service) pending(cmd Command) (pending, error) {
 	if err != nil {
 		return pending{}, err
 	}
+	outcome, err := s.minter.EventID()
+	if err != nil {
+		return pending{}, err
+	}
+	balance, err := s.minter.EventID()
+	if err != nil {
+		return pending{}, err
+	}
 	at := s.clock.Now()
 	op, err := wager.NewExternal(cmd.spec(transactionID, bodyhash.Of(cmd.business()), at))
 	if err != nil {
 		return pending{}, err
 	}
-	return pending{op: op, move: wager.Movement{EntryID: entryID, At: at}}, nil
+	return pending{op: op, move: wager.Movement{EntryID: entryID, At: at}, outcome: outcome, balance: balance}, nil
 }
 
 func (c Command) spec(id identity.TransactionID, hash string, at time.Time) wager.ExternalSpec {
@@ -419,6 +449,9 @@ func (s *Service) wait(ctx context.Context, tx storage.Tx, job pending) (settlem
 	if err := tx.Transactions().Insert(ctx, job.op); err != nil {
 		return settlement{}, err
 	}
+	if err := storage.Record(ctx, tx, job.emitted(ledger.Entry{}, 0)); err != nil {
+		return settlement{}, err
+	}
 	return settlement{result: resultOf(job.op)}, nil
 }
 
@@ -477,6 +510,9 @@ func (s *Service) reject(ctx context.Context, tx storage.Tx, job pending, refusa
 	if err := tx.Transactions().Insert(ctx, job.op); err != nil {
 		return settlement{}, err
 	}
+	if err := storage.Record(ctx, tx, job.emitted(ledger.Entry{}, 0)); err != nil {
+		return settlement{}, err
+	}
 	return settlement{result: resultOf(job.op), rejection: refusal}, nil
 }
 
@@ -485,6 +521,10 @@ func (s *Service) record(ctx context.Context, tx storage.Tx, job pending, m move
 		return settlement{}, err
 	}
 	if err := write(ctx, tx, job, m); err != nil {
+		return settlement{}, err
+	}
+	entry, _ := m.decision.Entry()
+	if err := storage.Record(ctx, tx, job.emitted(entry, m.decision.Version())); err != nil {
 		return settlement{}, err
 	}
 	return settlement{result: resultOf(job.op)}, nil
