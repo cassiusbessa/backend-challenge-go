@@ -374,6 +374,8 @@ func suiteEnv() map[string]string {
 		"HTTP_ADDR":                   "127.0.0.1:0",
 		"DATABASE_URL":                databaseURL(),
 		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
+		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
+		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
 		"SQS_QUEUE_URL":               envOr("SQS_QUEUE_URL", "http://localhost:4566/000000000000/wager-transactions.fifo"),
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  issuer(),

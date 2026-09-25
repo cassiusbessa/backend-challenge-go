@@ -215,6 +215,8 @@ services:
       DATABASE_URL: postgres://junglegaming:junglegaming@postgres:5432/junglegaming?sslmode=disable
       SQS_ENDPOINT: http://localstack:4566
       SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SNS_ENDPOINT: http://localstack:4566
+      SNS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:wallet-events.fifo
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
       # O issuer é o que o token anuncia em `iss`, visto do host. O JWKS é
       # buscado de dentro da rede, onde `localhost` seria o próprio processo.

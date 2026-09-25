@@ -21,6 +21,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
@@ -82,6 +83,50 @@ func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
 	err = New(cfg).Start(ctx)
 	if !errors.Is(err, authz.ErrUnreadableClientMap) {
 		t.Fatalf("start = %v, want %v", err, authz.ErrUnreadableClientMap)
+	}
+}
+
+// The relay comes up beside the reference worker and holds nothing back: an
+// outbox with nothing in it is the ordinary state of a process that is keeping
+// up, and the port has to answer whether or not there is anything to publish.
+func TestNew_comesUpWithTheRelayBesideTheReferenceWorker(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Load(testEnv)
+	if err != nil {
+		t.Fatalf("load config of the test environment = %v, want nil", err)
+	}
+	got := make(chan *outboxrelay.Relay, 1)
+	application := New(cfg, fx.Invoke(func(relay *outboxrelay.Relay) { got <- relay }))
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start over an empty outbox = %v, want nil", err)
+	}
+	if relay := <-got; relay == nil {
+		t.Fatalf("the graph came up without a relay, want one beside the reference worker")
+	}
+	stopping, release := context.WithTimeout(context.Background(), stepWait)
+	defer release()
+	if err := application.Stop(stopping); err != nil {
+		t.Fatalf("Stop = %v, want nil", err)
+	}
+}
+
+// The topic is what the relay publishes to, so a configuration that cannot name
+// it stops the whole process rather than coming up with a relay that has
+// nowhere to send.
+func TestNew_refusesToStartWithoutTheAddressOfTheTopic(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Load(testEnv)
+	if err != nil {
+		t.Fatalf("load config of the test environment = %v, want nil", err)
+	}
+	cfg.SNSTopicARN = ""
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	var missing config.MissingError
+	if err := New(cfg).Start(ctx); !errors.As(err, &missing) || missing.Key != "SNS_TOPIC_ARN" {
+		t.Fatalf("Start with no topic address = %v, want MissingError on SNS_TOPIC_ARN", err)
 	}
 }
 
@@ -225,6 +270,8 @@ func testEnv(key string) string {
 		"DATABASE_URL":                "postgres://junglegaming:junglegaming@127.0.0.1:1/junglegaming?sslmode=disable",
 		"SQS_ENDPOINT":                "http://127.0.0.1:1",
 		"SQS_QUEUE_URL":               "http://127.0.0.1:1/000000000000/wager-transactions.fifo",
+		"SNS_ENDPOINT":                "http://127.0.0.1:1",
+		"SNS_TOPIC_ARN":               "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "127.0.0.1:1",
 		"IDP_ISSUER":                  "http://127.0.0.1:1/realms/junglegaming",
 		"CLIENTS_PATH":                clientsPath,

@@ -1,0 +1,198 @@
+//go:build integration
+
+// The scaffolding of the suite: the real stack, a subscriber of the topic that
+// exists only for the test, and the helpers that write an event and read the
+// rows back.
+package events
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+	"time"
+	"uuid"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+
+	"github.com/junglegaming/backend-challenge-go/internal/platform/broker"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
+)
+
+// delivered is one message as it reached the subscriber: the body the topic
+// carried, and the two fields the FIFO topic required of the send.
+type delivered struct {
+	Body            string
+	GroupID         string
+	DeduplicationID string
+}
+
+// subscriber is a FIFO queue of this test alone, subscribed to the topic so the
+// suite can read what was published.
+//
+// The deployment provisions no subscription on purpose — there is no consumer
+// of these events yet — so the only way to assert what reached the topic is to
+// attach one for the length of a case and take it down after.
+type subscriber struct {
+	client *sqs.Client
+	url    string
+}
+
+func subscribe(ctx context.Context, t *testing.T) *subscriber {
+	t.Helper()
+	queues, err := probe.NewClient(ctx, endpoint())
+	if err != nil {
+		t.Fatalf("open the queue client = %v, want nil", err)
+	}
+	name := "events-suite-" + strings.ReplaceAll(uuid.NewV7().String(), "-", "") + ".fifo"
+	created, err := queues.CreateQueue(ctx, &sqs.CreateQueueInput{
+		QueueName:  aws.String(name),
+		Attributes: map[string]string{"FifoQueue": "true"},
+	})
+	if err != nil {
+		t.Fatalf("create the subscriber queue = %v, want nil", err)
+	}
+	url := aws.ToString(created.QueueUrl)
+	t.Cleanup(func() {
+		closing := context.WithoutCancel(ctx)
+		_, _ = queues.DeleteQueue(closing, &sqs.DeleteQueueInput{QueueUrl: aws.String(url)})
+	})
+	attach(ctx, t, queues, url)
+	return &subscriber{client: queues, url: url}
+}
+
+// attach points the topic at the queue with raw delivery, so the body the
+// subscriber reads is the payload of the row and not an envelope of the broker
+// wrapped around it.
+func attach(ctx context.Context, t *testing.T, queues *sqs.Client, url string) {
+	t.Helper()
+	arn := queueARN(ctx, t, queues, url)
+	topics, err := topicClient(ctx)
+	if err != nil {
+		t.Fatalf("open the topic client = %v, want nil", err)
+	}
+	created, err := topics.Subscribe(ctx, &sns.SubscribeInput{
+		TopicArn:   aws.String(topicARN()),
+		Protocol:   aws.String("sqs"),
+		Endpoint:   aws.String(arn),
+		Attributes: map[string]string{"RawMessageDelivery": "true"},
+	})
+	if err != nil {
+		t.Fatalf("subscribe to the topic = %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		closing := context.WithoutCancel(ctx)
+		_, _ = topics.Unsubscribe(closing, &sns.UnsubscribeInput{SubscriptionArn: created.SubscriptionArn})
+	})
+}
+
+func queueARN(ctx context.Context, t *testing.T, queues *sqs.Client, url string) string {
+	t.Helper()
+	attributes, err := queues.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+		QueueUrl:       aws.String(url),
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn},
+	})
+	if err != nil {
+		t.Fatalf("read the queue arn = %v, want nil", err)
+	}
+	return attributes.Attributes[string(sqstypes.QueueAttributeNameQueueArn)]
+}
+
+func topicClient(ctx context.Context) (*sns.Client, error) {
+	awsCfg, err := broker.LoadAWS(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return sns.NewFromConfig(awsCfg, func(o *sns.Options) {
+		o.BaseEndpoint = aws.String(endpoint())
+	}), nil
+}
+
+// receive polls the subscriber until it has as many messages as the case asked
+// for, or the deadline comes. The topic is asynchronous, so a single read would
+// be a race with it.
+func (s *subscriber) receive(ctx context.Context, t *testing.T, want int) []delivered {
+	t.Helper()
+	deadline := time.Now().Add(receiveWait)
+	var got []delivered
+	for time.Now().Before(deadline) && len(got) < want {
+		got = append(got, s.poll(ctx, t)...)
+	}
+	if len(got) != want {
+		t.Fatalf("messages on the topic = %d, want %d", len(got), want)
+	}
+	return got
+}
+
+func (s *subscriber) poll(ctx context.Context, t *testing.T) []delivered {
+	t.Helper()
+	out, err := s.client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		QueueUrl:            aws.String(s.url),
+		MaxNumberOfMessages: 10,
+		WaitTimeSeconds:     1,
+		MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{
+			sqstypes.MessageSystemAttributeNameMessageGroupId,
+			sqstypes.MessageSystemAttributeNameMessageDeduplicationId,
+		},
+	})
+	if err != nil {
+		t.Fatalf("receive from the subscriber = %v, want nil", err)
+	}
+	var read []delivered
+	for _, message := range out.Messages {
+		read = append(read, delivered{
+			Body:            aws.ToString(message.Body),
+			GroupID:         message.Attributes[string(sqstypes.MessageSystemAttributeNameMessageGroupId)],
+			DeduplicationID: message.Attributes[string(sqstypes.MessageSystemAttributeNameMessageDeduplicationId)],
+		})
+		_, _ = s.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+			QueueUrl:      aws.String(s.url),
+			ReceiptHandle: message.ReceiptHandle,
+		})
+	}
+	return read
+}
+
+// receiveWait bounds the poll of the subscriber. The topic and the queue are
+// local, so a message that has not arrived by then is one that was not sent.
+const receiveWait = 20 * time.Second
+
+func open(t *testing.T) (context.Context, *postgres.Pool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	pool := postgres.NewPool(config.Config{DatabaseURL: databaseURL()})
+	if err := pool.Open(ctx); err != nil {
+		t.Fatalf("open pool = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = pool.Close(context.Background()) })
+	return ctx, pool
+}
+
+func databaseURL() string {
+	return envOr("DATABASE_URL", "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable")
+}
+
+func endpoint() string {
+	return envOr("SNS_ENDPOINT", "http://localhost:4566")
+}
+
+func topicARN() string {
+	return envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo")
+}
+
+func envOr(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func newID() string {
+	return uuid.NewV7().String()
+}

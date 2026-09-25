@@ -40,6 +40,7 @@ var allowedKeys = map[string]struct{}{
 	"trace_id":      {},
 	"span_id":       {},
 	"messageId":     {},
+	"eventId":       {},
 	"transactionId": {},
 	"walletId":      {},
 	"providerId":    {},

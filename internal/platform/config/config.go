@@ -12,6 +12,8 @@ type Config struct {
 	DatabaseURL     string
 	SQSEndpoint     string
 	SQSQueueURL     string
+	SNSEndpoint     string
+	SNSTopicARN     string
 	OTELEndpoint    string
 	IDPIssuer       string
 	IDPJWKSURL      string
@@ -29,6 +31,13 @@ type Config struct {
 	// default suits production; the integration suite shortens it so a case does
 	// not wait out the default.
 	ReferenceInterval time.Duration
+
+	// OutboxInterval is how often the relay scans the publication queue, and
+	// OutboxLease is how long one claim holds a row. Both default to values that
+	// suit production; the integration suite shortens them so a case does not
+	// wait out the default.
+	OutboxInterval time.Duration
+	OutboxLease    time.Duration
 }
 
 type MissingError struct {
@@ -61,6 +70,8 @@ func (c Config) Validate() error {
 		"DATABASE_URL":                c.DatabaseURL,
 		"SQS_ENDPOINT":                c.SQSEndpoint,
 		"SQS_QUEUE_URL":               c.SQSQueueURL,
+		"SNS_ENDPOINT":                c.SNSEndpoint,
+		"SNS_TOPIC_ARN":               c.SNSTopicARN,
 		"OTEL_EXPORTER_OTLP_ENDPOINT": c.OTELEndpoint,
 		"IDP_ISSUER":                  c.IDPIssuer,
 		"CLIENTS_PATH":                c.ClientsPath,
@@ -73,6 +84,8 @@ func read(getenv func(string) string) map[string]string {
 		"DATABASE_URL",
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
+		"SNS_ENDPOINT",
+		"SNS_TOPIC_ARN",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"IDP_ISSUER",
 		"IDP_JWKS_URL",
@@ -82,6 +95,8 @@ func read(getenv func(string) string) map[string]string {
 		"PPROF_ADDR",
 		"REFERENCE_TTL",
 		"REFERENCE_INTERVAL",
+		"OUTBOX_INTERVAL",
+		"OUTBOX_LEASE",
 	}
 	out := make(map[string]string, len(keys))
 	for _, key := range keys {
@@ -96,6 +111,8 @@ func require(raw map[string]string) error {
 		"DATABASE_URL",
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
+		"SNS_ENDPOINT",
+		"SNS_TOPIC_ARN",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"IDP_ISSUER",
 		"CLIENTS_PATH",
@@ -120,15 +137,7 @@ func build(raw map[string]string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	timeout, err := parseDuration("SHUTDOWN_TIMEOUT", raw["SHUTDOWN_TIMEOUT"], defaultShutdownTimeout)
-	if err != nil {
-		return Config{}, err
-	}
-	ttl, err := parseDuration("REFERENCE_TTL", raw["REFERENCE_TTL"], defaultReferenceTTL)
-	if err != nil {
-		return Config{}, err
-	}
-	interval, err := parseDuration("REFERENCE_INTERVAL", raw["REFERENCE_INTERVAL"], defaultReferenceInterval)
+	timing, err := durations(raw)
 	if err != nil {
 		return Config{}, err
 	}
@@ -137,17 +146,61 @@ func build(raw map[string]string) (Config, error) {
 		DatabaseURL:     raw["DATABASE_URL"],
 		SQSEndpoint:     raw["SQS_ENDPOINT"],
 		SQSQueueURL:     raw["SQS_QUEUE_URL"],
+		SNSEndpoint:     raw["SNS_ENDPOINT"],
+		SNSTopicARN:     raw["SNS_TOPIC_ARN"],
 		OTELEndpoint:    raw["OTEL_EXPORTER_OTLP_ENDPOINT"],
 		IDPIssuer:       raw["IDP_ISSUER"],
 		IDPJWKSURL:      parseJWKSURL(raw["IDP_JWKS_URL"], raw["IDP_ISSUER"]),
 		ClientsPath:     raw["CLIENTS_PATH"],
 		SampleRatio:     ratio,
-		ShutdownTimeout: timeout,
+		ShutdownTimeout: timing.shutdown,
 		PPROFAddr:       parsePPROF(raw["PPROF_ADDR"]),
 
-		ReferenceTTL:      ttl,
-		ReferenceInterval: interval,
+		ReferenceTTL:      timing.referenceTTL,
+		ReferenceInterval: timing.referenceInterval,
+
+		OutboxInterval: timing.outboxInterval,
+		OutboxLease:    timing.outboxLease,
 	}, nil
+}
+
+// timing is every duration of the configuration. They are read together so that
+// build stays a single assembly of the config instead of one branch per knob.
+type timing struct {
+	shutdown          time.Duration
+	referenceTTL      time.Duration
+	referenceInterval time.Duration
+	outboxInterval    time.Duration
+	outboxLease       time.Duration
+}
+
+// knob is one duration of the configuration: the key it is set by, the default
+// it falls to, and the field it lands in.
+type knob struct {
+	key      string
+	fallback time.Duration
+	into     *time.Duration
+}
+
+// durations reads every duration through the same parse, so a knob left unset
+// falls to its default and one set to something that is not a positive duration
+// keeps the process from coming up, whichever knob it is.
+func durations(raw map[string]string) (timing, error) {
+	var out timing
+	for _, each := range []knob{
+		{"SHUTDOWN_TIMEOUT", defaultShutdownTimeout, &out.shutdown},
+		{"REFERENCE_TTL", defaultReferenceTTL, &out.referenceTTL},
+		{"REFERENCE_INTERVAL", defaultReferenceInterval, &out.referenceInterval},
+		{"OUTBOX_INTERVAL", defaultOutboxInterval, &out.outboxInterval},
+		{"OUTBOX_LEASE", defaultOutboxLease, &out.outboxLease},
+	} {
+		value, err := parseDuration(each.key, raw[each.key], each.fallback)
+		if err != nil {
+			return timing{}, err
+		}
+		*each.into = value
+	}
+	return out, nil
 }
 
 // The defaults of the reference wait. The TTL is the fifteen minutes of
@@ -160,6 +213,15 @@ func build(raw map[string]string) (Config, error) {
 const (
 	defaultReferenceTTL      = 15 * time.Minute
 	defaultReferenceInterval = time.Second
+)
+
+// The defaults of the relay. The interval is the base of the backoff, so a row
+// that has just been committed is picked up within one turn of the scan. The
+// lease is wide enough for a send that is slow without being wide enough to
+// park a row behind a replica that died.
+const (
+	defaultOutboxInterval = time.Second
+	defaultOutboxLease    = 30 * time.Second
 )
 
 // defaultShutdownTimeout is the deadline the process has to finish the request

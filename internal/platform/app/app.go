@@ -13,14 +13,17 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/referencewait"
+	"github.com/junglegaming/backend-challenge-go/internal/app/relayoutbox"
 	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/broker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/clock"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/mint"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/referenceworker"
@@ -71,6 +74,7 @@ func New(cfg config.Config, opts ...fx.Option) *fx.App {
 		fx.Provide(postgres.NewPool),
 		fx.Provide(probe.NewPostgres),
 		fx.Provide(probe.NewQueue),
+		fx.Provide(broker.NewTopic),
 		fx.Provide(func(p *probe.Postgres) httpapi.PostgresChecker { return p }),
 		fx.Provide(func(q *probe.Queue) httpapi.QueueChecker { return q }),
 		fx.Provide(httpapi.NewReady),
@@ -97,6 +101,9 @@ func business() []fx.Option {
 		fx.Provide(func() resolvereference.Clock { return clock.UTC{} }),
 		fx.Provide(resolvereference.New),
 		fx.Provide(newReferenceWorker),
+		fx.Provide(newOutboxQueue),
+		fx.Provide(newRelay),
+		fx.Provide(newOutboxRelay),
 		fx.Provide(openwallet.New),
 		fx.Provide(readwallet.New),
 		fx.Provide(submitwager.New),
@@ -121,6 +128,23 @@ func newSchedule(cfg config.Config) referencewait.Schedule {
 // the queue of waits and hands each candidate to the use case that decides it.
 func newReferenceWorker(cfg config.Config, reads storage.Reads, resolver *resolvereference.Service, pipe *telemetry.Pipeline) *referenceworker.Worker {
 	return referenceworker.New(reads, resolver, clock.UTC{}, pipe.Logger, cfg.ReferenceInterval)
+}
+
+// newRelay is the use case that moves one committed event out: it claims a row
+// under a lease, publishes outside any transaction, and confirms under the token
+// of that claim.
+func newRelay(cfg config.Config, queue storage.OutboxQueue, topic *broker.Topic, pipe *telemetry.Pipeline) *relayoutbox.Service {
+	return relayoutbox.New(queue, topic, outboxrelay.Sending(pipe.Tracer), clock.UTC{}, pipe.Logger, cfg.OutboxLease)
+}
+
+// newOutboxRelay is the second background component of the process. It scans the
+// publication queue and hands each candidate to the use case that relays it.
+func newOutboxRelay(cfg config.Config, queue storage.OutboxQueue, relay *relayoutbox.Service, pipe *telemetry.Pipeline) *outboxrelay.Relay {
+	return outboxrelay.New(queue, relay, pipe.Logger, cfg.OutboxInterval)
+}
+
+func newOutboxQueue(pool *postgres.Pool) storage.OutboxQueue {
+	return postgres.NewOutboxQueue(pool)
 }
 
 func newUnitOfWork(pool *postgres.Pool) storage.UnitOfWork {
@@ -172,6 +196,8 @@ type wiring struct {
 	WagerReader   *readwager.Service
 	WagerReporter *wagerapi.Reporter
 	Reference     *referenceworker.Worker
+	Topic         *broker.Topic
+	Outbox        *outboxrelay.Relay
 }
 
 func register(lc fx.Lifecycle, parts wiring) {
@@ -179,10 +205,13 @@ func register(lc fx.Lifecycle, parts wiring) {
 	lc.Append(fx.Hook{OnStart: parts.Pipeline.Start, OnStop: parts.Pipeline.Shutdown})
 	lc.Append(fx.Hook{OnStart: parts.Postgres.Open, OnStop: parts.Postgres.Close})
 	lc.Append(fx.Hook{OnStart: parts.Queue.Open})
-	// The worker comes up after the pool and before the listener, so the shutdown
-	// takes them in the other order: the port stops accepting first, and the
-	// worker stops claiming after it, both inside the same deadline.
+	lc.Append(fx.Hook{OnStart: parts.Topic.Open})
+	// The two background components come up after the pool and before the
+	// listener, so the shutdown takes them in the other order: the port stops
+	// accepting first, and each of them stops claiming after it, all inside the
+	// same deadline.
 	lc.Append(fx.Hook{OnStart: parts.Reference.Start, OnStop: parts.Reference.Stop})
+	lc.Append(fx.Hook{OnStart: parts.Outbox.Start, OnStop: parts.Outbox.Stop})
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			parts.Server.Use(routes(parts))

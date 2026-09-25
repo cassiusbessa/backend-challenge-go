@@ -173,6 +173,8 @@ func integrationEnv(queueURL string) map[string]string {
 		"HTTP_ADDR":                   "127.0.0.1:0",
 		"DATABASE_URL":                envOr("DATABASE_URL", "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable"),
 		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
+		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
+		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
 		"SQS_QUEUE_URL":               queueURL,
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  envOr("IDP_ISSUER", "http://localhost:8080/realms/junglegaming"),

@@ -1,0 +1,317 @@
+package relayoutbox
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
+)
+
+func TestRelay_publishesUnderTheTokenOfItsOwnClaim(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	relay(t, queue, &publisher{})
+	if queue.confirmed != token {
+		t.Fatalf("confirmed under %q, want the token of the claim %q", queue.confirmed, token)
+	}
+	if queue.rescheduled || queue.killed {
+		t.Fatalf("the row was rescheduled or killed, want only the confirmation")
+	}
+}
+
+// The deadline of the send fits inside the lease, so a replica is never still
+// publishing a row its lease no longer covers.
+func TestRelay_givesTheSendLessTimeThanTheLease(t *testing.T) {
+	t.Parallel()
+	sender := &publisher{}
+	relay(t, queueWith(t), sender)
+	if !sender.deadline.After(frozen) || !sender.deadline.Before(frozen.Add(lease)) {
+		t.Fatalf("send deadline = %s, want it inside the lease that ends at %s", sender.deadline, frozen.Add(lease))
+	}
+}
+
+// The publication went through and the confirmation did not: the row stays
+// unpublished and another replica picks it up once the lease expires. At least
+// once is the contract, and the identity of the event is what closes the gap.
+func TestRelay_leavesTheRowPublishableWhenTheConfirmationDoesNotLand(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	queue.confirmErr = storage.ErrLeaseLost
+	relay(t, queue, &publisher{})
+	if queue.rescheduled || queue.killed {
+		t.Fatalf("a lost lease wrote to the row, want nothing written")
+	}
+}
+
+func TestRelay_sendsTheRowBackOnTheBackoffWhenTheBrokerIsOut(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	queue.claimed.Attempts = 2
+	relay(t, queue, &publisher{refuse: errors.New("service unavailable")})
+	if !queue.rescheduled || queue.killed {
+		t.Fatalf("the transient refusal did not reschedule the row alone")
+	}
+	if want := frozen.Add(4 * time.Second); !queue.next.Equal(want) {
+		t.Fatalf("next attempt = %s, want %s", queue.next, want)
+	}
+}
+
+func TestRelay_killsTheRowOnTheTenthPermanentRefusalAndNotOnTheNinth(t *testing.T) {
+	t.Parallel()
+	ninth := queueWith(t)
+	ninth.claimed.Attempts = 8
+	relay(t, ninth, &publisher{refuse: errors.New("topic does not exist"), permanent: true})
+	if ninth.killed || !ninth.rescheduled {
+		t.Fatalf("the ninth refusal killed the row, want it rescheduled")
+	}
+	tenth := queueWith(t)
+	tenth.claimed.Attempts = 9
+	relay(t, tenth, &publisher{refuse: errors.New("topic does not exist"), permanent: true})
+	if !tenth.killed || tenth.confirmed != "" {
+		t.Fatalf("the tenth refusal marked the row published or left it alive, want it dead")
+	}
+}
+
+func TestRelay_leavesTheSpanOkWhenTheRowOnlyComesBackLater(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	opened := &spans{}
+	service := New(queue, &publisher{refuse: errors.New("service unavailable")}, opened.open, frozenClock{}, quietLogger(), lease)
+	if err := service.Relay(context.Background(), candidate(t)); err != nil {
+		t.Fatalf("Relay = %v, want nil", err)
+	}
+	if opened.linkedTrace != "4bf92f3577b34da6a3ce929d0e0e4736" || opened.closedWith != nil {
+		t.Fatalf("span linked to %q closed with %v, want the trace of the commit and no error", opened.linkedTrace, opened.closedWith)
+	}
+}
+
+func TestRelay_logsEveryOutcomeWithIdentifiersOnly(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		sender *publisher
+		want   string
+	}{
+		{name: "a send that went through", sender: &publisher{}, want: "published"},
+		{name: "a permanent refusal", sender: &publisher{refuse: errors.New("refused"), permanent: true}, want: "refused"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			written := &bytes.Buffer{}
+			queue := queueWith(t)
+			service := New(queue, tc.sender, noSpan, frozenClock{}, allowingLogger(written), lease)
+			if err := service.Relay(context.Background(), candidate(t)); err != nil {
+				t.Fatalf("Relay = %v, want nil", err)
+			}
+			assertLine(t, written.String(), tc.want)
+		})
+	}
+}
+
+func TestRelay_logsTheDeathOfARowNobodyCanPublish(t *testing.T) {
+	t.Parallel()
+	written := &bytes.Buffer{}
+	queue := queueWith(t)
+	queue.claimed.Attempts = 9
+	sender := &publisher{refuse: errors.New("refused"), permanent: true}
+	service := New(queue, sender, noSpan, frozenClock{}, allowingLogger(written), lease)
+	if err := service.Relay(context.Background(), candidate(t)); err != nil {
+		t.Fatalf("Relay = %v, want nil", err)
+	}
+	assertLine(t, written.String(), "dead")
+}
+
+// A candidate the claim does not hand over is not this replica's to publish, and
+// it is not a failure: the scan chose it and the claim is what decides.
+func TestRelay_doesNothingWithACandidateTheClaimDidNotHandOver(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	queue.claimErr = storage.ErrOutboxEventNotFound
+	sender := &publisher{}
+	service := New(queue, sender, noSpan, frozenClock{}, quietLogger(), lease)
+	if err := service.Relay(context.Background(), candidate(t)); err != nil {
+		t.Fatalf("Relay of a row another replica holds = %v, want nil", err)
+	}
+	if sender.sent != nil {
+		t.Fatalf("the row was published anyway, want no send at all")
+	}
+}
+
+// assertLine reads the single line the turn wrote: the outcome, the identifiers
+// that are allowed, and nothing of the payload.
+func assertLine(t *testing.T, line, status string) {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &out); err != nil {
+		t.Fatalf("the turn wrote %q, want one JSON line", line)
+	}
+	if out["status"] != status {
+		t.Fatalf("status = %v, want %s", out["status"], status)
+	}
+	assertIdentifiers(t, out)
+	if strings.Contains(line, "100.00") || strings.Contains(line, "payload") {
+		t.Fatalf("the line carries the payload or an amount: %s", line)
+	}
+}
+
+func assertIdentifiers(t *testing.T, out map[string]any) {
+	t.Helper()
+	for _, field := range []string{"eventId", "walletId", "trace_id", "span_id"} {
+		if out[field] == nil || out[field] == "" {
+			t.Fatalf("%s = %v, want it on the line", field, out[field])
+		}
+	}
+}
+
+const (
+	lease     = 30 * time.Second
+	token     = "9b2f1c6e-3a44-4c2b-8d5e-0f1a2b3c4d5e"
+	eventUUID = "019974a4-0000-7000-8000-00000000e001"
+)
+
+var frozen = time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
+
+type frozenClock struct{}
+
+func (frozenClock) Now() time.Time { return frozen }
+
+// noSpan is the report of a turn nothing is watching, which is what a case that
+// is not about telemetry hands in.
+func noSpan(ctx context.Context, _, _ string) (context.Context, func(error)) {
+	return ctx, func(error) {}
+}
+
+type spans struct {
+	linkedTrace string
+	closedWith  error
+}
+
+func (s *spans) open(ctx context.Context, traceID, _ string) (context.Context, func(error)) {
+	s.linkedTrace = traceID
+	return ctx, func(err error) { s.closedWith = err }
+}
+
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+}
+
+// allowingLogger is the handler of the process, so a case reads the line exactly
+// as it reaches the collector — with the fields the pipeline refuses left out.
+func allowingLogger(into *bytes.Buffer) *slog.Logger {
+	return slog.New(telemetry.Allow(slog.NewJSONHandler(into, nil)))
+}
+
+// queue is the publication queue in memory: it hands out one claimed row and
+// records which of the three ends of the turn was written.
+type queue struct {
+	claimed      storage.OutboxRow
+	claimErr     error
+	confirmErr   error
+	confirmed    string
+	rescheduled  bool
+	killed       bool
+	next         time.Time
+	claimedLease time.Duration
+}
+
+func (q *queue) Due(context.Context, int) ([]storage.OutboxCandidate, error) {
+	return nil, nil
+}
+
+func (q *queue) Claim(_ context.Context, _ identity.EventID, lease time.Duration) (storage.OutboxRow, error) {
+	q.claimedLease = lease
+	if q.claimErr != nil {
+		return storage.OutboxRow{}, q.claimErr
+	}
+	return q.claimed, nil
+}
+
+func (q *queue) Confirm(_ context.Context, _ identity.EventID, token string, _ time.Time) error {
+	if q.confirmErr != nil {
+		return q.confirmErr
+	}
+	q.confirmed = token
+	return nil
+}
+
+func (q *queue) Reschedule(_ context.Context, _ identity.EventID, _ string, next time.Time) error {
+	q.rescheduled = true
+	q.next = next
+	return nil
+}
+
+func (q *queue) Kill(context.Context, identity.EventID, string, time.Time) error {
+	q.killed = true
+	return nil
+}
+
+func queueWith(t *testing.T) *queue {
+	t.Helper()
+	return &queue{claimed: storage.OutboxRow{
+		EventID:    eventOf(t, eventUUID),
+		WalletID:   walletOf(t),
+		EventType:  "WalletBalanceChanged",
+		Payload:    []byte(`{"data":{"balanceAfter":{"amount":"100.00"}}}`),
+		TraceID:    "4bf92f3577b34da6a3ce929d0e0e4736",
+		SpanID:     "00f067aa0ba902b7",
+		LeaseToken: token,
+	}}
+}
+
+// publisher is the broker in memory: it keeps what was sent, the budget the
+// send was given, and answers the refusal the case is about.
+type publisher struct {
+	sent      *Message
+	deadline  time.Time
+	refuse    error
+	permanent bool
+}
+
+func (p *publisher) Publish(ctx context.Context, message Message) error {
+	p.sent = &message
+	if deadline, ok := ctx.Deadline(); ok {
+		p.deadline = deadline
+	}
+	return p.refuse
+}
+
+func (p *publisher) Permanent(error) bool { return p.permanent }
+
+func relay(t *testing.T, rows *queue, sender *publisher) {
+	t.Helper()
+	service := New(rows, sender, noSpan, frozenClock{}, quietLogger(), lease)
+	if err := service.Relay(context.Background(), candidate(t)); err != nil {
+		t.Fatalf("Relay = %v, want nil", err)
+	}
+}
+
+func candidate(t *testing.T) storage.OutboxCandidate {
+	t.Helper()
+	return storage.OutboxCandidate{EventID: eventOf(t, eventUUID), WalletID: walletOf(t)}
+}
+
+func eventOf(t *testing.T, text string) identity.EventID {
+	t.Helper()
+	id, err := identity.ParseEventID(text)
+	if err != nil {
+		t.Fatalf("ParseEventID = %v, want nil", err)
+	}
+	return id
+}
+
+func walletOf(t *testing.T) identity.WalletID {
+	t.Helper()
+	id, err := identity.ParseWalletID("019974a4-0000-7000-8000-00000000a11e")
+	if err != nil {
+		t.Fatalf("ParseWalletID = %v, want nil", err)
+	}
+	return id
+}

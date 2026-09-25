@@ -4,11 +4,10 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
+	"github.com/junglegaming/backend-challenge-go/internal/platform/broker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 )
 
@@ -32,25 +31,13 @@ func (q *Queue) Open(ctx context.Context) error {
 }
 
 func NewClient(ctx context.Context, endpoint string) (*sqs.Client, error) {
-	awsCfg, err := loadAWS(ctx)
+	awsCfg, err := broker.LoadAWS(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return sqs.NewFromConfig(awsCfg, func(o *sqs.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
 	}), nil
-}
-
-// loadAWS takes the credential from the SDK default chain: the environment on
-// Compose and on CI, the role in the cloud.
-//
-// IMDS is disabled so that the chain does not wait on an address that only
-// answers inside EC2.
-func loadAWS(ctx context.Context) (aws.Config, error) {
-	return awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithDefaultRegion("us-east-1"),
-		awsconfig.WithEC2IMDSClientEnableState(imds.ClientDisabled),
-	)
 }
 
 func (q *Queue) Check(ctx context.Context) error {

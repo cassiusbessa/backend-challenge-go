@@ -31,6 +31,8 @@ func TestLoadRejectsBlankRequiredValues(t *testing.T) {
 		"DATABASE_URL",
 		"SQS_ENDPOINT",
 		"SQS_QUEUE_URL",
+		"SNS_ENDPOINT",
+		"SNS_TOPIC_ARN",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"IDP_ISSUER",
 		"CLIENTS_PATH",
@@ -138,6 +140,31 @@ func TestLoad_defaultsTheReferenceWaitWhenNobodySetIt(t *testing.T) {
 	}
 }
 
+func TestLoad_defaultsTheRelayWhenNobodySetIt(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load with no relay knob set = %v, want nil", err)
+	}
+	if cfg.OutboxInterval != time.Second {
+		t.Fatalf("OutboxInterval = %s, want 1s", cfg.OutboxInterval)
+	}
+	if cfg.OutboxLease != 30*time.Second {
+		t.Fatalf("OutboxLease = %s, want 30s", cfg.OutboxLease)
+	}
+}
+
+// The topic is what the relay publishes to, so a process without it cannot do
+// the work it would be coming up for.
+func TestLoad_refusesToComeUpWithoutTheAddressOfTheTopic(t *testing.T) {
+	t.Parallel()
+	_, err := Load(envWith("", "SNS_TOPIC_ARN"))
+	var missing MissingError
+	if !errors.As(err, &missing) || missing.Key != "SNS_TOPIC_ARN" {
+		t.Fatalf("Load with no topic address = %v, want MissingError on SNS_TOPIC_ARN", err)
+	}
+}
+
 func TestLoad_takesTheReferenceWaitTheEnvironmentSet(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(envWith("30s", "REFERENCE_TTL"))
@@ -184,6 +211,8 @@ func envWith(value, override string) func(string) string {
 		"DATABASE_URL":                "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable",
 		"SQS_ENDPOINT":                "http://localhost:4566",
 		"SQS_QUEUE_URL":               "http://localhost:4566/000000000000/wager-transactions.fifo",
+		"SNS_ENDPOINT":                "http://localhost:4566",
+		"SNS_TOPIC_ARN":               "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "localhost:4317",
 		"IDP_ISSUER":                  "http://localhost:8080/realms/junglegaming",
 		"CLIENTS_PATH":                "deploy/local/clients.yaml",
