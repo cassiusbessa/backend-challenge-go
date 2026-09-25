@@ -113,11 +113,26 @@ func TestWagerTransactions_refuseTheStatusesAndFieldsTheRuleForbids(t *testing.T
 			constraint: "wager_transactions_processed_records_balance",
 		},
 		{
+			// The deadline is carried so that the row breaks the schedule and
+			// nothing else: a row missing both would leave which constraint
+			// answered up to the database.
 			name: "a waiting row without the next attempt is refused",
 			row: external(host, "REFUND", 100).with(func(r *transaction) {
 				r.reference, r.status, r.observed = text("bet-1"), "PENDING_REFERENCE", nil
+				r.deadline = instant(waitEntered.Add(15 * time.Minute))
 			}),
 			constraint: "wager_transactions_waiting_has_next_attempt",
+		},
+		{
+			// A wait with no deadline expires on its first attempt: the worker
+			// reads the zero instant, finds it past and closes the wait one tick
+			// after it was recorded instead of fifteen minutes after.
+			name: "a waiting row without the deadline is refused",
+			row: external(host, "REFUND", 100).with(func(r *transaction) {
+				r.reference, r.status, r.observed = text("bet-1"), "PENDING_REFERENCE", nil
+				r.next = instant(waitEntered)
+			}),
+			constraint: "wager_transactions_waiting_has_deadline",
 		},
 	}
 	for _, tc := range cases {
@@ -347,6 +362,7 @@ type transaction struct {
 	failure   *string
 	observed  *int64
 	next      *time.Time
+	deadline  *time.Time
 }
 
 type entry struct {
@@ -444,14 +460,14 @@ INSERT INTO wager_transactions (
     id, kind, player_id, wallet_id, amount_cents, currency,
     provider_id, external_id, idempotency_key, body_hash, round_id, game_id,
     reference_external_id, status, failure_code, observed_balance_cents,
-    next_attempt_at, created_at, updated_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now(), now())`
+    next_attempt_at, reference_deadline_at, created_at, updated_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now(), now())`
 
 func insertTransaction(ctx context.Context, conn querier, row transaction) error {
 	_, err := conn.Exec(ctx, insertTransactionSQL,
 		row.id, row.kind, row.player, row.walletID, row.cents, row.currency,
 		row.provider, row.external, row.key, row.hash, row.round, row.game,
-		row.reference, row.status, row.failure, row.observed, row.next,
+		row.reference, row.status, row.failure, row.observed, row.next, row.deadline,
 	)
 	return err
 }
@@ -581,5 +597,13 @@ func newID() string {
 }
 
 func text(value string) *string {
+	return &value
+}
+
+// waitEntered is the instant the rows of a wait are recorded at. The cases about
+// the wait read instants and not a range, so the entry is fixed rather than now.
+var waitEntered = time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
+
+func instant(value time.Time) *time.Time {
 	return &value
 }

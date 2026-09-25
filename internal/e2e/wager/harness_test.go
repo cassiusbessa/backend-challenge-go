@@ -66,9 +66,17 @@ type suite struct {
 
 func start(t *testing.T) (context.Context, suite) {
 	t.Helper()
+	return startWith(t, nil)
+}
+
+// startWith boots the process with the configuration of the suite, overridden
+// where a case needs it: the TTL of the wait and the interval of the worker are
+// shortened so a case drives the clock instead of waiting it out.
+func startWith(t *testing.T, overrides map[string]string) (context.Context, suite) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	base := boot(ctx, t)
+	base := boot(ctx, t, overrides)
 	return ctx, suite{
 		base:     base,
 		internal: tokenFor(ctx, t, internalClient, internalSecret),
@@ -77,9 +85,13 @@ func start(t *testing.T) (context.Context, suite) {
 	}
 }
 
-func boot(ctx context.Context, t *testing.T) string {
+func boot(ctx context.Context, t *testing.T, overrides map[string]string) string {
 	t.Helper()
-	cfg, err := config.Load(func(key string) string { return suiteEnv()[key] })
+	env := suiteEnv()
+	for key, value := range overrides {
+		env[key] = value
+	}
+	cfg, err := config.Load(func(key string) string { return env[key] })
 	if err != nil {
 		t.Fatalf("config = %v, want nil", err)
 	}
@@ -113,6 +125,10 @@ func suiteEnv() map[string]string {
 		"IDP_ISSUER":                  issuer(),
 		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
 		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
+		// The worker scans far more often than production so a case reads the
+		// outcome of a wait instead of waiting out the default. The TTL stays at
+		// the default of the rule, and the cases about the deadline shorten it.
+		"REFERENCE_INTERVAL": "50ms",
 	}
 }
 
@@ -229,6 +245,14 @@ func (o owner) loss(changes map[string]any) string {
 
 func (o owner) win(amount string, changes map[string]any) string {
 	return o.of("WIN", amount, changes)
+}
+
+func (o owner) refund(amount string, changes map[string]any) string {
+	return o.of("REFUND", amount, changes)
+}
+
+func (o owner) rollback(amount string, changes map[string]any) string {
+	return o.of("ROLLBACK", amount, changes)
 }
 
 func (o owner) of(kind, amount string, changes map[string]any) string {

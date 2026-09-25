@@ -169,28 +169,51 @@ func TestSubmit_refusesAWalletThatDoesNotExistWithoutARow(t *testing.T) {
 	assertRowsForKey(ctx, t, key, 0)
 }
 
-func TestSubmit_refusesWhatThisDeliveryDoesNotAcceptWithoutARow(t *testing.T) {
+// What is still refused with no row is the operation whose row would violate an
+// invariant of the table: the internal OPENING arriving from a provider, and the
+// reversal that cites nothing.
+func TestSubmit_refusesTheOperationsThatCanCarryNoRow(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
 	cases := []struct {
 		name    string
 		payload string
+		code    string
 	}{
-		{name: "a rollback is refused", payload: wallet.of("ROLLBACK", "25.00", map[string]any{"referenceExternalTransactionId": "bet-1"})},
-		{name: "a refund is refused", payload: wallet.of("REFUND", "25.00", map[string]any{"referenceExternalTransactionId": "bet-1"})},
-		{name: "a win citing a bet is refused", payload: wallet.win("25.00", map[string]any{"referenceExternalTransactionId": "bet-1"})},
-		{name: "an opening is refused", payload: wallet.of("OPENING", "25.00", nil)},
+		{name: "an opening is refused", payload: wallet.of("OPENING", "25.00", nil), code: "OPENING_NOT_ALLOWED"},
+		{name: "a refund citing nothing is refused", payload: wallet.refund("25.00", nil), code: "REFERENCE_REQUIRED"},
+		{name: "a rollback citing nothing is refused", payload: wallet.rollback("25.00", nil), code: "REFERENCE_REQUIRED"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			key := "key-" + newID()
 			refused := submit(ctx, t, at, at.provider, key, tc.payload)
-			if refused.status == http.StatusCreated {
-				t.Fatalf("status = %d, want the request refused", refused.status)
+			if refused.status != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422: %s", refused.status, refused.body)
+			}
+			if got := refused.refusal(t).FailureCode; got != tc.code {
+				t.Fatalf("failureCode = %s, want %s", got, tc.code)
 			}
 			assertRowsForKey(ctx, t, key, 0)
 		})
 	}
+	assertWallet(ctx, t, wallet.id, 100000, 1)
+}
+
+// The cited operation spelled wrong is invalid input, not a rule refusing
+// anything: the answer carries no token and no row is written.
+func TestSubmit_refusesACitedOperationOutOfFormatWithoutARow(t *testing.T) {
+	ctx, at := start(t)
+	wallet := openWallet(ctx, t, at)
+	key := "key-" + newID()
+	refused := submit(ctx, t, at, at.provider, key, wallet.win("25.00", map[string]any{"referenceExternalTransactionId": "  "}))
+	if refused.status != http.StatusBadRequest {
+		t.Fatalf("a cited operation out of format = %d, want 400: %s", refused.status, refused.body)
+	}
+	if got := refused.refusal(t).FailureCode; got != "" {
+		t.Fatalf("failureCode = %s, want empty for invalid input", got)
+	}
+	assertRowsForKey(ctx, t, key, 0)
 	assertWallet(ctx, t, wallet.id, 100000, 1)
 }
 
