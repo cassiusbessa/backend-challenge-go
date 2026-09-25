@@ -19,7 +19,7 @@ Este documento registra as decisões do desenho inteiro. Nem tudo está escrito 
 | Lock pessimista da carteira com guarda de versão, e escrita perdida tratada como falha transitória | implementado |
 | `BET`, `LOSS` e `WIN` sem referência por HTTP, em `POST /wagering/transactions` e `GET /wagering/transactions/{transactionId}` | implementado |
 | Autorização das rotas de aposta pelo papel de provedor, com o `providerId` do corpo conferido contra o cliente do token | implementado |
-| `WIN` com referência, `REFUND`, `ROLLBACK`, `PENDING_REFERENCE`, TTL e worker da espera | decidido, não implementado |
+| `WIN` com referência, `REFUND`, `ROLLBACK`, `PENDING_REFERENCE` com o 202 da borda, TTL e worker da espera | implementado |
 | Inbox, outbox, consumidor SQS, publisher SNS | decidido, não implementado |
 | Ledger paginado, reconciliação | decidido, não implementado |
 
@@ -55,7 +55,7 @@ Estados: `PENDING`, `PENDING_REFERENCE`, `PROCESSED`, `REJECTED`, `FAILED`. Não
 
 `PENDING` é trabalho interrompido — a operação já tem todos os dados. No caminho feliz ele só existe em memória: o commit grava `PROCESSED`. `PENDING` não é status gravável.
 
-`PENDING_REFERENCE` é espera pela operação citada, que ainda não chegou por outro canal. A linha fica no banco, a mensagem de entrada se conclui, e o worker de referência assume.
+`PENDING_REFERENCE` é espera pela operação citada, que ainda não chegou por outro canal. A linha fica no banco, a mensagem de entrada se conclui, e o worker de referência assume. Na borda HTTP essa aceitação tem desfecho próprio: **202**, com o recurso apontado e o estado no corpo, sem saldo observado e fora de problem details. Empilhá-la no 201 obrigaria o provedor a ler o corpo para saber se houve movimento financeiro, que é exatamente o que um código distinto evita.
 
 `OPENING` com saldo positivo já nasce `PROCESSED`, com o lançamento. Saldo inicial zero não cria `OPENING` nem lançamento. `LOSS` termina `PROCESSED`, sem lançamento e sem incrementar a versão.
 
@@ -89,7 +89,11 @@ A ordem é sempre carteira, depois transação — inclusive no worker de refer�
 
 Ao entrar em `PENDING_REFERENCE`, `referenceDeadlineAt = agora + TTL` é gravado uma vez. O TTL padrão é 15 minutos, configurável. Quem encerra a espera é esse prazo, não um teto de tentativas.
 
-O worker só tenta quando `nextAttemptAt` chegou, e reivindica a linha com lock para duas réplicas não concluírem a mesma espera. O backoff é exponencial com base 1s, fator 2 e teto 60s, com o intervalo sorteado entre zero e esse teto. `attemptCount` é métrica.
+O worker só tenta quando `nextAttemptAt` chegou, e reivindica a linha com lock para duas réplicas não concluírem a mesma espera. O backoff é exponencial com base 1s, fator 2 e teto 60s, com o intervalo sorteado entre zero e esse teto, e o instante agendado nunca passa do prazo. `attemptCount` é métrica.
+
+Ele é o primeiro processo de fundo do binário e sobe no mesmo lifecycle do servidor HTTP, depois do pool. O turno tem dois passos, e a ordem é o ponto: a varredura escolhe candidatos **sem lock e fora de transação**, servida pelo índice parcial `(next_attempt_at) WHERE status = 'PENDING_REFERENCE'`; a decisão abre uma transação, trava a carteira, reivindica a linha com `FOR UPDATE SKIP LOCKED` e reconfere estado e prazo sob esse lock. O estado que vale é o relido, nunca o que a varredura viu. Reivindicar a transação antes da carteira inverteria a ordem contra a submissão.
+
+Quem escolhe entre `REFERENCE_NOT_FOUND` e `REFERENCE_NOT_PROCESSED` no vencimento é o worker: `checkReference` devolve a mesma decisão de esperar para a citada ausente e para a que ainda está em andamento, porque a distinção só importa quando o relógio encerra — e o relógio não está no domínio. `REFERENCE_TTL` e `REFERENCE_INTERVAL` são configuráveis, com 15 minutos e 1 segundo de padrão; valor malformado impede a subida em vez de cair no padrão.
 
 - Operação citada ausente até o prazo: `REJECTED`, `REFERENCE_NOT_FOUND`.
 - Operação citada ainda em andamento até o prazo: `REJECTED`, `REFERENCE_NOT_PROCESSED`.
@@ -102,7 +106,9 @@ Chegar depois do prazo não reabre um `REJECTED`. `OPENING` vindo de HTTP ou SQS
 
 `REFUND` reverte um `BET`; `ROLLBACK` reverte um `WIN` ou um `REFUND`. Os dois exigem `referenceExternalTransactionId`, e a reversão usa o valor integral da operação citada — valor diferente rejeita com `REVERSAL_AMOUNT_MISMATCH`.
 
-Cada transação aceita uma única reversão `PROCESSED`. A garantia é um índice único parcial no PostgreSQL, não uma verificação prévia em Go: a perdedora da disputa fica `REJECTED` com `ALREADY_REVERSED`, sem lançamento. `ROLLBACK` de um `REFUND` aponta para o estorno, e esse estorno também só aceita um.
+Cada transação aceita uma única reversão `PROCESSED`, e o índice único parcial no PostgreSQL é a invariante que sustenta isso. Quem **decide** `ALREADY_REVERSED`, porém, é a consulta feita depois do `SELECT … FOR UPDATE` da carteira, e não o índice: ela roda sob o lock, então a segunda reversão só chega a ela quando a primeira já commitou e é visível. É o contrário do que vale para os dois índices de idempotência, cuja busca roda **antes** do lock de propósito — daí o índice ser o árbitro lá e a perdedora reler a linha depois do rollback.
+
+A diferença não é de estilo: `go-db-invariants` exige que a perdedora fique `REJECTED` com `ALREADY_REVERSED`, e a violação de índice aborta a transação SQL inteira, então gravar essa rejeição exigiria uma segunda transação que pode ela mesma falhar e deixar nada gravado. Por isso o nome desse índice não é mapeado para rejeição em `postgres/errors.go`: uma violação dele cai como falha de infraestrutura, a transação desfaz, e o reenvio do provedor encontra a consulta sob o lock respondendo o token corretamente. `ROLLBACK` de um `REFUND` aponta para o estorno, e esse estorno também só aceita um.
 
 A operação citada precisa fechar em jogador, carteira, moeda, rodada e tipo; se não fechar, `REFERENCE_MISMATCH`. Uma reversão que deixaria o saldo negativo rejeita com `REVERSAL_INSUFFICIENT_FUNDS`.
 

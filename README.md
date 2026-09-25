@@ -69,7 +69,7 @@ A segunda carteira do mesmo jogador na mesma moeda responde 409, decidido pela u
 
 `POST /wagering/transactions` liquida a operação do provedor e `GET /wagering/transactions/{transactionId}` devolve o resultado gravado. As duas exigem token de provedor: o cliente interno recebe 403 nelas, e o provedor continua recebendo 403 nas rotas de carteira.
 
-Esta entrega aceita `BET`, `LOSS` e `WIN` sem operação citada. `REFUND`, `ROLLBACK` e qualquer corpo com `referenceExternalTransactionId` respondem 400 como entrada não aceita, sem gravar linha — a entrega da referência pendente troca essa recusa pela espera.
+A rota aceita `BET`, `LOSS`, `WIN`, `REFUND` e `ROLLBACK`. O corpo leva `referenceExternalTransactionId` quando a operação cita outra: as duas reversões sempre o exigem, e um `WIN` pode trazê-lo. O campo presente e fora de formato responde 400 sem gravar linha; ausente, a operação se decide sozinha.
 
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
@@ -91,9 +91,40 @@ A primeira conclusão responde 201, com `Location` apontando o recurso criado e 
 
 A mesma chave com o mesmo corpo responde 200 com `idempotentReplay: true` e o saldo observado na conclusão original — não o saldo atual. A mesma chave com outro corpo responde 422 `IDEMPOTENCY_CONFLICT`, e o mesmo `externalTransactionId` com outra chave responde 422 `DUPLICATE_EXTERNAL_TRANSACTION`. Nenhuma das duas grava segunda linha: quem decide a duplicidade é o índice único do banco, não uma consulta prévia que duas réplicas vencem ao mesmo tempo.
 
-`INSUFFICIENT_FUNDS`, `PLAYER_WALLET_MISMATCH` e `CURRENCY_MISMATCH` gravam a transação `REJECTED` com o token, sem lançamento e sem mexer no saldo. **A rejeição durável ocupa a chave de idempotência**: reenviar a mesma chave com o mesmo corpo devolve a mesma recusa, agora marcada como replay, e tentar de novo de verdade exige chave nova. `WALLET_NOT_FOUND`, `OPENING_NOT_ALLOWED` e `AMOUNT_NOT_ALLOWED_FOR_KIND` recusam sem gravar linha, porque a linha correspondente violaria as invariantes da tabela.
+`INSUFFICIENT_FUNDS`, `PLAYER_WALLET_MISMATCH` e `CURRENCY_MISMATCH` gravam a transação `REJECTED` com o token, sem lançamento e sem mexer no saldo, e o mesmo vale para os tokens decididos sobre a carteira travada: `REVERSAL_INSUFFICIENT_FUNDS`, `REVERSAL_AMOUNT_MISMATCH`, `REFERENCE_MISMATCH`, `REFERENCE_UNSUCCESSFUL` e `ALREADY_REVERSED`. **A rejeição durável ocupa a chave de idempotência**: reenviar a mesma chave com o mesmo corpo devolve a mesma recusa, agora marcada como replay, e tentar de novo de verdade exige chave nova. `WALLET_NOT_FOUND`, `OPENING_NOT_ALLOWED`, `AMOUNT_NOT_ALLOWED_FOR_KIND` e `REFERENCE_REQUIRED` recusam sem gravar linha, porque a linha correspondente violaria as invariantes da tabela.
 
 Duas apostas simultâneas na mesma carteira se serializam pelo lock da linha: a segunda lê o saldo já commitado e, se não couber, sai com `INSUFFICIENT_FUNDS`. Carteiras diferentes não esperam uma pela outra.
+
+### A operação que cita outra
+
+`REFUND` estorna um `BET` e `ROLLBACK` reverte um `WIN` ou um `REFUND`, sempre pelo valor integral da citada — valor diferente responde 422 `REVERSAL_AMOUNT_MISMATCH`. Cada operação aceita uma reversão `PROCESSED` só: a segunda responde 422 `ALREADY_REVERSED`, com a linha gravada e sem lançamento novo.
+
+Quando a operação citada já está `PROCESSED`, tudo se decide no mesmo commit da submissão — como no `ext-0001` acima, que um `REFUND` de `"25.00"` citando-o estorna na hora. Quando ela ainda não chegou pelo outro canal — aqui `ext-0009`, que ninguém enviou —, a submissão é **aceita e fica esperando**:
+
+```bash
+curl -i -X POST http://localhost:8090/wagering/transactions \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: key-0002' \
+  -d '{"providerId":"provider-a","externalTransactionId":"ext-0002",
+       "playerId":"3f8c4a2e-1b5d-4e7a-9c3f-2d6b8a1e5c40","walletId":"<id da carteira>",
+       "roundId":"round-0009","gameId":"crash","kind":"WIN",
+       "referenceExternalTransactionId":"ext-0009",
+       "money":{"amount":"50.00","currency":"BRL"}}'
+```
+
+A resposta é **202**, com `Location` apontando o recurso criado e o estado `PENDING_REFERENCE`. Ela não traz saldo observado, porque nenhum commit concluiu a operação, e não é problem details: nenhuma regra a recusou. O código é próprio de propósito — 201 com o estado no corpo obrigaria o provedor a ler o corpo para saber se houve movimento financeiro.
+
+O worker de referência é o processo de fundo que encerra essa espera. Ele sobe com o binário, varre a fila no intervalo configurado e decide cada linha sob o lock da carteira:
+
+- a citada chega `PROCESSED` e compatível dentro do prazo: a operação segue, com o lançamento e o saldo no mesmo commit;
+- a citada já terminou `REJECTED` ou `FAILED`: `REFERENCE_UNSUCCESSFUL` na hora, sem aguardar o prazo;
+- a citada chega e não fecha em jogador, carteira, rodada ou tipo: `REFERENCE_MISMATCH`;
+- o prazo vence e a citada não existe: `REFERENCE_NOT_FOUND`;
+- o prazo vence e a citada existe sem ter concluído: `REFERENCE_NOT_PROCESSED`.
+
+O prazo é gravado uma vez, na entrada, como `agora + REFERENCE_TTL` — 15 minutos por padrão. Entre tentativas o worker aplica backoff exponencial de base 1s, fator 2 e teto de 60s, com o intervalo sorteado e nunca agendado depois do prazo. Uma espera encerrada é terminal: a citada chegando depois não reabre nada.
+
+Enquanto a espera dura, a mesma chave com o mesmo corpo responde 200 com `PENDING_REFERENCE` e `idempotentReplay: true`, sem saldo observado — o reenvio não antecipa o prazo nem mexe no agendamento. Depois do encerramento, ela devolve o desfecho gravado.
 
 A consulta devolve o resultado gravado ao provedor dono:
 
@@ -102,7 +133,7 @@ curl -s http://localhost:8090/wagering/transactions/<transactionId> \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Ela responde 200 com estado, quantia, saldo observado quando houver e `failureCode` quando o estado é `REJECTED` — a leitura concluiu, então não é problem details. Transação de outro provedor responde 404 igual a uma inexistente: nem o corpo nem o status revelam que o registro existe.
+Ela responde 200 com estado, quantia, saldo observado quando houver e `failureCode` quando o estado é `REJECTED` — a leitura concluiu, então não é problem details. Uma transação em `PENDING_REFERENCE` responde 200 com esse estado e sem saldo observado; a leitura não tenta a espera, não antecipa o prazo e não mexe no agendamento. Transação de outro provedor responde 404 igual a uma inexistente: nem o corpo nem o status revelam que o registro existe.
 
 ## Broker
 
@@ -130,7 +161,9 @@ O LocalStack community não persiste: qualquer reinício do container esvazia fi
 
 O ready do processo só fica verde depois desse apply: a fila `wager-transactions.fifo` precisa existir. Sem ela, `GET /health/ready` responde 503 e `GET /health/live` continua 200. O `pprof` escuta em `127.0.0.1:6060` dentro do container e o Compose não publica essa porta.
 
-No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha.
+No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` o worker de referência para de reivindicar espera nova, e a que ele já reivindicou conclui ou desfaz dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica.
+
+Duas variáveis configuram a espera por referência, e as duas têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila, 1 segundo. Qualquer uma delas escrita com algo que não seja uma duração positiva impede a subida em vez de cair no padrão.
 
 ## Token
 
