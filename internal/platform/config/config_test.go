@@ -121,6 +121,63 @@ func TestLoadRejectsNonPositiveShutdownTimeout(t *testing.T) {
 	}
 }
 
+// The two knobs of the reference wait: the TTL go-reference-wait says is
+// configurable, and the interval the integration suite shortens so a case does
+// not wait out the default of production.
+func TestLoad_defaultsTheReferenceWaitWhenNobodySetIt(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load with no reference wait set = %v, want nil", err)
+	}
+	if cfg.ReferenceTTL != 15*time.Minute {
+		t.Fatalf("ReferenceTTL = %s, want the 15m of the rule", cfg.ReferenceTTL)
+	}
+	if cfg.ReferenceInterval != time.Second {
+		t.Fatalf("ReferenceInterval = %s, want 1s", cfg.ReferenceInterval)
+	}
+}
+
+func TestLoad_takesTheReferenceWaitTheEnvironmentSet(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("30s", "REFERENCE_TTL"))
+	if err != nil {
+		t.Fatalf("Load with a reference TTL of 30s = %v, want nil", err)
+	}
+	if cfg.ReferenceTTL != 30*time.Second {
+		t.Fatalf("ReferenceTTL = %s, want 30s", cfg.ReferenceTTL)
+	}
+}
+
+// A value that cannot be read is not rounded to the default: a process
+// configured wrong does not come up, so it does not close a wait early or late
+// without anyone noticing.
+func TestLoad_refusesAReferenceWaitThatIsNotAPositiveDuration(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "a TTL that is not a duration", key: "REFERENCE_TTL", value: "fifteen minutes"},
+		{name: "a TTL of zero", key: "REFERENCE_TTL", value: "0s"},
+		{name: "an interval that is negative", key: "REFERENCE_INTERVAL", value: "-1s"},
+		{name: "an interval that is not a duration", key: "REFERENCE_INTERVAL", value: "often"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(envWith(tc.value, tc.key))
+			var invalid InvalidError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("error = %v, want InvalidError on %s", err, tc.key)
+			}
+			if invalid.Key != tc.key {
+				t.Fatalf("refused key = %s, want %s", invalid.Key, tc.key)
+			}
+		})
+	}
+}
+
 func envWith(value, override string) func(string) string {
 	base := map[string]string{
 		"HTTP_ADDR":                   "127.0.0.1:0",
@@ -141,11 +198,11 @@ func TestParseJWKSURL_defaultsToTheRealmEndpointOfTheIssuer(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(envWith("", ""))
 	if err != nil {
-		t.Fatalf("Load = %v, want nil", err)
+		t.Fatalf("Load with no key set address = %v, want nil", err)
 	}
 	want := "http://localhost:8080/realms/junglegaming/protocol/openid-connect/certs"
 	if cfg.IDPJWKSURL != want {
-		t.Fatalf("IDPJWKSURL = %s, want %s", cfg.IDPJWKSURL, want)
+		t.Fatalf("defaulted key set = %s, want %s", cfg.IDPJWKSURL, want)
 	}
 }
 
@@ -154,12 +211,43 @@ func TestParseJWKSURL_keepsAnAddressReachableFromInsideTheNetwork(t *testing.T) 
 	explicit := "http://keycloak:8080/realms/junglegaming/protocol/openid-connect/certs"
 	cfg, err := Load(envWith(explicit, "IDP_JWKS_URL"))
 	if err != nil {
-		t.Fatalf("Load = %v, want nil", err)
+		t.Fatalf("Load with the key set set apart = %v, want nil", err)
 	}
 	if cfg.IDPJWKSURL != explicit {
 		t.Fatalf("IDPJWKSURL = %s, want %s", cfg.IDPJWKSURL, explicit)
 	}
 	if cfg.IDPIssuer != "http://localhost:8080/realms/junglegaming" {
 		t.Fatalf("IDPIssuer = %s, want the issuer untouched", cfg.IDPIssuer)
+	}
+}
+
+// Every duration of the configuration reads through here: absent falls to the
+// default, and a value that was set is taken as it was written.
+func TestParseDuration_answersTheDefaultOrTheValueThatWasSet(t *testing.T) {
+	t.Parallel()
+	got, err := parseDuration("REFERENCE_TTL", "", 15*time.Minute)
+	if err != nil || got != 15*time.Minute {
+		t.Fatalf("parseDuration of an unset key = %s with %v, want the default with nil", got, err)
+	}
+	got, err = parseDuration("REFERENCE_TTL", "90s", 15*time.Minute)
+	if err != nil || got != 90*time.Second {
+		t.Fatalf("parseDuration of a value that was set = %s with %v, want 1m30s with nil", got, err)
+	}
+}
+
+// What is not a positive duration keeps the process from coming up rather than
+// being rounded to the default: a knob nobody can read is not a knob at its
+// default.
+func TestParseDuration_refusesWhatIsNotAPositiveDuration(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"soon", "0s", "-1s"} {
+		refused, err := parseDuration("REFERENCE_TTL", raw, 15*time.Minute)
+		var invalid InvalidError
+		if !errors.As(err, &invalid) || invalid.Key != "REFERENCE_TTL" {
+			t.Fatalf("parseDuration of %q = %v, want InvalidError on REFERENCE_TTL", raw, err)
+		}
+		if refused != 0 {
+			t.Fatalf("duration beside the refusal of %q = %s, want the zero value", raw, refused)
+		}
 	}
 }

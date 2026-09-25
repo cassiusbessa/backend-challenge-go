@@ -19,6 +19,16 @@ type Config struct {
 	SampleRatio     float64
 	ShutdownTimeout time.Duration
 	PPROFAddr       string
+
+	// ReferenceTTL is how long an operation waits for the one it cites before the
+	// clock closes the wait. go-reference-wait fixes the default at fifteen
+	// minutes and says it is configurable.
+	ReferenceTTL time.Duration
+
+	// ReferenceInterval is how often the worker scans the queue of waits. The
+	// default suits production; the integration suite shortens it so a case does
+	// not wait out the default.
+	ReferenceInterval time.Duration
 }
 
 type MissingError struct {
@@ -70,6 +80,8 @@ func read(getenv func(string) string) map[string]string {
 		"OTEL_SAMPLE_RATIO",
 		"SHUTDOWN_TIMEOUT",
 		"PPROF_ADDR",
+		"REFERENCE_TTL",
+		"REFERENCE_INTERVAL",
 	}
 	out := make(map[string]string, len(keys))
 	for _, key := range keys {
@@ -108,7 +120,15 @@ func build(raw map[string]string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	timeout, err := parseTimeout(raw["SHUTDOWN_TIMEOUT"])
+	timeout, err := parseDuration("SHUTDOWN_TIMEOUT", raw["SHUTDOWN_TIMEOUT"], defaultShutdownTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	ttl, err := parseDuration("REFERENCE_TTL", raw["REFERENCE_TTL"], defaultReferenceTTL)
+	if err != nil {
+		return Config{}, err
+	}
+	interval, err := parseDuration("REFERENCE_INTERVAL", raw["REFERENCE_INTERVAL"], defaultReferenceInterval)
 	if err != nil {
 		return Config{}, err
 	}
@@ -124,7 +144,41 @@ func build(raw map[string]string) (Config, error) {
 		SampleRatio:     ratio,
 		ShutdownTimeout: timeout,
 		PPROFAddr:       parsePPROF(raw["PPROF_ADDR"]),
+
+		ReferenceTTL:      ttl,
+		ReferenceInterval: interval,
 	}, nil
+}
+
+// The defaults of the reference wait. The TTL is the fifteen minutes of
+// go-reference-wait. The interval is the base of the backoff, so a wait due now
+// is picked up within one turn of the scan rather than a turn later.
+//
+// Every duration of the configuration reads through parseDuration: a knob left
+// unset falls to its default, and one set to something that is not a positive
+// duration keeps the process from coming up at all.
+const (
+	defaultReferenceTTL      = 15 * time.Minute
+	defaultReferenceInterval = time.Second
+)
+
+// defaultShutdownTimeout is the deadline the process has to finish the request
+// in flight, flush telemetry and stop the background work.
+const defaultShutdownTimeout = 10 * time.Second
+
+// parseDuration answers the default for a key nobody set, and refuses one that
+// is set to something that is not a positive duration. A value that cannot be
+// read is not rounded to the default: a process configured wrong does not come
+// up at all.
+func parseDuration(key, raw string, fallback time.Duration) (time.Duration, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		return 0, InvalidError{Key: key}
+	}
+	return value, nil
 }
 
 // parseJWKSURL defaults the key set to the realm endpoint of the issuer.
@@ -165,21 +219,6 @@ func invalidRatio(value float64) bool {
 		return true
 	}
 	return value < 0 || value > 1
-}
-
-func parseTimeout(raw string) (time.Duration, error) {
-	if raw == "" {
-		return 10 * time.Second, nil
-	}
-	return positiveTimeout(raw)
-}
-
-func positiveTimeout(raw string) (time.Duration, error) {
-	duration, err := time.ParseDuration(raw)
-	if err != nil || duration <= 0 {
-		return 0, InvalidError{Key: "SHUTDOWN_TIMEOUT"}
-	}
-	return duration, nil
 }
 
 func parsePPROF(raw string) string {
