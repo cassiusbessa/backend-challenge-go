@@ -86,7 +86,7 @@ func TestIngress_changesNothingWhenTheSameMessageIsRedelivered(t *testing.T) {
 		t.Fatalf("transactions of the provider = %d, want 1", got)
 	}
 	if got := countInbox(ctx, t, conn, identity); got != 1 {
-		t.Fatalf("inbox rows = %d, want 1", got)
+		t.Fatalf("inbox rows after the redelivery = %d, want 1", got)
 	}
 	if got := at.queues.depth(ctx, t, at.queues.dead); got != 0 {
 		t.Fatalf("messages on the dead-letter queue = %d, want 0", got)
@@ -156,13 +156,13 @@ func TestIngress_abandonsARecordedIdentifierThatArrivesWithAnotherBody(t *testin
 	at.queues.awaitEmpty(ctx, t)
 
 	if again := storedWallet(ctx, t, conn, holder.id); again != settled {
-		t.Fatalf("balance and version = %d and %d, want the %d and %d of the first delivery", again.cents, again.version, settled.cents, settled.version)
+		t.Fatalf("balance and version after the other body = %d and %d, want the %d and %d before the other body", again.cents, again.version, settled.cents, settled.version)
 	}
 	if got := countExternal(ctx, t, conn, holder.id); got != 1 {
 		t.Fatalf("transactions of the provider = %d, want the 1 of the first delivery", got)
 	}
 	if got := countInbox(ctx, t, conn, identity); got != 1 {
-		t.Fatalf("inbox rows = %d, want the 1 of the first delivery", got)
+		t.Fatalf("inbox rows after the other body = %d, want the 1 of the first delivery", got)
 	}
 }
 

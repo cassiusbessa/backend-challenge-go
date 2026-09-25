@@ -65,7 +65,7 @@ func TestApplicationRole_holdsOnlySelectAndInsertOnTheInbox(t *testing.T) {
 	ctx, conn := connect(t)
 	message := newID()
 	if err := insertInbox(ctx, conn, inbox{consumer: ingressConsumer, message: message, hash: "hash-1"}); err != nil {
-		t.Fatalf("inbox row = %v, want nil", err)
+		t.Fatalf("inbox row of the role case = %v, want nil", err)
 	}
 	if _, err := conn.Exec(ctx, "SET ROLE wager_app"); err != nil {
 		t.Fatalf("set role = %v, want nil", err)

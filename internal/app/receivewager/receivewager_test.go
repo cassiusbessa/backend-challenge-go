@@ -35,7 +35,7 @@ func TestReceive_handsTheMessageToTheSubmissionItCaused(t *testing.T) {
 	t.Parallel()
 	submitter := &recordingSubmitter{status: wager.Processed}
 	if _, err := New(openSenders{}, submitter).Receive(context.Background(), delivery(t)); err != nil {
-		t.Fatalf("Receive = %v, want nil", err)
+		t.Fatalf("Receive handing the message over = %v, want nil", err)
 	}
 	if submitter.caused.MessageID != "message-1" {
 		t.Fatalf("message = %q, want message-1", submitter.caused.MessageID)
@@ -68,7 +68,7 @@ func TestReceive_asksTheMapAboutTheProviderTheBodyDeclares(t *testing.T) {
 	t.Parallel()
 	senders := &recordingSenders{}
 	if _, err := New(senders, &recordingSubmitter{status: wager.Processed}).Receive(context.Background(), delivery(t)); err != nil {
-		t.Fatalf("Receive = %v, want nil", err)
+		t.Fatalf("Receive over a recording map = %v, want nil", err)
 	}
 	if senders.sender != "000000000000" {
 		t.Fatalf("sender asked about = %q, want the observed 000000000000", senders.sender)

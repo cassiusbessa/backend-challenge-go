@@ -487,7 +487,7 @@ func TestDecodeSubmit_answersTheSameCommandAsTheQueueForTheSameBusiness(t *testi
 	t.Parallel()
 	overHTTP, err := decode(t, submission(nil), "key-1")
 	if err != nil {
-		t.Fatalf("decodeSubmit = %v, want nil", err)
+		t.Fatalf("decodeSubmit of the shared business = %v, want nil", err)
 	}
 	overQueue, err := wagerqueue.Decode(queueMessage(t))
 	if err != nil {

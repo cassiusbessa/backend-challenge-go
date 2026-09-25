@@ -138,13 +138,13 @@ func causationInPayload(t *testing.T, payload any) string {
 	t.Helper()
 	raw, ok := payload.([]byte)
 	if !ok {
-		t.Fatalf("payload = %T, want the marshalled bytes", payload)
+		t.Fatalf("payload read for the cause = %T, want the marshalled bytes", payload)
 	}
 	var out struct {
 		CausationID string `json:"causationId"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("Unmarshal = %v, want nil", err)
+		t.Fatalf("Unmarshal of the cause = %v, want nil", err)
 	}
 	return out.CausationID
 }

@@ -78,7 +78,7 @@ func TestDecide_returnsTheMessageWithTheBackoffOfItsDeliveryCount(t *testing.T) 
 			consumer, _, _ := consumerOver(t, queue, &fakeReceiver{refuse: errors.New("connection reset")})
 			consumer.decide(context.Background(), arrived(tc.deliveries))
 			if queue.released != 1 {
-				t.Fatalf("releases = %d, want 1", queue.released)
+				t.Fatalf("releases of a transient failure = %d, want 1", queue.released)
 			}
 			if queue.window != tc.window {
 				t.Fatalf("window = %s, want %s", queue.window, tc.window)
@@ -178,7 +178,7 @@ func TestDecide_abandonsAnInvalidBodyWithoutReachingTheUseCase(t *testing.T) {
 		t.Fatalf("reason = %v, want %s", line["reason"], reasonInvalidBody)
 	}
 	if line["messageId"] != deduplicationID {
-		t.Fatalf("messageId = %v, want the %s the broker registered", line["messageId"], deduplicationID)
+		t.Fatalf("messageId of an undecoded body = %v, want the %s the broker registered", line["messageId"], deduplicationID)
 	}
 }
 
@@ -212,7 +212,7 @@ func TestDecide_namesTheMessageOnEveryLineAndCorrelatesByItWhenThereIsNoneInTheE
 	consumer.decide(context.Background(), delivery)
 	line := lineWith(t, logs, "settled")
 	if line["messageId"] != messageID {
-		t.Fatalf("messageId = %v, want %s", line["messageId"], messageID)
+		t.Fatalf("messageId of the settled line = %v, want %s", line["messageId"], messageID)
 	}
 	if line["correlationId"] != messageID {
 		t.Fatalf("correlationId = %v, want the identity of the message %s", line["correlationId"], messageID)
@@ -228,7 +228,7 @@ func TestDecide_correlatesByTheEnvelopeWhenItCarriesOne(t *testing.T) {
 		t.Fatalf("correlationId = %v, want the %s of the envelope", line["correlationId"], correlationID)
 	}
 	if line["messageId"] != messageID {
-		t.Fatalf("messageId = %v, want %s", line["messageId"], messageID)
+		t.Fatalf("messageId beside the correlation of the envelope = %v, want %s", line["messageId"], messageID)
 	}
 }
 
@@ -243,7 +243,7 @@ func TestDecide_continuesTheTraceTheMessageCarried(t *testing.T) {
 	consumer.decide(context.Background(), delivery)
 	ended := spans.Ended()
 	if len(ended) != 1 {
-		t.Fatalf("spans = %d, want 1", len(ended))
+		t.Fatalf("spans of a message that carried a trace = %d, want 1", len(ended))
 	}
 	if got := ended[0].SpanContext().TraceID().String(); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
 		t.Fatalf("trace = %s, want the one of the origin", got)
@@ -257,7 +257,7 @@ func TestDecide_opensATraceOfItsOwnForAMessageWithNoPropagation(t *testing.T) {
 	consumer.decide(context.Background(), arrived(1))
 	ended := spans.Ended()
 	if len(ended) != 1 {
-		t.Fatalf("spans = %d, want 1", len(ended))
+		t.Fatalf("spans of a message with no propagation = %d, want 1", len(ended))
 	}
 	if !ended[0].SpanContext().TraceID().IsValid() {
 		t.Fatalf("trace = %s, want one of its own", ended[0].SpanContext().TraceID())
@@ -282,7 +282,7 @@ func TestDecide_boundsTheDecisionByTheTimeoutOfTheConfiguration(t *testing.T) {
 		t.Fatalf("deadline = %s, want it no wider than the timeout %s", slow.deadline, quick.Timeout)
 	}
 	if queue.deleted != 0 {
-		t.Fatalf("deletes = %d, want 0: nothing was committed", queue.deleted)
+		t.Fatalf("deletes of a decision that ran out of time = %d, want 0", queue.deleted)
 	}
 	if queue.released != 1 {
 		t.Fatalf("releases = %d, want 1", queue.released)
@@ -296,7 +296,7 @@ func TestStop_fetchesNoNewMessageAfterTheSignal(t *testing.T) {
 	queue := &fakeQueue{fetched: make(chan struct{})}
 	consumer, _, _ := consumerOver(t, queue, &fakeReceiver{status: wager.Processed})
 	if err := consumer.Start(context.Background()); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
+		t.Fatalf("Start before the signal = %v, want nil", err)
 	}
 	queue.awaitFetch(t)
 	during := queue.fetches()
@@ -304,7 +304,7 @@ func TestStop_fetchesNoNewMessageAfterTheSignal(t *testing.T) {
 	// it: there is nobody left to fetch. That is the assertion, and it needs no
 	// waiting — a sleep here would only be a slower way of reading the same thing.
 	if err := consumer.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop = %v, want nil", err)
+		t.Fatalf("Stop on the signal = %v, want nil", err)
 	}
 	if got := queue.fetches(); got != during {
 		t.Fatalf("fetches after the signal = %d, want the %d it had stopped at", got, during)
@@ -326,13 +326,13 @@ func TestDecide_handsTheMessageBackAtOnceWhenTheShutdownCutTheDecision(t *testin
 	cut()
 	consumer.decide(work, arrived(1))
 	if queue.released != 1 {
-		t.Fatalf("releases = %d, want 1", queue.released)
+		t.Fatalf("releases after the shutdown cut the decision = %d, want 1", queue.released)
 	}
 	if queue.window != 0 {
 		t.Fatalf("window = %s, want 0", queue.window)
 	}
 	if queue.deleted != 0 {
-		t.Fatalf("deletes = %d, want 0: nothing was committed", queue.deleted)
+		t.Fatalf("deletes after the shutdown cut the decision = %d, want 0", queue.deleted)
 	}
 }
 
@@ -406,11 +406,11 @@ func TestRun_reportsAPollThatFailedAndDoesNotSpin(t *testing.T) {
 	queue := &fakeQueue{receiveErr: errors.New("connection refused"), fetched: make(chan struct{})}
 	consumer, logs, _ := consumerOver(t, queue, &fakeReceiver{})
 	if err := consumer.Start(context.Background()); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
+		t.Fatalf("Start over a failing poll = %v, want nil", err)
 	}
 	queue.awaitFetch(t)
 	if err := consumer.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop = %v, want nil", err)
+		t.Fatalf("Stop after a failing poll = %v, want nil", err)
 	}
 	// The pause is a whole base window, so a loop that spun would have fetched far
 	// more than a handful of times before the signal landed.

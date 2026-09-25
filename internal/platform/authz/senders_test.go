@@ -85,7 +85,7 @@ func TestLoadSenders_refusesAMapThatCannotAuthorizeAnyMessage(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := LoadSenders(fileWith(t, tc.content)); !errors.Is(err, ErrUnreadableSenderMap) {
-				t.Fatalf("LoadSenders = %v, want %v", err, ErrUnreadableSenderMap)
+				t.Fatalf("LoadSenders of %s = %v, want %v", tc.name, err, ErrUnreadableSenderMap)
 			}
 		})
 	}
@@ -95,7 +95,7 @@ func TestLoadSenders_refusesAMapThatIsNotThere(t *testing.T) {
 	t.Parallel()
 	_, err := LoadSenders(filepath.Join(t.TempDir(), "absent.yaml"))
 	if !errors.Is(err, ErrUnreadableSenderMap) {
-		t.Fatalf("LoadSenders = %v, want %v", err, ErrUnreadableSenderMap)
+		t.Fatalf("LoadSenders of an absent file = %v, want %v", err, ErrUnreadableSenderMap)
 	}
 }
 

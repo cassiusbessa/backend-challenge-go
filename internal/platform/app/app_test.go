@@ -83,7 +83,7 @@ func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
 	defer cancel()
 	err = New(cfg).Start(ctx)
 	if !errors.Is(err, authz.ErrUnreadableClientMap) {
-		t.Fatalf("start = %v, want %v", err, authz.ErrUnreadableClientMap)
+		t.Fatalf("start with no client map = %v, want %v", err, authz.ErrUnreadableClientMap)
 	}
 }
 
@@ -120,7 +120,7 @@ func TestNew_comesUpWithTheRelayBesideTheReferenceWorker(t *testing.T) {
 	stopping, release := context.WithTimeout(context.Background(), stepWait)
 	defer release()
 	if err := application.Stop(stopping); err != nil {
-		t.Fatalf("Stop = %v, want nil", err)
+		t.Fatalf("Stop after the relay came up = %v, want nil", err)
 	}
 }
 
@@ -147,7 +147,7 @@ func TestNew_comesUpWithTheConsumerBesideTheOtherTwoBackgroundComponents(t *test
 	stopping, release := context.WithTimeout(context.Background(), stepWait)
 	defer release()
 	if err := application.Stop(stopping); err != nil {
-		t.Fatalf("Stop = %v, want nil", err)
+		t.Fatalf("Stop after the consumer came up = %v, want nil", err)
 	}
 }
 

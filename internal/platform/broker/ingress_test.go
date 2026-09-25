@@ -68,7 +68,7 @@ func TestReceive_readsTheSenderTheCountAndThePropagationOfEachMessage(t *testing
 	}}}
 	got, err := ingress(fake).Receive(context.Background(), time.Second, time.Second)
 	if err != nil {
-		t.Fatalf("Receive = %v, want nil", err)
+		t.Fatalf("Receive of one message = %v, want nil", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("deliveries = %d, want 1", len(got))
@@ -99,7 +99,7 @@ func TestReceive_answersNoCarrierForAMessageWithNoPropagation(t *testing.T) {
 	fake := &fakeMessenger{messages: []types.Message{{Body: aws.String("{}"), Attributes: map[string]string{}}}}
 	got, err := ingress(fake).Receive(context.Background(), time.Second, time.Second)
 	if err != nil {
-		t.Fatalf("Receive = %v, want nil", err)
+		t.Fatalf("Receive of a message with no propagation = %v, want nil", err)
 	}
 	if len(got[0].Trace) != 0 {
 		t.Fatalf("propagation = %v, want none", got[0].Trace)
@@ -107,7 +107,7 @@ func TestReceive_answersNoCarrierForAMessageWithNoPropagation(t *testing.T) {
 	// A count the broker did not register reads as the first delivery: reading it
 	// as the highest would abandon a message on arrival.
 	if got[0].Deliveries != 1 {
-		t.Fatalf("deliveries = %d, want 1", got[0].Deliveries)
+		t.Fatalf("deliveries of a count the broker did not register = %d, want 1", got[0].Deliveries)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestRelease_handsTheMessageBackAtOnceWithAWindowOfZero(t *testing.T) {
 		t.Fatalf("visibility = %d, want 0", fake.released.VisibilityTimeout)
 	}
 	if aws.ToString(fake.released.QueueUrl) != ingressURL {
-		t.Fatalf("queue = %q, want the ingress one", aws.ToString(fake.released.QueueUrl))
+		t.Fatalf("queue of the release = %q, want the ingress one", aws.ToString(fake.released.QueueUrl))
 	}
 }
 
