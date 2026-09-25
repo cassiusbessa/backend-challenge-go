@@ -51,10 +51,15 @@ jobs:
           terraform -chdir=deploy/terraform/localstack init -input=false
           terraform -chdir=deploy/terraform/localstack apply -auto-approve -input=false
 
+      # -p 1 is not a performance knob: the wallet suite shortens the access token
+      # lifespan of the shared Keycloak realm to prove the border refuses an
+      # expired token, and any suite that asks for a token inside that window
+      # gets a 401. Postgres, LocalStack and Keycloak are shared, so the packages
+      # run one at a time. Removing the flag brings the flake back.
       - name: integration tests
         if: hashFiles('go.mod') != ''
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
           AWS_REGION: us-east-1
-        run: go test -race -count=1 -tags=integration ./...
+        run: go test -race -count=1 -p 1 -tags=integration ./...
