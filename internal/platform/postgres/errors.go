@@ -112,3 +112,14 @@ func missingTransaction(op string, err error) error {
 	}
 	return wrap(op, err)
 }
+
+// missingOutboxEvent answers the absence of the row the relay named, with the
+// operation in the chain for the same reason as the two above. A row another
+// replica holds, one already published and one no longer due all leave by this
+// same path: none is this replica's to publish, and none is a failure.
+func missingOutboxEvent(op string, err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%s: %w", op, storage.ErrOutboxEventNotFound)
+	}
+	return wrap(op, err)
+}
