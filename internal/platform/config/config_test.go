@@ -55,6 +55,7 @@ func TestLoadRejectsBlankRequiredValues(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"IDP_ISSUER",
 		"CLIENTS_PATH",
+		"QUEUE_SENDERS_PATH",
 	}
 	for _, key := range keys {
 		t.Run("blank "+key+" blocks the configuration", func(t *testing.T) {
@@ -235,6 +236,7 @@ func envWith(value, override string) func(string) string {
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "localhost:4317",
 		"IDP_ISSUER":                  "http://localhost:8080/realms/junglegaming",
 		"CLIENTS_PATH":                "deploy/local/clients.yaml",
+		"QUEUE_SENDERS_PATH":          "deploy/local/queue-senders.yaml",
 	}
 	if override != "" {
 		base[override] = value

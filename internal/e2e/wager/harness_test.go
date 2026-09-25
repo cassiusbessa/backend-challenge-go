@@ -126,6 +126,7 @@ func suiteEnv() map[string]string {
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  issuer(),
 		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
+		"QUEUE_SENDERS_PATH":          envOr("QUEUE_SENDERS_PATH", "../../../deploy/local/queue-senders.yaml"),
 		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
 		// The worker scans far more often than production so a case reads the
 		// outcome of a wait instead of waiting out the default. The TTL stays at

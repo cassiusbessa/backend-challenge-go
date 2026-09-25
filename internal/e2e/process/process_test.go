@@ -179,6 +179,7 @@ func integrationEnv(queueURL string) map[string]string {
 		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  envOr("IDP_ISSUER", "http://localhost:8080/realms/junglegaming"),
 		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
+		"QUEUE_SENDERS_PATH":          envOr("QUEUE_SENDERS_PATH", "../../../deploy/local/queue-senders.yaml"),
 		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
 	}
 }

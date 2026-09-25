@@ -223,6 +223,7 @@ services:
       IDP_ISSUER: http://localhost:8080/realms/junglegaming
       IDP_JWKS_URL: http://keycloak:8080/realms/junglegaming/protocol/openid-connect/certs
       CLIENTS_PATH: /etc/wager/clients.yaml
+      QUEUE_SENDERS_PATH: /etc/wager/queue-senders.yaml
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       AWS_REGION: ${AWS_REGION:-us-east-1}
@@ -230,6 +231,7 @@ services:
       - "8090:8090"
     volumes:
       - ./deploy/local/clients.yaml:/etc/wager/clients.yaml:ro
+      - ./deploy/local/queue-senders.yaml:/etc/wager/queue-senders.yaml:ro
     networks:
       - junglegaming
     stop_grace_period: 30s

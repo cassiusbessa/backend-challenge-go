@@ -1,4 +1,11 @@
-principal: wager-sender
-providers:
-  - provider-a
-  - provider-b
+# Cada entrada é a identidade de remetente que o consumidor observa na mensagem,
+# e não o nome do principal IAM: esse nome não chega ao consumidor, então um mapa
+# chaveado por ele não poderia ser conferido contra mensagem nenhuma.
+#
+# No broker local a identidade observada é o identificador da conta, medido com o
+# principal que o apply cria. A entrada abaixo é a desse principal.
+senders:
+  "000000000000":
+    providers:
+      - provider-a
+      - provider-b

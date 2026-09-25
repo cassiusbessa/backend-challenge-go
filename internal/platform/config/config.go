@@ -18,6 +18,7 @@ type Config struct {
 	IDPIssuer       string
 	IDPJWKSURL      string
 	ClientsPath     string
+	SendersPath     string
 	SampleRatio     float64
 	ShutdownTimeout time.Duration
 	PPROFAddr       string
@@ -75,6 +76,7 @@ func (c Config) Validate() error {
 		"OTEL_EXPORTER_OTLP_ENDPOINT": c.OTELEndpoint,
 		"IDP_ISSUER":                  c.IDPIssuer,
 		"CLIENTS_PATH":                c.ClientsPath,
+		"QUEUE_SENDERS_PATH":          c.SendersPath,
 	})
 }
 
@@ -90,6 +92,7 @@ func read(getenv func(string) string) map[string]string {
 		"IDP_ISSUER",
 		"IDP_JWKS_URL",
 		"CLIENTS_PATH",
+		"QUEUE_SENDERS_PATH",
 		"OTEL_SAMPLE_RATIO",
 		"SHUTDOWN_TIMEOUT",
 		"PPROF_ADDR",
@@ -116,6 +119,7 @@ func require(raw map[string]string) error {
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"IDP_ISSUER",
 		"CLIENTS_PATH",
+		"QUEUE_SENDERS_PATH",
 	}
 	for _, key := range keys {
 		if err := present(key, raw[key]); err != nil {
@@ -152,6 +156,7 @@ func build(raw map[string]string) (Config, error) {
 		IDPIssuer:       raw["IDP_ISSUER"],
 		IDPJWKSURL:      parseJWKSURL(raw["IDP_JWKS_URL"], raw["IDP_ISSUER"]),
 		ClientsPath:     raw["CLIENTS_PATH"],
+		SendersPath:     raw["QUEUE_SENDERS_PATH"],
 		SampleRatio:     ratio,
 		ShutdownTimeout: timing.shutdown,
 		PPROFAddr:       parsePPROF(raw["PPROF_ADDR"]),

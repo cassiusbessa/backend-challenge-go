@@ -111,6 +111,9 @@ func business() []fx.Option {
 		// The client map is loaded here, so a map that is missing or malformed
 		// fails the graph and the process never opens the HTTP port.
 		fx.Provide(newClients),
+		// The sender map, for the same reason: a process that cannot say who may
+		// send must not open the port and must not consume from the queue.
+		fx.Provide(newSenders),
 		fx.Provide(newGuard),
 		fx.Provide(newReporter),
 		fx.Provide(newWagerReporter),
@@ -159,6 +162,10 @@ func newClients(cfg config.Config) (*authz.Clients, error) {
 	return authz.LoadClients(cfg.ClientsPath)
 }
 
+func newSenders(cfg config.Config) (*authz.Senders, error) {
+	return authz.LoadSenders(cfg.SendersPath)
+}
+
 func newGuard(cfg config.Config, clients *authz.Clients) *authz.Guard {
 	return authz.NewGuard(authz.NewVerifier(cfg), clients)
 }
@@ -189,6 +196,7 @@ type wiring struct {
 	Latency       *prometheus.HistogramVec
 	Server        *httpapi.Server
 	Guard         *authz.Guard
+	Senders       *authz.Senders
 	Opener        *openwallet.Service
 	Reader        *readwallet.Service
 	Reporter      *walletapi.Reporter

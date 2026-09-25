@@ -51,7 +51,7 @@ func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 // not know how to authorize anybody, so it must not reach the listener.
 func TestLoadAndRun_refusesToListenWithoutTheIdentityProvider(t *testing.T) {
 	t.Parallel()
-	for _, key := range []string{"IDP_ISSUER", "CLIENTS_PATH"} {
+	for _, key := range []string{"IDP_ISSUER", "CLIENTS_PATH", "QUEUE_SENDERS_PATH"} {
 		t.Run("missing "+key+" aborts startup", func(t *testing.T) {
 			booted := false
 			err := LoadAndRun(envWithout(key), nil, func(config.Config, <-chan os.Signal) error {
@@ -83,6 +83,20 @@ func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
 	err = New(cfg).Start(ctx)
 	if !errors.Is(err, authz.ErrUnreadableClientMap) {
 		t.Fatalf("start = %v, want %v", err, authz.ErrUnreadableClientMap)
+	}
+}
+
+// A process that cannot say who may send must not open the port and must not
+// consume from the queue: a sender map it cannot read would refuse every message
+// as an unmapped sender, which looks exactly like a queue of nothing but junk.
+func TestNew_refusesToStartWithAnUnreadableSenderMap(t *testing.T) {
+	t.Parallel()
+	cfg := loaded(t)
+	cfg.SendersPath = filepath.Join(t.TempDir(), "absent.yaml")
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	if err := New(cfg).Start(ctx); !errors.Is(err, authz.ErrUnreadableSenderMap) {
+		t.Fatalf("start = %v, want %v", err, authz.ErrUnreadableSenderMap)
 	}
 }
 
@@ -277,15 +291,19 @@ func testEnv(key string) string {
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "127.0.0.1:1",
 		"IDP_ISSUER":                  "http://127.0.0.1:1/realms/junglegaming",
 		"CLIENTS_PATH":                clientsPath,
+		"QUEUE_SENDERS_PATH":          sendersPath,
 		"SHUTDOWN_TIMEOUT":            "8s",
 		"PPROF_ADDR":                  "127.0.0.1:0",
 	}
 	return values[key]
 }
 
-// clientsPath is the versioned map the challenge ships. The graph loads it on
-// construction, so a run without it would not reach the lifecycle at all.
-const clientsPath = moduleRoot + "/deploy/local/clients.yaml"
+// The two versioned maps the challenge ships. The graph loads both on
+// construction, so a run without either would not reach the lifecycle at all.
+const (
+	clientsPath = moduleRoot + "/deploy/local/clients.yaml"
+	sendersPath = moduleRoot + "/deploy/local/queue-senders.yaml"
+)
 
 const (
 	exitWait = 12 * time.Second
