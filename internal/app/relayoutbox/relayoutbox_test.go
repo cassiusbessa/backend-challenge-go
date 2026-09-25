@@ -45,7 +45,7 @@ func TestRelay_givesTheSendLessTimeThanTheLease(t *testing.T) {
 	defer cancel()
 	service := New(queue, sender, noSpan, frozenClock{}, quietLogger(), lease)
 	if err := service.Relay(holding, candidate(t)); err != nil {
-		t.Fatalf("Relay = %v, want nil", err)
+		t.Fatalf("Relay over a send inside the lease = %v, want nil", err)
 	}
 	leaseEnds, ok := holding.Deadline()
 	if !ok {
@@ -239,7 +239,7 @@ func TestRelay_endsTheTurnWithoutFailingWhenTheLeaseMovedOnDuringTheSetBack(t *t
 	run(t, New(queue, sender, noSpan, frozenClock{}, allowingLogger(written), lease))
 	assertLine(t, written.String(), "lost")
 	if queue.rescheduled || queue.killed {
-		t.Fatalf("rescheduled = %t and killed = %t after a lost lease, want nothing written", queue.rescheduled, queue.killed)
+		t.Fatalf("rescheduled = %t and killed = %t after the lease moved on mid-refusal, want nothing written", queue.rescheduled, queue.killed)
 	}
 }
 
@@ -256,7 +256,7 @@ func TestRelay_answersTheFailureOfTheSetBackThatIsNotALostLease(t *testing.T) {
 		t.Fatalf("Relay over a rescheduling that failed = %v, want %v", err, broken)
 	}
 	if !strings.Contains(err.Error(), "reschedule outbox row") {
-		t.Fatalf("failure = %v, want the write that could not be made named in the chain", err)
+		t.Fatalf("failure of the rescheduling = %v, want that write named in the chain", err)
 	}
 }
 
@@ -289,7 +289,7 @@ func TestRelay_answersTheFailureOfTheWriteThatEndsTheTurn(t *testing.T) {
 		t.Fatalf("Relay over a confirmation that failed = %v, want %v", err, broken)
 	}
 	if !strings.Contains(err.Error(), "confirm outbox row") {
-		t.Fatalf("failure = %v, want the write that could not be made named in the chain", err)
+		t.Fatalf("failure of the confirmation = %v, want that write named in the chain", err)
 	}
 }
 

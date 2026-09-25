@@ -85,7 +85,7 @@ func TestStop_cancelsTheScanAtTheSignal(t *testing.T) {
 	scanner := &queue{blocks: true, scanned: make(chan struct{}, 1)}
 	relay := New(scanner, &sends{}, quiet(), tick)
 	if err := relay.Start(context.Background()); err != nil {
-		t.Fatalf("Start before the signal = %v, want nil", err)
+		t.Fatalf("Start before the scan that does not answer = %v, want nil", err)
 	}
 	<-scanner.scanned
 	// The context of the stop carries no deadline: what has to end the wait is

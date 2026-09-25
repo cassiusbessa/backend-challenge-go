@@ -131,7 +131,7 @@ func TestRefuse_countsTheRefusalApartFromTheAttemptThatDidNotPublish(t *testing.
 	past := time.Now().Add(-time.Second)
 	claimed := claim(ctx, t, queue, host.events[0])
 	if err := queue.Reschedule(ctx, host.events[0], claimed.LeaseToken, past); err != nil {
-		t.Fatalf("Reschedule = %v, want nil", err)
+		t.Fatalf("Reschedule before the refusal = %v, want nil", err)
 	}
 	afterRetry := claim(ctx, t, queue, host.events[0])
 	assertCounts(t, afterRetry, 1, 0, "after a transitory failure")
