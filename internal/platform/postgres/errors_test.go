@@ -162,6 +162,28 @@ func TestMissingTransaction_leavesAnythingElseAsInfrastructure(t *testing.T) {
 	}
 }
 
+// The relay names a row the scan chose a moment earlier. Another replica holding
+// it, one already published and one no longer due all leave by this same path,
+// and none of the three is a failure.
+func TestMissingOutboxEvent_namesTheOperationThatLookedForTheRow(t *testing.T) {
+	t.Parallel()
+	claimed := missingOutboxEvent("claim outbox event", pgx.ErrNoRows)
+	assertAbsence(t, claimed, "claim outbox event", storage.ErrOutboxEventNotFound)
+}
+
+// A database that is out is not a row that is gone. Reading the two as one would
+// make the relay answer nil for a failure and leave the turn unrecorded.
+func TestMissingOutboxEvent_leavesAnythingElseAsInfrastructure(t *testing.T) {
+	t.Parallel()
+	err := missingOutboxEvent("claim outbox event", errors.New("connection reset by peer"))
+	if errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("a reset connection on the outbox = %v, want it classified as infrastructure", err)
+	}
+	if frames := fault.Stack(err); len(frames) == 0 {
+		t.Fatalf("frames of a reset connection under missingOutboxEvent = %d, want the stack it captured", len(frames))
+	}
+}
+
 // Each index carries its own answer, and an index outside the three carries none:
 // a token invented for it would reach the provider with no rule behind it.
 func TestDuplicateOf_answersOnlyForTheThreeIndexesThisAdapterReadsBack(t *testing.T) {

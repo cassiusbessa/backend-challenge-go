@@ -206,6 +206,55 @@ func TestRelay_confirmsTheSendThatWentThroughEvenAfterTheWorkWasCancelled(t *tes
 	}
 }
 
+// The lease running out while the broker was refusing leaves the row to whoever
+// holds it now. The turn writes nothing and is not a failure, exactly as it is
+// not one when the confirmation meets the same answer.
+func TestRelay_endsTheTurnWithoutFailingWhenTheLeaseMovedOnDuringTheSetBack(t *testing.T) {
+	t.Parallel()
+	written := &bytes.Buffer{}
+	queue := queueWith(t)
+	queue.setBackErr = storage.ErrLeaseLost
+	sender := &publisher{refuse: errors.New("service unavailable")}
+	run(t, New(queue, sender, noSpan, frozenClock{}, allowingLogger(written), lease))
+	assertLine(t, written.String(), "lost")
+	if queue.rescheduled || queue.killed {
+		t.Fatalf("rescheduled = %t and killed = %t after a lost lease, want nothing written", queue.rescheduled, queue.killed)
+	}
+}
+
+// The same write failing for anything other than a lost lease is the failure of
+// the turn: the row this replica still holds was left in no state at all.
+func TestRelay_answersTheFailureOfTheSetBackThatIsNotALostLease(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("postgres: connection reset by peer")
+	queue := queueWith(t)
+	queue.setBackErr = broken
+	service := New(queue, &publisher{refuse: errors.New("service unavailable")}, noSpan, frozenClock{}, quietLogger(), lease)
+	err := service.Relay(context.Background(), candidate(t))
+	if !errors.Is(err, broken) {
+		t.Fatalf("Relay over a rescheduling that failed = %v, want %v", err, broken)
+	}
+	if !strings.Contains(err.Error(), "reschedule outbox row") {
+		t.Fatalf("failure = %v, want the write that could not be made named in the chain", err)
+	}
+}
+
+// The death of a row is a write like the others: a lease that moved on before it
+// landed leaves the row to the replica that holds it, and nothing is recorded.
+func TestRelay_endsTheTurnWithoutFailingWhenTheLeaseMovedOnDuringTheKill(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	queue.claimed.Refusals = 9
+	queue.killErr = storage.ErrLeaseLost
+	service := New(queue, &publisher{refuse: errors.New("refused"), permanent: true}, noSpan, frozenClock{}, quietLogger(), lease)
+	if err := service.Relay(context.Background(), candidate(t)); err != nil {
+		t.Fatalf("Relay over a death the lease no longer allows = %v, want nil", err)
+	}
+	if queue.killed {
+		t.Fatalf("killed = %t, want the row left to whoever holds it now", queue.killed)
+	}
+}
+
 // A write of the turn that failed for anything other than a lost lease is the
 // failure of the turn, and it names the write that could not be made.
 func TestRelay_answersTheFailureOfTheWriteThatEndsTheTurn(t *testing.T) {
@@ -294,6 +343,8 @@ type queue struct {
 	claimErr      error
 	confirmErr    error
 	confirmCtxErr error
+	setBackErr    error
+	killErr       error
 	confirmed     string
 	rescheduled   bool
 	refused       bool
@@ -324,18 +375,27 @@ func (q *queue) Confirm(ctx context.Context, _ identity.EventID, token string, _
 }
 
 func (q *queue) Reschedule(_ context.Context, _ identity.EventID, _ string, next time.Time) error {
+	if q.setBackErr != nil {
+		return q.setBackErr
+	}
 	q.rescheduled = true
 	q.next = next
 	return nil
 }
 
 func (q *queue) Refuse(_ context.Context, _ identity.EventID, _ string, next time.Time) error {
+	if q.setBackErr != nil {
+		return q.setBackErr
+	}
 	q.rescheduled, q.refused = true, true
 	q.next = next
 	return nil
 }
 
 func (q *queue) Kill(context.Context, identity.EventID, string, time.Time) error {
+	if q.killErr != nil {
+		return q.killErr
+	}
 	q.killed = true
 	return nil
 }

@@ -180,7 +180,7 @@ func TestResolve_schedulesAgainWhileTheDeadlineHasNotCome(t *testing.T) {
 		t.Fatalf("waits ended = %d, want 0 while the deadline has not come", len(book.ended))
 	}
 	if len(book.rescheduled) != 1 {
-		t.Fatalf("reschedules = %d, want 1", len(book.rescheduled))
+		t.Fatalf("reschedules a nanosecond before the deadline = %d, want 1", len(book.rescheduled))
 	}
 	assertNothingMoved(t, book)
 }
@@ -208,7 +208,7 @@ func TestResolve_neverSchedulesPastTheDeadline(t *testing.T) {
 	book.attempts = 6
 	resolveAt(t, book, deadline.Add(-30*time.Second))
 	if len(book.rescheduled) != 1 {
-		t.Fatalf("reschedules = %d, want 1", len(book.rescheduled))
+		t.Fatalf("reschedules with the window past the deadline = %d, want 1", len(book.rescheduled))
 	}
 	if !book.rescheduled[0].next.Equal(deadline) {
 		t.Fatalf("next attempt = %s, want the deadline at %s", book.rescheduled[0].next, deadline)
@@ -239,11 +239,7 @@ func TestResolve_closesTheWaitWhenTheCitedOperationDoesNotCloseWithIt(t *testing
 	t.Parallel()
 	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
 	other := citedProcessed(t, wager.KindBet, "25.00")
-	round, err := identity.ParseRoundID("round-2")
-	if err != nil {
-		t.Fatalf("ParseRoundID = %v, want nil", err)
-	}
-	other.RoundID = round
+	other.RoundID = roundNamed(t, "round-2")
 	book.cite(t, other)
 	resolveAt(t, book, entered)
 	state := book.decided(t)
@@ -918,9 +914,14 @@ func citedKeyOf(t *testing.T) identity.IdempotencyKey {
 
 func roundOf(t *testing.T) identity.RoundID {
 	t.Helper()
-	id, err := identity.ParseRoundID("round-1")
+	return roundNamed(t, "round-1")
+}
+
+func roundNamed(t *testing.T, name string) identity.RoundID {
+	t.Helper()
+	id, err := identity.ParseRoundID(name)
 	if err != nil {
-		t.Fatalf("ParseRoundID = %v, want nil", err)
+		t.Fatalf("ParseRoundID(%q) = %v, want nil", name, err)
 	}
 	return id
 }

@@ -305,7 +305,7 @@ func TestSubmit_replaysTheRecordedWaitInsteadOfAskingForARetry(t *testing.T) {
 	book.keep(t, cmd, waitingState(t, cmd))
 	result := submit(t, book, cmd)
 	if result.Status != wager.PendingReference {
-		t.Fatalf("status = %s, want PENDING_REFERENCE", result.Status)
+		t.Fatalf("status of the second arrival = %s, want PENDING_REFERENCE", result.Status)
 	}
 	if !result.IdempotentReplay {
 		t.Fatalf("replay = %t, want true for the second arrival of a recorded wait", result.IdempotentReplay)
@@ -1029,11 +1029,7 @@ func externalOf(t *testing.T) identity.ExternalTransactionID {
 
 func keyValueOf(t *testing.T) identity.IdempotencyKey {
 	t.Helper()
-	id, err := identity.ParseIdempotencyKey("key-1")
-	if err != nil {
-		t.Fatalf("ParseIdempotencyKey = %v, want nil", err)
-	}
-	return id
+	return keyNamed(t, "key-1")
 }
 
 func roundOf(t *testing.T) identity.RoundID {
@@ -1155,7 +1151,7 @@ func TestSubmit_readsTheWalletThenTheCitedOperationThenTheReversal(t *testing.T)
 	submit(t, book, citingCommand(t, wager.KindRefund, "25.00"))
 	want := []string{"wallet", "cited", "reversal"}
 	if !slices.Equal(book.calls, want) {
-		t.Fatalf("repositories asked in the order %v, want %v", book.calls, want)
+		t.Fatalf("repositories asked for a refund %v, want %v", book.calls, want)
 	}
 }
 
@@ -1167,7 +1163,7 @@ func TestSubmit_readsNoCitedOperationForAnOperationThatNamesNone(t *testing.T) {
 	submit(t, book, commandOf(t, wager.KindWin, "50.00"))
 	want := []string{"wallet"}
 	if !slices.Equal(book.calls, want) {
-		t.Fatalf("repositories asked in the order %v, want %v", book.calls, want)
+		t.Fatalf("repositories asked for a WIN citing none %v, want %v", book.calls, want)
 	}
 }
 
@@ -1180,7 +1176,7 @@ func TestSubmit_asksAboutTheReversalOnlyForAReversal(t *testing.T) {
 	submit(t, book, citingCommand(t, wager.KindWin, "50.00"))
 	want := []string{"wallet", "cited"}
 	if !slices.Equal(book.calls, want) {
-		t.Fatalf("repositories asked in the order %v, want %v", book.calls, want)
+		t.Fatalf("repositories asked for a WIN citing an operation %v, want %v", book.calls, want)
 	}
 }
 
@@ -1297,7 +1293,7 @@ func TestSubmit_recordsTheWaitWhenTheCitedOperationHasNotArrived(t *testing.T) {
 	book := bookWith(t, "1000.00")
 	result := submit(t, book, citingCommand(t, wager.KindWin, "50.00"))
 	if result.Status != wager.PendingReference {
-		t.Fatalf("status = %s, want PENDING_REFERENCE", result.Status)
+		t.Fatalf("status of the first arrival = %s, want PENDING_REFERENCE", result.Status)
 	}
 	if result.IdempotentReplay {
 		t.Fatalf("replay = %t, want false on the first arrival", result.IdempotentReplay)
@@ -1354,7 +1350,7 @@ func TestPending_stampsTheInjectedInstantAndTheBusinessHash(t *testing.T) {
 		t.Fatalf("pending of an accepted bet = %v, want nil", err)
 	}
 	if !job.at().Equal(frozen) {
-		t.Fatalf("instant = %s, want the injected %s", job.at(), frozen)
+		t.Fatalf("instant stamped by pending = %s, want the injected %s", job.at(), frozen)
 	}
 	if job.op.BodyHash() != bodyhash.Of(cmd.business()) {
 		t.Fatalf("hash = %s, want the one of the business body", job.op.BodyHash())
@@ -1928,7 +1924,7 @@ func keyNamed(t *testing.T, text string) identity.IdempotencyKey {
 	t.Helper()
 	parsed, err := identity.ParseIdempotencyKey(text)
 	if err != nil {
-		t.Fatalf("ParseIdempotencyKey = %v, want nil", err)
+		t.Fatalf("ParseIdempotencyKey(%q) = %v, want nil", text, err)
 	}
 	return parsed
 }
