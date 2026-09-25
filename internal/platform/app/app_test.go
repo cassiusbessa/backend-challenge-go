@@ -91,10 +91,7 @@ func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
 // up, and the port has to answer whether or not there is anything to publish.
 func TestNew_comesUpWithTheRelayBesideTheReferenceWorker(t *testing.T) {
 	t.Parallel()
-	cfg, err := config.Load(testEnv)
-	if err != nil {
-		t.Fatalf("load config of the test environment = %v, want nil", err)
-	}
+	cfg := loaded(t)
 	got := make(chan *outboxrelay.Relay, 1)
 	application := New(cfg, fx.Invoke(func(relay *outboxrelay.Relay) { got <- relay }))
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
@@ -103,7 +100,7 @@ func TestNew_comesUpWithTheRelayBesideTheReferenceWorker(t *testing.T) {
 		t.Fatalf("Start over an empty outbox = %v, want nil", err)
 	}
 	if relay := <-got; relay == nil {
-		t.Fatalf("the graph came up without a relay, want one beside the reference worker")
+		t.Fatalf("relay in the graph = %v, want one beside the reference worker", relay)
 	}
 	stopping, release := context.WithTimeout(context.Background(), stepWait)
 	defer release()
@@ -117,10 +114,7 @@ func TestNew_comesUpWithTheRelayBesideTheReferenceWorker(t *testing.T) {
 // nowhere to send.
 func TestNew_refusesToStartWithoutTheAddressOfTheTopic(t *testing.T) {
 	t.Parallel()
-	cfg, err := config.Load(testEnv)
-	if err != nil {
-		t.Fatalf("load config of the test environment = %v, want nil", err)
-	}
+	cfg := loaded(t)
 	cfg.SNSTopicARN = ""
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
@@ -131,10 +125,7 @@ func TestNew_refusesToStartWithoutTheAddressOfTheTopic(t *testing.T) {
 }
 
 func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
-	cfg, err := config.Load(testEnv)
-	if err != nil {
-		t.Fatalf("load config of the test environment = %v, want nil", err)
-	}
+	cfg := loaded(t)
 	gate := &hold{entered: make(chan struct{}), release: make(chan struct{})}
 	gotSrv := make(chan *httpapi.Server, 1)
 	gotPipe := make(chan *telemetry.Pipeline, 1)
@@ -165,8 +156,7 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	pipe := recvPipeline(t, gotPipe)
 	assertNotFlushed(t, pipe)
 	close(gate.release)
-	err = waitExit(t, errCh)
-	if err != nil {
+	if err := waitExit(t, errCh); err != nil {
 		t.Fatalf("exit = %v, want nil", err)
 	}
 	// The lifecycle flushes the buffer on the way out, so a process that exited
@@ -262,6 +252,18 @@ func envWithClients(path string) func(string) string {
 		}
 		return testEnv(key)
 	}
+}
+
+// loaded is the configuration of this suite, pointed at addresses nothing
+// answers on: every case here is about the graph and the lifecycle, not about
+// the services behind them.
+func loaded(t *testing.T) config.Config {
+	t.Helper()
+	cfg, err := config.Load(testEnv)
+	if err != nil {
+		t.Fatalf("load config of the test environment = %v, want nil", err)
+	}
+	return cfg
 }
 
 func testEnv(key string) string {

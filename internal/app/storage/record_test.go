@@ -33,7 +33,7 @@ func TestRecord_writesNothingWhenTheCommitRecordedNoTransaction(t *testing.T) {
 		t.Fatalf("Record of a commit with no transaction = %v, want nil", err)
 	}
 	if len(rows.written) != 0 {
-		t.Fatalf("events written = %d, want none", len(rows.written))
+		t.Fatalf("events written for a commit with no transaction = %d, want none", len(rows.written))
 	}
 }
 
@@ -70,9 +70,11 @@ func (r *outboxRows) Insert(_ context.Context, envelope event.Envelope) error {
 	return nil
 }
 
+// at is the instant every case of this file is stamped with.
+var at = time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
+
 func commitOf(t *testing.T) event.Commit {
 	t.Helper()
-	at := time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
 	return event.Commit{
 		OutcomeID:   idOf(t, identity.ParseEventID, "019974a4-0000-7000-8000-00000000f001"),
 		BalanceID:   idOf(t, identity.ParseEventID, "019974a4-0000-7000-8000-00000000f002"),
@@ -81,14 +83,35 @@ func commitOf(t *testing.T) event.Commit {
 	}
 }
 
+// pendingOperation is an operation that was built and never decided, which is
+// the only status no event speaks for.
+func pendingOperation(t *testing.T) *wager.Transaction {
+	t.Helper()
+	return loss(t, at)
+}
+
 // processedLoss is the shortest settled operation there is: it concludes and
 // moves no balance, so the commit carries one event and no entry.
 func processedLoss(t *testing.T, at time.Time) *wager.Transaction {
+	t.Helper()
+	op := loss(t, at)
+	if err := op.Process(zeroBRL(t), at); err != nil {
+		t.Fatalf("Process = %v, want nil", err)
+	}
+	return op
+}
+
+func zeroBRL(t *testing.T) money.Money {
 	t.Helper()
 	zero, err := money.Parse("0.00", "BRL")
 	if err != nil {
 		t.Fatalf("money.Parse = %v, want nil", err)
 	}
+	return zero
+}
+
+func loss(t *testing.T, at time.Time) *wager.Transaction {
+	t.Helper()
 	op, err := wager.NewExternal(wager.ExternalSpec{
 		ID:             idOf(t, identity.ParseTransactionID, "019974a4-0000-7000-8000-0000000000c1"),
 		ProviderID:     idOf(t, identity.ParseProviderID, "provider-a"),
@@ -100,14 +123,11 @@ func processedLoss(t *testing.T, at time.Time) *wager.Transaction {
 		RoundID:        idOf(t, identity.ParseRoundID, "round-1"),
 		GameID:         idOf(t, identity.ParseGameID, "crash"),
 		Kind:           wager.KindLoss,
-		Amount:         zero,
+		Amount:         zeroBRL(t),
 		At:             at,
 	})
 	if err != nil {
 		t.Fatalf("wager.NewExternal = %v, want nil", err)
-	}
-	if err := op.Process(zero, at); err != nil {
-		t.Fatalf("Process = %v, want nil", err)
 	}
 	return op
 }
@@ -119,4 +139,20 @@ func idOf[T any](t *testing.T, parse func(string) (T, error), text string) T {
 		t.Fatalf("parse of %q = %v, want nil", text, err)
 	}
 	return parsed
+}
+
+// A commit that decided nothing the vocabulary names is a defect: the failure
+// leaves before any row is written, rather than a row being written for a
+// status no consumer can read.
+func TestRecord_writesNothingWhenTheCommitNamesNoOutcome(t *testing.T) {
+	t.Parallel()
+	rows := &outboxRows{}
+	undecided := commitOf(t)
+	undecided.Transaction = pendingOperation(t)
+	if err := Record(context.Background(), &txStub{outbox: rows}, undecided); !errors.Is(err, event.ErrUnknownOutcome) {
+		t.Fatalf("Record of an undecided commit = %v, want ErrUnknownOutcome", err)
+	}
+	if len(rows.written) != 0 {
+		t.Fatalf("events written for an undecided commit = %d, want none", len(rows.written))
+	}
 }

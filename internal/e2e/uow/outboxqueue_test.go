@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
@@ -30,10 +32,7 @@ func TestDue_offersTheNextRowOnceTheOneAheadIsDead(t *testing.T) {
 	ctx, pool, unit := open(t)
 	queue := postgres.NewOutboxQueue(pool)
 	host := walletWithEvents(ctx, t, unit, 2)
-	claimed := claim(ctx, t, queue, host.events[0])
-	if err := queue.Kill(ctx, host.events[0], claimed.LeaseToken, time.Now()); err != nil {
-		t.Fatalf("Kill = %v, want nil", err)
-	}
+	kill(ctx, t, queue, host.events[0])
 	offered := candidatesOf(ctx, t, queue, host.wallet)
 	if len(offered) != 1 || offered[0].EventID != host.events[1] {
 		t.Fatalf("candidates after the death = %v, want the second event %s", offered, host.events[1])
@@ -96,15 +95,11 @@ func TestKill_leavesTheRowUnpublishedAndTheDatabaseRefusesBothAtOnce(t *testing.
 	ctx, pool, unit := open(t)
 	queue := postgres.NewOutboxQueue(pool)
 	host := walletWithEvents(ctx, t, unit, 1)
-	claimed := claim(ctx, t, queue, host.events[0])
-	if err := queue.Kill(ctx, host.events[0], claimed.LeaseToken, time.Now()); err != nil {
-		t.Fatalf("Kill = %v, want nil", err)
-	}
+	kill(ctx, t, queue, host.events[0])
 	assertNotPublished(ctx, t, host.events[0])
 	refused := `UPDATE outbox_events SET published_at = now() WHERE event_id = $1`
-	if _, err := connect(ctx, t).Exec(ctx, refused, host.events[0].String()); err == nil {
-		t.Fatalf("publishing a dead row = nil, want the database to refuse it")
-	}
+	_, err := connect(ctx, t).Exec(ctx, refused, host.events[0].String())
+	assertRefused(t, err, "outbox_events_published_and_dead_do_not_coexist")
 }
 
 // outboxHost is one wallet and the events written for it, oldest first.
@@ -162,6 +157,16 @@ func claim(ctx context.Context, t *testing.T, queue *postgres.OutboxQueue, id id
 	return claimed
 }
 
+// kill claims the row at the head and gives up on it, which is what the tenth
+// permanent refusal of the broker leaves behind.
+func kill(ctx context.Context, t *testing.T, queue *postgres.OutboxQueue, id identity.EventID) {
+	t.Helper()
+	claimed := claim(ctx, t, queue, id)
+	if err := queue.Kill(ctx, id, claimed.LeaseToken, time.Now()); err != nil {
+		t.Fatalf("Kill = %v, want nil", err)
+	}
+}
+
 // expire moves the lease of the row into the past, which is what a replica that
 // stopped without confirming leaves behind.
 func expire(ctx context.Context, t *testing.T, id identity.EventID) {
@@ -181,5 +186,15 @@ func assertNotPublished(ctx context.Context, t *testing.T, id identity.EventID) 
 	}
 	if published != nil {
 		t.Fatalf("published_at = %v, want the row still unpublished", published)
+	}
+}
+
+// assertRefused names the constraint that must have refused the write, so a row
+// that fails for another reason does not pass as the case under test.
+func assertRefused(t *testing.T, err error, constraint string) {
+	t.Helper()
+	var refusal *pgconn.PgError
+	if !errors.As(err, &refusal) || refusal.ConstraintName != constraint {
+		t.Fatalf("write = %v, want a refusal by %s", err, constraint)
 	}
 }

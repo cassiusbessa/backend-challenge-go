@@ -71,8 +71,8 @@ func TestRelay_publishesTheEventsOfAWalletInOrderAndOneAtATime(t *testing.T) {
 	for _, expected := range written {
 		stack.publishTheOneAhead(ctx, t, service, owner.WalletID, expected.EventID)
 	}
-	if len(stack.due(ctx, t, owner.WalletID)) != 0 {
-		t.Fatalf("the wallet still has candidates, want the outbox of it empty")
+	if left := stack.due(ctx, t, owner.WalletID); len(left) != 0 {
+		t.Fatalf("candidates left = %d, want the outbox of the wallet empty", len(left))
 	}
 }
 
@@ -96,8 +96,8 @@ func TestRelay_publishesEachEventOnceWhenTwoReplicasWorkTheSameOutbox(t *testing
 	if len(due) != 1 {
 		t.Fatalf("candidates of the other wallet = %d, want one while the first is held", len(due))
 	}
-	if len(stack.due(ctx, t, first.WalletID)) != 0 {
-		t.Fatalf("the held wallet is still a candidate, want it skipped")
+	if held := stack.due(ctx, t, first.WalletID); len(held) != 0 {
+		t.Fatalf("candidates of the held wallet = %d, want it skipped while another replica holds it", len(held))
 	}
 	if err := two.Relay(ctx, due[0]); err != nil {
 		t.Fatalf("Relay of the other wallet = %v, want nil", err)
@@ -141,8 +141,8 @@ func TestRelay_leavesTheRowToAnotherReplicaWhenItsLeaseExpiredMidSend(t *testing
 	if !errors.Is(confirmed, storage.ErrLeaseLost) {
 		t.Fatalf("Confirm under the token the lease lost = %v, want ErrLeaseLost", confirmed)
 	}
-	if stack.rowOf(ctx, t, owner.WalletID, first.EventID.String()).Published {
-		t.Fatalf("the row was marked published by the replica that lost it, want it pending")
+	if got := stack.rowOf(ctx, t, owner.WalletID, first.EventID.String()); got.Published {
+		t.Fatalf("published = %t after the replica that lost the lease confirmed, want it pending", got.Published)
 	}
 }
 
@@ -174,7 +174,7 @@ func assertDead(t *testing.T, dead, first row) {
 		t.Fatalf("row after ten refusals: dead = %t and published = %t, want dead and unpublished", dead.Dead, dead.Published)
 	}
 	if dead.Payload != first.Payload || dead.EventID != first.EventID {
-		t.Fatalf("the dead row no longer carries the identity and the bytes of the first attempt")
+		t.Fatalf("dead row = %s carrying %s, want the %s and the bytes of the first attempt", dead.EventID, dead.Payload, first.EventID)
 	}
 }
 
@@ -194,9 +194,10 @@ func TestSubmit_leavesNoEventBehindWhenTheCommitWasUndone(t *testing.T) {
 	// write, the row and the events of it are undone together.
 	twin := first
 	twin.IdempotencyKey = tokenOf(t, identity.ParseIdempotencyKey, "key-"+newID())
-	_, err := stack.wagers.Submit(ctx, twin)
-	if err == nil {
-		t.Fatalf("Submit of the duplicate = nil, want DUPLICATE_EXTERNAL_TRANSACTION")
+	_, refusal := stack.wagers.Submit(ctx, twin)
+	var rejection wager.Rejection
+	if !errors.As(refusal, &rejection) || rejection.Code() != wager.DuplicateExternalTransaction {
+		t.Fatalf("Submit of the duplicate = %v, want DUPLICATE_EXTERNAL_TRANSACTION", refusal)
 	}
 	after := stack.rows(ctx, t, owner.WalletID)
 	if len(after) != len(before) {

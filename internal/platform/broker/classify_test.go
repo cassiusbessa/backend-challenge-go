@@ -29,10 +29,11 @@ func TestPermanent_readsTheRefusalOfTheBrokerAsPermanent(t *testing.T) {
 func TestPermanent_readsWhatMayCompleteLaterAsWorthRepeating(t *testing.T) {
 	t.Parallel()
 	cases := map[string]error{
-		"the broker being out":       responseError(http.StatusServiceUnavailable),
-		"a throttled request":        responseError(http.StatusTooManyRequests),
-		"an error of no known shape": errors.New("connection reset by peer"),
-		"no error at all":            nil,
+		"the broker being out":                responseError(http.StatusServiceUnavailable),
+		"the first status of the server side": responseError(http.StatusInternalServerError),
+		"a throttled request":                 responseError(http.StatusTooManyRequests),
+		"an error of no known shape":          errors.New("connection reset by peer"),
+		"no error at all":                     nil,
 	}
 	for name, err := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -18,7 +18,7 @@ func TestNewProcessed_namesTheOperationAndTheBalanceItObserved(t *testing.T) {
 		t.Fatalf("NewProcessed = %v, want nil", err)
 	}
 	if built.Type() != TypeProcessed {
-		t.Fatalf("type = %s, want %s", built.Type(), TypeProcessed)
+		t.Fatalf("type of the outcome of a settled operation = %s, want %s", built.Type(), TypeProcessed)
 	}
 	data := dataOf(t, built)
 	if data["kind"] != "BET" || data["status"] != "PROCESSED" {
@@ -36,14 +36,14 @@ func TestNewRejected_carriesTheTokenOfTheRuleAndNoBalance(t *testing.T) {
 		t.Fatalf("NewRejected = %v, want nil", err)
 	}
 	if built.Type() != TypeRejected {
-		t.Fatalf("type = %s, want %s", built.Type(), TypeRejected)
+		t.Fatalf("type of the outcome of a refused operation = %s, want %s", built.Type(), TypeRejected)
 	}
 	data := dataOf(t, built)
 	if data["failureCode"] != "INSUFFICIENT_FUNDS" {
 		t.Fatalf("failureCode = %v, want INSUFFICIENT_FUNDS", data["failureCode"])
 	}
-	if _, present := data["observedBalance"]; present {
-		t.Fatalf("the rejection carries observedBalance, want the field absent")
+	if balance, present := data["observedBalance"]; present {
+		t.Fatalf("observedBalance of a rejection = %v, want the field absent", balance)
 	}
 }
 
@@ -54,7 +54,7 @@ func TestNewPendingReference_namesTheCitedOperationAndTheDeadline(t *testing.T) 
 		t.Fatalf("NewPendingReference = %v, want nil", err)
 	}
 	if built.Type() != TypePendingReference {
-		t.Fatalf("type = %s, want %s", built.Type(), TypePendingReference)
+		t.Fatalf("type of the event of a recorded wait = %s, want %s", built.Type(), TypePendingReference)
 	}
 	data := dataOf(t, built)
 	if data["referenceExternalTransactionId"] != "tx-000" {
@@ -72,7 +72,7 @@ func TestNewBalanceChanged_carriesTheMovementThatProducedIt(t *testing.T) {
 		t.Fatalf("NewBalanceChanged = %v, want nil", err)
 	}
 	if built.Type() != TypeBalanceChanged {
-		t.Fatalf("type = %s, want %s", built.Type(), TypeBalanceChanged)
+		t.Fatalf("type of the event of a movement = %s, want %s", built.Type(), TypeBalanceChanged)
 	}
 	data := dataOf(t, built)
 	if data["direction"] != "CREDIT" {
@@ -127,6 +127,15 @@ func walletID(t *testing.T) identity.WalletID {
 	return parsed
 }
 
+func transactionID(t *testing.T) identity.TransactionID {
+	t.Helper()
+	parsed, err := identity.ParseTransactionID(transactionUUID)
+	if err != nil {
+		t.Fatalf("ParseTransactionID = %v, want nil", err)
+	}
+	return parsed
+}
+
 func brl(t *testing.T, amount string) money.Money {
 	t.Helper()
 	parsed, err := money.Parse(amount, "BRL")
@@ -144,12 +153,8 @@ func betSpec(t *testing.T) wager.ExternalSpec {
 	if err != nil {
 		t.Fatalf("ParsePlayerID = %v, want nil", err)
 	}
-	transaction, err := identity.ParseTransactionID(transactionUUID)
-	if err != nil {
-		t.Fatalf("ParseTransactionID = %v, want nil", err)
-	}
 	return wager.ExternalSpec{
-		ID:             transaction,
+		ID:             transactionID(t),
 		ProviderID:     tokenOf(t, identity.ParseProviderID, "provider-a"),
 		ExternalID:     tokenOf(t, identity.ParseExternalTransactionID, "tx-001"),
 		IdempotencyKey: tokenOf(t, identity.ParseIdempotencyKey, "key-001"),
@@ -221,14 +226,10 @@ func credit(t *testing.T) ledger.Entry {
 	if err != nil {
 		t.Fatalf("ParseLedgerEntryID = %v, want nil", err)
 	}
-	transaction, err := identity.ParseTransactionID(transactionUUID)
-	if err != nil {
-		t.Fatalf("ParseTransactionID = %v, want nil", err)
-	}
 	entry, err := ledger.NewEntry(ledger.EntrySpec{
 		ID:            entryID,
 		WalletID:      walletID(t),
-		TransactionID: transaction,
+		TransactionID: transactionID(t),
 		Direction:     ledger.Credit,
 		Amount:        brl(t, "50.00"),
 		BalanceBefore: brl(t, "100.00"),

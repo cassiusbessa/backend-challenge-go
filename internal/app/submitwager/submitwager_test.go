@@ -186,9 +186,8 @@ func TestSubmit_recordsOnlyTheOutcomeOfALossAndOfARejection(t *testing.T) {
 	assertEvents(t, settled, event.TypeProcessed)
 
 	refused := bookWith(t, "10.00")
-	if _, err := service(t, refused).Submit(context.Background(), commandOf(t, wager.KindBet, "25.00")); err == nil {
-		t.Fatalf("Submit of a bet over 10.00 = nil, want INSUFFICIENT_FUNDS")
-	}
+	_, refusal := service(t, refused).Submit(context.Background(), commandOf(t, wager.KindBet, "25.00"))
+	assertToken(t, refusal, wager.InsufficientFunds)
 	assertEvents(t, refused, event.TypeRejected)
 }
 
@@ -213,9 +212,8 @@ func TestSubmit_recordsNoEventForAReplayOrAConflict(t *testing.T) {
 	other := processedState(t, cmd)
 	other.BodyHash = "another hash"
 	conflicted.keep(t, cmd, other)
-	if _, err := service(t, conflicted).Submit(context.Background(), cmd); err == nil {
-		t.Fatalf("Submit of another body under the same key = nil, want IDEMPOTENCY_CONFLICT")
-	}
+	_, refusal := service(t, conflicted).Submit(context.Background(), cmd)
+	assertToken(t, refusal, wager.IdempotencyConflict)
 	assertEvents(t, conflicted)
 }
 

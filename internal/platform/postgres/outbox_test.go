@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,4 +96,17 @@ func eventIdentity(t *testing.T) identity.EventID {
 		t.Fatalf("ParseEventID = %v, want nil", err)
 	}
 	return parsed
+}
+
+// An envelope with nothing in it is a defect rather than a row: the insert
+// refuses it with the operation that could not render it named in the chain.
+func TestInsert_refusesAnEnvelopeThatCannotBeRendered(t *testing.T) {
+	t.Parallel()
+	err := (outbox{tx: &recordingTx{}}).Insert(context.Background(), event.Envelope{})
+	if !errors.Is(err, event.ErrIncompleteEnvelope) {
+		t.Fatalf("Insert of an empty envelope = %v, want ErrIncompleteEnvelope", err)
+	}
+	if !strings.Contains(err.Error(), "marshal outbox event") {
+		t.Fatalf("failure = %v, want the operation that could not render it named in the chain", err)
+	}
 }

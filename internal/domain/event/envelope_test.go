@@ -6,6 +6,17 @@ import (
 	"time"
 )
 
+// outcome is one event of a settled operation, which is the envelope the cases
+// about the wire form read.
+func outcome(t *testing.T) Envelope {
+	t.Helper()
+	built, err := NewProcessed(spec(t), processedBet(t))
+	if err != nil {
+		t.Fatalf("NewProcessed = %v, want nil", err)
+	}
+	return built
+}
+
 func TestNew_fixesTheTypeAndTheVersionAndKeepsTheInstantInUTC(t *testing.T) {
 	t.Parallel()
 	saoPaulo := time.FixedZone("-03", -3*60*60)
@@ -52,11 +63,7 @@ func TestNew_refusesAnEnvelopeThatNamesNoEventWalletInstantOrData(t *testing.T) 
 
 func TestMarshal_namesTheEventItsVersionAndTheWalletThatOrdersIt(t *testing.T) {
 	t.Parallel()
-	built, err := NewProcessed(spec(t), processedBet(t))
-	if err != nil {
-		t.Fatalf("NewProcessed = %v, want nil", err)
-	}
-	out := wireOf(t, built)
+	out := wireOf(t, outcome(t))
 	fields := map[string]any{
 		"eventId":     eventUUID,
 		"aggregateId": walletUUID,
@@ -73,13 +80,10 @@ func TestMarshal_namesTheEventItsVersionAndTheWalletThatOrdersIt(t *testing.T) {
 
 func TestMarshal_omitsTheCauseWhenTheOperationHasNoneAndKeepsTheCorrelation(t *testing.T) {
 	t.Parallel()
-	built, err := NewProcessed(spec(t), processedBet(t))
-	if err != nil {
-		t.Fatalf("NewProcessed = %v, want nil", err)
-	}
+	built := outcome(t)
 	uncaused := wireOf(t, built)
-	if _, present := uncaused["causationId"]; present {
-		t.Fatalf("causationId is present with no cause, want the field omitted")
+	if cause, present := uncaused["causationId"]; present {
+		t.Fatalf("causationId of an operation with no cause = %v, want the field omitted", cause)
 	}
 	if uncaused["correlationId"] != "corr-1" {
 		t.Fatalf("correlationId = %v, want corr-1", uncaused["correlationId"])

@@ -6,17 +6,17 @@ func TestWalletID_mintsADistinctIdentityEveryTime(t *testing.T) {
 	t.Parallel()
 	first, err := UUIDv7{}.WalletID()
 	if err != nil {
-		t.Fatalf("WalletID = %v, want nil", err)
+		t.Fatalf("first WalletID = %v, want nil", err)
 	}
 	second, err := UUIDv7{}.WalletID()
 	if err != nil {
-		t.Fatalf("WalletID = %v, want nil", err)
+		t.Fatalf("second WalletID = %v, want nil", err)
 	}
 	if first == second {
 		t.Fatalf("two mints answered %s twice, want distinct identities", first)
 	}
 	if first.IsZero() {
-		t.Fatalf("minted identity is zero, want a usable one")
+		t.Fatalf("minted wallet identity = %s, want a usable one", first)
 	}
 }
 
@@ -27,7 +27,7 @@ func TestTransactionID_mintsAUsableIdentity(t *testing.T) {
 		t.Fatalf("TransactionID = %v, want nil", err)
 	}
 	if id.IsZero() {
-		t.Fatalf("minted identity is zero, want a usable one")
+		t.Fatalf("minted transaction identity = %s, want a usable one", id)
 	}
 }
 
@@ -38,7 +38,18 @@ func TestEntryID_mintsAUsableIdentity(t *testing.T) {
 		t.Fatalf("EntryID = %v, want nil", err)
 	}
 	if id.IsZero() {
-		t.Fatalf("minted identity is zero, want a usable one")
+		t.Fatalf("minted entry identity = %s, want a usable one", id)
+	}
+}
+
+func TestEventID_mintsAUsableIdentity(t *testing.T) {
+	t.Parallel()
+	id, err := UUIDv7{}.EventID()
+	if err != nil {
+		t.Fatalf("EventID = %v, want nil", err)
+	}
+	if id.IsZero() {
+		t.Fatalf("minted event identity = %s, want a usable one", id)
 	}
 }
 

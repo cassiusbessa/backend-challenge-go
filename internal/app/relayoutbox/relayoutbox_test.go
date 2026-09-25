@@ -23,7 +23,7 @@ func TestRelay_publishesUnderTheTokenOfItsOwnClaim(t *testing.T) {
 		t.Fatalf("confirmed under %q, want the token of the claim %q", queue.confirmed, token)
 	}
 	if queue.rescheduled || queue.killed {
-		t.Fatalf("the row was rescheduled or killed, want only the confirmation")
+		t.Fatalf("rescheduled = %t and killed = %t, want neither beside the confirmation", queue.rescheduled, queue.killed)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestRelay_leavesTheRowPublishableWhenTheConfirmationDoesNotLand(t *testing.
 	queue.confirmErr = storage.ErrLeaseLost
 	relay(t, queue, &publisher{})
 	if queue.rescheduled || queue.killed {
-		t.Fatalf("a lost lease wrote to the row, want nothing written")
+		t.Fatalf("rescheduled = %t and killed = %t after a lost lease, want nothing written", queue.rescheduled, queue.killed)
 	}
 }
 
@@ -57,7 +57,7 @@ func TestRelay_sendsTheRowBackOnTheBackoffWhenTheBrokerIsOut(t *testing.T) {
 	queue.claimed.Attempts = 2
 	relay(t, queue, &publisher{refuse: errors.New("service unavailable")})
 	if !queue.rescheduled || queue.killed {
-		t.Fatalf("the transient refusal did not reschedule the row alone")
+		t.Fatalf("rescheduled = %t and killed = %t on a transient refusal, want it rescheduled alone", queue.rescheduled, queue.killed)
 	}
 	if want := frozen.Add(4 * time.Second); !queue.next.Equal(want) {
 		t.Fatalf("next attempt = %s, want %s", queue.next, want)
@@ -70,13 +70,13 @@ func TestRelay_killsTheRowOnTheTenthPermanentRefusalAndNotOnTheNinth(t *testing.
 	ninth.claimed.Attempts = 8
 	relay(t, ninth, &publisher{refuse: errors.New("topic does not exist"), permanent: true})
 	if ninth.killed || !ninth.rescheduled {
-		t.Fatalf("the ninth refusal killed the row, want it rescheduled")
+		t.Fatalf("killed = %t on the ninth refusal, want the row rescheduled instead", ninth.killed)
 	}
 	tenth := queueWith(t)
 	tenth.claimed.Attempts = 9
 	relay(t, tenth, &publisher{refuse: errors.New("topic does not exist"), permanent: true})
 	if !tenth.killed || tenth.confirmed != "" {
-		t.Fatalf("the tenth refusal marked the row published or left it alive, want it dead")
+		t.Fatalf("killed = %t and confirmed = %q on the tenth refusal, want it dead and unpublished", tenth.killed, tenth.confirmed)
 	}
 }
 
@@ -85,9 +85,7 @@ func TestRelay_leavesTheSpanOkWhenTheRowOnlyComesBackLater(t *testing.T) {
 	queue := queueWith(t)
 	opened := &spans{}
 	service := New(queue, &publisher{refuse: errors.New("service unavailable")}, opened.open, frozenClock{}, quietLogger(), lease)
-	if err := service.Relay(context.Background(), candidate(t)); err != nil {
-		t.Fatalf("Relay = %v, want nil", err)
-	}
+	run(t, service)
 	if opened.linkedTrace != "4bf92f3577b34da6a3ce929d0e0e4736" || opened.closedWith != nil {
 		t.Fatalf("span linked to %q closed with %v, want the trace of the commit and no error", opened.linkedTrace, opened.closedWith)
 	}
@@ -107,10 +105,7 @@ func TestRelay_logsEveryOutcomeWithIdentifiersOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			written := &bytes.Buffer{}
 			queue := queueWith(t)
-			service := New(queue, tc.sender, noSpan, frozenClock{}, allowingLogger(written), lease)
-			if err := service.Relay(context.Background(), candidate(t)); err != nil {
-				t.Fatalf("Relay = %v, want nil", err)
-			}
+			run(t, New(queue, tc.sender, noSpan, frozenClock{}, allowingLogger(written), lease))
 			assertLine(t, written.String(), tc.want)
 		})
 	}
@@ -122,10 +117,7 @@ func TestRelay_logsTheDeathOfARowNobodyCanPublish(t *testing.T) {
 	queue := queueWith(t)
 	queue.claimed.Attempts = 9
 	sender := &publisher{refuse: errors.New("refused"), permanent: true}
-	service := New(queue, sender, noSpan, frozenClock{}, allowingLogger(written), lease)
-	if err := service.Relay(context.Background(), candidate(t)); err != nil {
-		t.Fatalf("Relay = %v, want nil", err)
-	}
+	run(t, New(queue, sender, noSpan, frozenClock{}, allowingLogger(written), lease))
 	assertLine(t, written.String(), "dead")
 }
 
@@ -136,12 +128,40 @@ func TestRelay_doesNothingWithACandidateTheClaimDidNotHandOver(t *testing.T) {
 	queue := queueWith(t)
 	queue.claimErr = storage.ErrOutboxEventNotFound
 	sender := &publisher{}
-	service := New(queue, sender, noSpan, frozenClock{}, quietLogger(), lease)
-	if err := service.Relay(context.Background(), candidate(t)); err != nil {
-		t.Fatalf("Relay of a row another replica holds = %v, want nil", err)
-	}
+	run(t, New(queue, sender, noSpan, frozenClock{}, quietLogger(), lease))
 	if sender.sent != nil {
-		t.Fatalf("the row was published anyway, want no send at all")
+		t.Fatalf("message sent = %v, want no send at all for a row this replica does not hold", sender.sent)
+	}
+}
+
+// A claim this replica could not even take is the failure of the turn: the
+// relay answers it so the runner logs it once and the next tick tries again.
+func TestRelay_answersTheFailureOfAClaimItCouldNotTake(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("postgres: connection reset by peer")
+	queue := queueWith(t)
+	queue.claimErr = broken
+	service := New(queue, &publisher{}, noSpan, frozenClock{}, quietLogger(), lease)
+	err := service.Relay(context.Background(), candidate(t))
+	if !errors.Is(err, broken) {
+		t.Fatalf("Relay over a claim that failed = %v, want %v", err, broken)
+	}
+}
+
+// A write of the turn that failed for anything other than a lost lease is the
+// failure of the turn, and it names the write that could not be made.
+func TestRelay_answersTheFailureOfTheWriteThatEndsTheTurn(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("postgres: connection reset by peer")
+	queue := queueWith(t)
+	queue.confirmErr = broken
+	service := New(queue, &publisher{}, noSpan, frozenClock{}, quietLogger(), lease)
+	err := service.Relay(context.Background(), candidate(t))
+	if !errors.Is(err, broken) {
+		t.Fatalf("Relay over a confirmation that failed = %v, want %v", err, broken)
+	}
+	if !strings.Contains(err.Error(), "publish outbox row") {
+		t.Fatalf("failure = %v, want the write that could not be made named in the chain", err)
 	}
 }
 
@@ -287,7 +307,14 @@ func (p *publisher) Permanent(error) bool { return p.permanent }
 
 func relay(t *testing.T, rows *queue, sender *publisher) {
 	t.Helper()
-	service := New(rows, sender, noSpan, frozenClock{}, quietLogger(), lease)
+	run(t, New(rows, sender, noSpan, frozenClock{}, quietLogger(), lease))
+}
+
+// run takes one turn over the single candidate of these cases. Nothing the
+// relay decides about a row is a failure of the turn, so every case here
+// expects nil back.
+func run(t *testing.T, service *Service) {
+	t.Helper()
 	if err := service.Relay(context.Background(), candidate(t)); err != nil {
 		t.Fatalf("Relay = %v, want nil", err)
 	}

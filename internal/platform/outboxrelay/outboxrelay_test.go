@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 )
 
 // tick is the interval the cases about the lifecycle run on. It is short because
@@ -242,4 +244,28 @@ func candidates(t *testing.T, count int) []storage.OutboxCandidate {
 		chosen = append(chosen, storage.OutboxCandidate{EventID: id, WalletID: wallet})
 	}
 	return chosen
+}
+
+// A failure that already crossed an I/O boundary carries the frames of where it
+// was first seen, and this border does not capture them again: one failure, one
+// stack.
+func TestStackOf_keepsTheFramesTheChainAlreadyCarries(t *testing.T) {
+	t.Parallel()
+	seen := fault.Wrap("claim outbox event", errors.New("connection reset by peer"))
+	if got := stackOf("relay an outbox event", seen); !slices.Equal(got, fault.Stack(seen)) {
+		t.Fatalf("frames = %v, want the %v the chain already carried", got, fault.Stack(seen))
+	}
+}
+
+// A refusal the use case decided on its own crossed no boundary, so its chain
+// holds no fault and this border is where the frames are captured.
+func TestStackOf_capturesTheFramesWhenTheChainCarriesNone(t *testing.T) {
+	t.Parallel()
+	got := stackOf("relay an outbox event", errors.New("kind is not published by this relay"))
+	if len(got) == 0 {
+		t.Fatalf("frames = %v, want them captured at this border", got)
+	}
+	if !strings.Contains(got[0], "outboxrelay.") {
+		t.Fatalf("first frame = %q, want it captured in this package", got[0])
+	}
 }

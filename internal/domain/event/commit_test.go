@@ -40,6 +40,19 @@ func TestOf_answersNothingForACommitThatRecordedNoTransaction(t *testing.T) {
 	}
 }
 
+// FAILED is durable and has no event of its own: the row is already there and
+// no consumer decides anything from it.
+func TestOf_answersNothingForARowThatCouldNotBeConcluded(t *testing.T) {
+	t.Parallel()
+	events, err := Of(commitOf(t, failedWait(t), ledger.Entry{}))
+	if err != nil {
+		t.Fatalf("Of a FAILED row = %v, want nil", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("a FAILED row emitted %d events, want none", len(events))
+	}
+}
+
 func TestOf_refusesATransactionInAStatusNoEventNames(t *testing.T) {
 	t.Parallel()
 	undecided := commitOf(t, external(t, betSpec(t)), ledger.Entry{})
@@ -72,6 +85,17 @@ func parsedEvent(t *testing.T, text string) identity.EventID {
 		t.Fatalf("ParseEventID = %v, want nil", err)
 	}
 	return parsed
+}
+
+// failedWait is a durable wait that a permanent failure of infrastructure kept
+// from ever being concluded.
+func failedWait(t *testing.T) *wager.Transaction {
+	t.Helper()
+	op := waitingWin(t)
+	if err := op.Fail(wager.ReferenceNotProcessed, at); err != nil {
+		t.Fatalf("Fail = %v, want nil", err)
+	}
+	return op
 }
 
 func processedLoss(t *testing.T) *wager.Transaction {

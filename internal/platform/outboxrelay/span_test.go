@@ -33,8 +33,16 @@ func TestSending_linksTheSendToTheTraceOfTheCommit(t *testing.T) {
 // span with no link rather than one with a broken one.
 func TestSending_opensASpanWithNoLinkForARowThatCarriesNoTrace(t *testing.T) {
 	t.Parallel()
-	if recorded := send(t, "", "", nil); len(recorded.Links()) != 0 {
-		t.Fatalf("links = %d, want none for a row with no trace", len(recorded.Links()))
+	cases := map[string][2]string{
+		"a row with no trace at all":       {"", ""},
+		"a row whose span is not readable": {committedTrace, "not-a-span"},
+	}
+	for name, ids := range cases {
+		t.Run(name, func(t *testing.T) {
+			if recorded := send(t, ids[0], ids[1], nil); len(recorded.Links()) != 0 {
+				t.Fatalf("links of %s = %d, want none", name, len(recorded.Links()))
+			}
+		})
 	}
 }
 
@@ -47,8 +55,8 @@ func TestSending_marksTheSpanOnlyForTheTurnThatFailed(t *testing.T) {
 	if failed.Status().Code != codes.Error {
 		t.Fatalf("status of a turn that failed = %v, want an error", failed.Status().Code)
 	}
-	if len(failed.Events()) == 0 {
-		t.Fatalf("the failed turn recorded no event on the span, want the failure on it")
+	if got := len(failed.Events()); got == 0 {
+		t.Fatalf("events on the span of a failed turn = %d, want the failure recorded on it", got)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/referencewait"
 	"github.com/junglegaming/backend-challenge-go/internal/app/relayoutbox"
@@ -132,17 +134,14 @@ type row struct {
 // relay is supposed to publish them in.
 func (s *settlement) rows(ctx context.Context, t *testing.T, owner identity.WalletID) []row {
 	t.Helper()
-	querier, err := s.pool.Querier()
-	if err != nil {
-		t.Fatalf("acquire pool = %v, want nil", err)
-	}
+	querier := s.querier(t)
 	const query = `
 SELECT event_id, event_type, payload ->> 'data', published_at IS NOT NULL,
        dead_at IS NOT NULL, payload::text, attempt_count
   FROM outbox_events WHERE wallet_id = $1 ORDER BY created_at, event_id`
 	found, err := querier.Query(ctx, query, owner.String())
 	if err != nil {
-		t.Fatalf("read the outbox = %v, want nil", err)
+		t.Fatalf("query the outbox = %v, want nil", err)
 	}
 	defer found.Close()
 	return scanRows(t, found)
@@ -209,9 +208,7 @@ func (s *settlement) drain(ctx context.Context, t *testing.T, service *relayoutb
 			return
 		}
 		for _, candidate := range due {
-			if err := service.Relay(ctx, candidate); err != nil {
-				t.Fatalf("Relay = %v, want nil", err)
-			}
+			relay(ctx, t, service, candidate)
 		}
 	}
 	t.Fatalf("the outbox of the wallet still had candidates after %d turns", drainTurns)
@@ -244,7 +241,7 @@ func (s *settlement) claimOne(ctx context.Context, t *testing.T, owner identity.
 	t.Helper()
 	due := s.due(ctx, t, owner)
 	if len(due) == 0 {
-		t.Fatalf("the wallet has no candidate to claim, want the one at the head of it")
+		t.Fatalf("candidates of the wallet = %d, want the one at the head of it", len(due))
 	}
 	claimed, err := s.queue.Claim(ctx, due[0].EventID, lease)
 	if err != nil {
@@ -279,18 +276,12 @@ func (s *settlement) attempt(ctx context.Context, t *testing.T, service *relayou
 		t.Fatalf("ParseEventID = %v, want nil", err)
 	}
 	s.exec(ctx, t, `UPDATE outbox_events SET next_attempt_at = now() - interval '1 second' WHERE event_id = $1`, id)
-	if err := service.Relay(ctx, storage.OutboxCandidate{EventID: parsed, WalletID: owner}); err != nil {
-		t.Fatalf("Relay = %v, want nil", err)
-	}
+	relay(ctx, t, service, storage.OutboxCandidate{EventID: parsed, WalletID: owner})
 }
 
 func (s *settlement) exec(ctx context.Context, t *testing.T, statement string, args ...any) {
 	t.Helper()
-	querier, err := s.pool.Querier()
-	if err != nil {
-		t.Fatalf("acquire pool = %v, want nil", err)
-	}
-	if _, err := querier.Exec(ctx, statement, args...); err != nil {
+	if _, err := s.querier(t).Exec(ctx, statement, args...); err != nil {
 		t.Fatalf("write against the outbox = %v, want nil", err)
 	}
 }
@@ -311,16 +302,12 @@ func (s *settlement) rowOf(ctx context.Context, t *testing.T, owner identity.Wal
 // exactly as the operations that went through left them.
 func (s *settlement) assertUnchanged(ctx context.Context, t *testing.T, owner identity.WalletID, balance string, transactions, entries int64) {
 	t.Helper()
-	querier, err := s.pool.Querier()
-	if err != nil {
-		t.Fatalf("acquire pool = %v, want nil", err)
-	}
 	const query = `
 SELECT (SELECT balance_cents FROM wallets WHERE id = $1),
        (SELECT count(*) FROM wager_transactions WHERE wallet_id = $1),
        (SELECT count(*) FROM ledger_entries WHERE wallet_id = $1)`
 	var cents, recorded, moved int64
-	if err := querier.QueryRow(ctx, query, owner.String()).Scan(&cents, &recorded, &moved); err != nil {
+	if err := s.querier(t).QueryRow(ctx, query, owner.String()).Scan(&cents, &recorded, &moved); err != nil {
 		t.Fatalf("read the tables of the wallet = %v, want nil", err)
 	}
 	if cents != brl(t, balance).Cents() {
@@ -329,6 +316,17 @@ SELECT (SELECT balance_cents FROM wallets WHERE id = $1),
 	if recorded != transactions || moved != entries {
 		t.Fatalf("transactions and entries = %d and %d, want %d and %d", recorded, moved, transactions, entries)
 	}
+}
+
+// querier is the open pool of the suite, which every read and write here goes
+// through.
+func (s *settlement) querier(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	pool, err := s.pool.Querier()
+	if err != nil {
+		t.Fatalf("acquire pool = %v, want nil", err)
+	}
+	return pool
 }
 
 // timeOf is the instant a write of this suite is stamped with. The relay stamps
@@ -349,7 +347,14 @@ func (s *settlement) publishTheOneAhead(ctx context.Context, t *testing.T, servi
 	if due[0].EventID.String() != expected {
 		t.Fatalf("candidate = %s, want %s, the oldest still pending", due[0].EventID, expected)
 	}
-	if err := service.Relay(ctx, due[0]); err != nil {
+	relay(ctx, t, service, due[0])
+}
+
+// relay takes one turn over one candidate. Nothing the relay decides about a
+// row is a failure of the turn, so every case here expects nil back.
+func relay(ctx context.Context, t *testing.T, service *relayoutbox.Service, candidate storage.OutboxCandidate) {
+	t.Helper()
+	if err := service.Relay(ctx, candidate); err != nil {
 		t.Fatalf("Relay = %v, want nil", err)
 	}
 }

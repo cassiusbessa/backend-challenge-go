@@ -55,7 +55,7 @@ func TestParseTransactionID_takesTheUUIDAndNothingElse(t *testing.T) {
 		t.Fatalf("ParseTransactionID of the nil UUID error = %v, want nil", err)
 	}
 	if !refused.IsZero() {
-		t.Fatalf("the nil transaction id reported IsZero() = false, want true")
+		t.Fatalf("the nil transaction id = %q reported IsZero() = false, want true", refused.String())
 	}
 }
 
