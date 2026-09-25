@@ -9,6 +9,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 )
 
 func TestWallet_answersTheStoredBalanceAndVersion(t *testing.T) {
@@ -16,7 +17,7 @@ func TestWallet_answersTheStoredBalanceAndVersion(t *testing.T) {
 	stored := viewOf(t, "1000.00", 3)
 	found, err := New(&rows{view: stored}).Wallet(context.Background(), stored.ID)
 	if err != nil {
-		t.Fatalf("Wallet = %v, want nil", err)
+		t.Fatalf("Wallet of the stored state = %v, want nil", err)
 	}
 	if found.Balance.Amount() != "1000.00" {
 		t.Fatalf("balance = %s, want 1000.00", found.Balance.Amount())
@@ -39,7 +40,7 @@ func TestWallet_asksTheReadModelForTheIdentityInTheURL(t *testing.T) {
 	asked := &rows{view: viewOf(t, "0.00", 1)}
 	wanted := walletOf(t)
 	if _, err := New(asked).Wallet(context.Background(), wanted); err != nil {
-		t.Fatalf("Wallet = %v, want nil", err)
+		t.Fatalf("Wallet of the identity in the URL = %v, want nil", err)
 	}
 	if asked.asked != wanted {
 		t.Fatalf("asked for = %s, want %s", asked.asked, wanted)
@@ -50,6 +51,16 @@ type rows struct {
 	view  storage.WalletView
 	err   error
 	asked identity.WalletID
+}
+
+// Transaction and TransactionByKey belong to the same read port and are not part
+// of this use case: a wallet read never reaches a wager transaction.
+func (r *rows) Transaction(context.Context, identity.TransactionID, identity.ProviderID) (storage.TransactionView, error) {
+	return storage.TransactionView{}, storage.ErrTransactionNotFound
+}
+
+func (r *rows) TransactionByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {
+	return wager.State{}, storage.ErrTransactionNotFound
 }
 
 func (r *rows) Wallet(_ context.Context, id identity.WalletID) (storage.WalletView, error) {

@@ -6,9 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 )
@@ -54,21 +51,6 @@ func TestView_refusesARowTheDomainCannotAccept(t *testing.T) {
 	}
 }
 
-func TestReadFailure_turnsTheAbsentRowIntoTheAbsenceOfAWallet(t *testing.T) {
-	t.Parallel()
-	if err := readFailure(pgx.ErrNoRows); !errors.Is(err, storage.ErrWalletNotFound) {
-		t.Fatalf("readFailure = %v, want %v", err, storage.ErrWalletNotFound)
-	}
-}
-
-func TestReadFailure_leavesAnythingElseAsInfrastructure(t *testing.T) {
-	t.Parallel()
-	err := readFailure(errors.New("connection reset by peer"))
-	if errors.Is(err, storage.ErrWalletNotFound) {
-		t.Fatalf("readFailure = %v, want it classified as infrastructure", err)
-	}
-}
-
 func TestWallet_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
 	t.Parallel()
 	id, err := identity.ParseWalletID("11111111-1111-4111-8111-111111111111")
@@ -93,4 +75,51 @@ func rowOf() walletRow {
 		createdAt: at,
 		updatedAt: at,
 	}
+}
+
+// Every read asks the pool for a querier first, and a closed pool is the one
+// refusal a read can answer without a database behind it.
+func TestTransaction_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
+	t.Parallel()
+	reads := NewReads(NewPool(config.Config{DatabaseURL: unreachable}))
+	_, err := reads.Transaction(context.Background(), transactionIdentity(t), providerIdentity(t))
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("Transaction = %v, want %v", err, ErrPoolClosed)
+	}
+}
+
+func TestTransactionByKey_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
+	t.Parallel()
+	reads := NewReads(NewPool(config.Config{DatabaseURL: unreachable}))
+	_, err := reads.TransactionByKey(context.Background(), providerIdentity(t), keyIdentity(t))
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("TransactionByKey = %v, want %v", err, ErrPoolClosed)
+	}
+}
+
+func transactionIdentity(t *testing.T) identity.TransactionID {
+	t.Helper()
+	parsed, err := identity.ParseTransactionID(rowTransaction)
+	if err != nil {
+		t.Fatalf("ParseTransactionID = %v, want nil", err)
+	}
+	return parsed
+}
+
+func providerIdentity(t *testing.T) identity.ProviderID {
+	t.Helper()
+	parsed, err := identity.ParseProviderID(rowProvider)
+	if err != nil {
+		t.Fatalf("ParseProviderID = %v, want nil", err)
+	}
+	return parsed
+}
+
+func keyIdentity(t *testing.T) identity.IdempotencyKey {
+	t.Helper()
+	parsed, err := identity.ParseIdempotencyKey("key-1")
+	if err != nil {
+		t.Fatalf("ParseIdempotencyKey = %v, want nil", err)
+	}
+	return parsed
 }

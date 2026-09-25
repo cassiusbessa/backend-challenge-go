@@ -69,7 +69,7 @@ func open(t *testing.T, ledgerBook *book, amount string) Result {
 	t.Helper()
 	opened, err := New(ledgerBook, fixedMinter(t), frozenClock{}).Open(context.Background(), commandOf(t, amount))
 	if err != nil {
-		t.Fatalf("Open = %v, want nil", err)
+		t.Fatalf("Open in the helper = %v, want nil", err)
 	}
 	return opened
 }
@@ -106,7 +106,7 @@ func TestOpen_leavesNothingCommittedWhenTheEntryFails(t *testing.T) {
 	service := New(book, fixedMinter(t), frozenClock{})
 	_, err := service.Open(context.Background(), commandOf(t, "1000.00"))
 	if !errors.Is(err, broken) {
-		t.Fatalf("Open = %v, want %v", err, broken)
+		t.Fatalf("Open with a failing entry = %v, want %v", err, broken)
 	}
 	if book.commits != 0 {
 		t.Fatalf("commits = %d, want 0", book.commits)
@@ -122,7 +122,7 @@ func TestOpen_passesTheDuplicateWalletRefusalThrough(t *testing.T) {
 	service := New(book, fixedMinter(t), frozenClock{})
 	_, err := service.Open(context.Background(), commandOf(t, "1000.00"))
 	if !errors.Is(err, storage.ErrWalletExists) {
-		t.Fatalf("Open = %v, want %v", err, storage.ErrWalletExists)
+		t.Fatalf("Open of a duplicate wallet = %v, want %v", err, storage.ErrWalletExists)
 	}
 	if book.transactionAttempts != 0 {
 		t.Fatalf("transaction writes attempted = %d, want none after the duplicate", book.transactionAttempts)
@@ -136,7 +136,7 @@ func TestOpen_refusesWhenAnIdentityCannotBeMinted(t *testing.T) {
 	service := New(book, brokenMinter{err: broken}, frozenClock{})
 	_, err := service.Open(context.Background(), commandOf(t, "1000.00"))
 	if !errors.Is(err, broken) {
-		t.Fatalf("Open = %v, want %v", err, broken)
+		t.Fatalf("Open with an unmintable identity = %v, want %v", err, broken)
 	}
 	if book.commits != 0 {
 		t.Fatalf("commits = %d, want 0 without an identity", book.commits)
@@ -157,7 +157,7 @@ func TestOpen_refusesAnInitialBalanceBelowZero(t *testing.T) {
 	service := New(book, fixedMinter(t), frozenClock{})
 	_, err = service.Open(context.Background(), Command{PlayerID: playerOf(t), InitialBalance: negative})
 	if !errors.Is(err, wallet.ErrNegativeBalance) {
-		t.Fatalf("Open = %v, want %v", err, wallet.ErrNegativeBalance)
+		t.Fatalf("Open with a balance below zero = %v, want %v", err, wallet.ErrNegativeBalance)
 	}
 	if book.commits != 0 {
 		t.Fatalf("commits = %d, want 0 for a negative balance", book.commits)
@@ -169,7 +169,7 @@ func TestOpen_stampsTheInjectedInstant(t *testing.T) {
 	book := &book{}
 	service := New(book, fixedMinter(t), frozenClock{})
 	if _, err := service.Open(context.Background(), commandOf(t, "1000.00")); err != nil {
-		t.Fatalf("Open = %v, want nil", err)
+		t.Fatalf("Open with the injected instant = %v, want nil", err)
 	}
 	if !book.wallets[0].CreatedAt().Equal(frozen) {
 		t.Fatalf("created at = %s, want %s", book.wallets[0].CreatedAt(), frozen)
@@ -232,8 +232,25 @@ func (r walletRows) Insert(_ context.Context, opened *wallet.Wallet) error {
 	return nil
 }
 
+// GetForUpdate and UpdateBalance belong to the same repository and are not part
+// of the opening: the wallet is born here, so there is no row to lock and no
+// balance to move.
+func (r walletRows) GetForUpdate(context.Context, identity.WalletID) (wallet.State, error) {
+	return wallet.State{}, storage.ErrWalletNotFound
+}
+
+func (r walletRows) UpdateBalance(context.Context, *wallet.Wallet, int64) error {
+	return storage.ErrWalletNotFound
+}
+
 type transactionRows struct {
 	book *book
+}
+
+// ByKey answers no row: an opening carries no idempotency key, so nothing in this
+// use case looks one up.
+func (r transactionRows) ByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {
+	return wager.State{}, storage.ErrTransactionNotFound
 }
 
 func (r transactionRows) Insert(_ context.Context, recorded *wager.Transaction) error {

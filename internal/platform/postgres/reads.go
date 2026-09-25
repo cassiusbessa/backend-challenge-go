@@ -2,14 +2,11 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
-	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 )
 
 const selectWallet = `
@@ -40,16 +37,40 @@ func (r *Reads) Wallet(ctx context.Context, id identity.WalletID) (storage.Walle
 		&found.cents, &found.version, &found.createdAt, &found.updatedAt,
 	)
 	if err != nil {
-		return storage.WalletView{}, readFailure(err)
+		return storage.WalletView{}, missingWallet("read wallet", err)
 	}
 	return found.view()
 }
 
-func readFailure(err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return storage.ErrWalletNotFound
+// Transaction answers the recorded outcome of one transaction of that provider.
+// A transaction of another provider answers ErrTransactionNotFound, the same as
+// one that does not exist.
+func (r *Reads) Transaction(ctx context.Context, id identity.TransactionID, provider identity.ProviderID) (storage.TransactionView, error) {
+	pool, err := r.source.Querier()
+	if err != nil {
+		return storage.TransactionView{}, wrap("acquire pool", err)
 	}
-	return wrap("read wallet", err)
+	row, err := scanTransaction(ctx, pool, selectTransactionOfProvider, id.String(), provider.String())
+	if err != nil {
+		return storage.TransactionView{}, missingTransaction("read transaction", err)
+	}
+	return row.view()
+}
+
+// TransactionByKey answers the transaction of that provider and key from outside
+// any transaction, which is what the loser of the unique constraint needs: the
+// violation aborts its SQL transaction, so the winning row is only readable after
+// the rollback.
+func (r *Reads) TransactionByKey(ctx context.Context, provider identity.ProviderID, key identity.IdempotencyKey) (wager.State, error) {
+	pool, err := r.source.Querier()
+	if err != nil {
+		return wager.State{}, wrap("acquire pool", err)
+	}
+	row, err := scanTransaction(ctx, pool, selectTransactionByKey, provider.String(), key.String())
+	if err != nil {
+		return wager.State{}, missingTransaction("read transaction by key", err)
+	}
+	return row.state()
 }
 
 // walletRow is the row as PostgreSQL hands it over, before the domain types
@@ -73,7 +94,7 @@ func (r walletRow) view() (storage.WalletView, error) {
 	if err != nil {
 		return storage.WalletView{}, wrap("read player identity", err)
 	}
-	balance, err := r.balance()
+	balance, err := balanceOf(r.currency, r.cents)
 	if err != nil {
 		return storage.WalletView{}, wrap("read wallet balance", err)
 	}
@@ -85,12 +106,4 @@ func (r walletRow) view() (storage.WalletView, error) {
 		CreatedAt: r.createdAt,
 		UpdatedAt: r.updatedAt,
 	}, nil
-}
-
-func (r walletRow) balance() (money.Money, error) {
-	currency, err := money.ParseCurrency(r.currency)
-	if err != nil {
-		return money.Money{}, err
-	}
-	return money.FromCents(r.cents, currency)
 }

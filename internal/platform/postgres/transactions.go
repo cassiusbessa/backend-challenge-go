@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 )
@@ -23,9 +24,24 @@ INSERT INTO wager_transactions (
     $17, $18, $19, $20
 )`
 
-// transactions writes the wager transaction row of one open transaction.
+// transactions reads and writes the wager transaction row of one open
+// transaction.
 type transactions struct {
 	tx pgx.Tx
+}
+
+// ByKey answers the transaction of that provider and key, or
+// ErrTransactionNotFound.
+//
+// The read takes no lock, so it does not invert the order of wallet before
+// transaction. It is the fast path of a replay and never the arbiter: two
+// replicas can both pass it, and what decides the duplicate is the unique index.
+func (r transactions) ByKey(ctx context.Context, provider identity.ProviderID, key identity.IdempotencyKey) (wager.State, error) {
+	row, err := scanTransaction(ctx, r.tx, selectTransactionByKey, provider.String(), key.String())
+	if err != nil {
+		return wager.State{}, missingTransaction("read transaction by key", err)
+	}
+	return row.state()
 }
 
 // Insert writes the transaction as it stands. PENDING is not a writable status,
