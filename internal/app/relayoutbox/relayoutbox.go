@@ -116,7 +116,10 @@ func (s *Service) turn(ctx context.Context, claimed storage.OutboxRow) error {
 }
 
 func (s *Service) deliver(ctx context.Context, claimed storage.OutboxRow) error {
-	sending, cancel := context.WithDeadline(ctx, s.clock.Now().Add(s.lease/sendShare))
+	// The window is a duration and not an instant built from the injected clock:
+	// a deadline is measured against the clock of the runtime, so the two have to
+	// be the same one for the send to be cut when the lease says and not before.
+	sending, cancel := context.WithTimeout(ctx, s.lease/sendShare)
 	defer cancel()
 	refusal := s.publisher.Publish(sending, messageOf(claimed))
 	if refusal == nil {
@@ -136,10 +139,17 @@ func messageOf(claimed storage.OutboxRow) Message {
 	}
 }
 
+// confirm writes the end of a send that already went through. It is the one
+// write of the turn that does not take the cancellation of the turn: the message
+// is on the topic from here on, and a confirmation that never lands is a row
+// another replica publishes a second time. The other half of the lease is the
+// room that sendShare leaves for exactly this write.
 func (s *Service) confirm(ctx context.Context, claimed storage.OutboxRow) error {
-	err := s.queue.Confirm(ctx, claimed.EventID, claimed.LeaseToken, s.clock.Now())
+	writing, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.lease/sendShare)
+	defer cancel()
+	err := s.queue.Confirm(writing, claimed.EventID, claimed.LeaseToken, s.clock.Now())
 	if err != nil {
-		return s.lost(ctx, claimed, "publish", err)
+		return s.lost(ctx, claimed, "confirm", err)
 	}
 	s.report(ctx, claimed, "published")
 	return nil

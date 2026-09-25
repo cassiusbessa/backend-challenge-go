@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
@@ -42,17 +43,27 @@ type Relayer interface {
 // Relay is the background component of the process. The zero value is not used:
 // New is the only constructor.
 //
-// It keeps the context of its own run, so that Stop ends the turn in flight
-// instead of waiting for it.
+// The signal and the deadline of the shutdown are two different things to it,
+// and that is why it keeps two: go-outbox asks that SIGTERM claim no new row and
+// that the send in flight end inside the lease, so the signal closes claiming
+// and only the deadline cancels the work.
 type Relay struct {
 	scanner  Scanner
 	relayer  Relayer
 	log      *slog.Logger
 	interval time.Duration
 
-	// stop ends the run. It is nil before Start, which is the only state in
+	// claiming is closed by Stop and is the signal itself: the scan is cancelled
+	// off it, and the loop takes no new row once it is closed. The Once is
+	// because a lifecycle that stops twice must not close it twice.
+	claiming chan struct{}
+	stopOnce sync.Once
+	// cut cancels the work of the turn in flight — the send that already has a
+	// claim, and the write that ends it. Only the shutdown deadline reaches for
+	// it: a send cancelled by the signal itself would be the very window the
+	// lease exists to close. It is nil before Start, which is the only state in
 	// which Stop has nothing to end.
-	stop context.CancelFunc
+	cut context.CancelFunc
 	// done is closed when the loop has left, which is what makes Stop wait for
 	// the turn in flight rather than return while it is still sending.
 	done chan struct{}
@@ -68,44 +79,61 @@ func (r *Relay) Start(starting context.Context) error {
 	// The run outlives the start, so it takes the values of that context without
 	// its deadline: a relay cancelled by the startup timeout would stop the
 	// moment the process finished coming up.
-	ctx, cancel := context.WithCancel(context.WithoutCancel(starting))
-	r.stop = cancel
+	work, cut := context.WithCancel(context.WithoutCancel(starting))
+	r.cut = cut
+	r.claiming = make(chan struct{})
 	r.done = make(chan struct{})
-	go r.run(ctx)
+	// The scan is cancelled by the signal and the work is not. A scan cut short
+	// loses nothing — the queue is read again by whoever scans next — while a
+	// send cut short is a message the broker may have taken with nobody left to
+	// confirm it.
+	scanning, stopScanning := context.WithCancel(work)
+	go func() {
+		<-r.claiming
+		stopScanning()
+	}()
+	go r.run(scanning, work)
 	return nil
 }
 
-// Stop ends the run and waits for the turn in flight.
+// Stop claims no new row and waits for the send in flight to end.
 //
-// No new row is claimed from here on, which is what SIGTERM asks of background
-// work. A row whose send this replica did not confirm stays unpublished, with
-// its payload and its event identity intact, and another replica claims it once
-// the lease expires.
+// The signal does not cancel that send: go-outbox gives it the lease to finish
+// in, and a send cut at the signal is a message the broker may have taken with
+// nobody left to confirm it. What cancels it is the shutdown deadline, which is
+// the promise this process made to the one that signalled it.
+//
+// A row whose send this replica did not confirm stays unpublished, with its
+// payload and its event identity intact, and another replica claims it once the
+// lease expires.
 func (r *Relay) Stop(ctx context.Context) error {
-	if r.stop == nil {
+	if r.cut == nil {
 		return nil
 	}
-	r.stop()
+	r.stopOnce.Do(func() { close(r.claiming) })
 	select {
 	case <-r.done:
+		r.cut()
 		return nil
 	case <-ctx.Done():
-		// The shutdown deadline came first. Saying so is the honest answer: what
-		// the turn in flight did not confirm is a row that is still publishable.
+		// The shutdown deadline came first. Cutting the work is what the deadline
+		// is for, and saying so is the honest answer: what the turn in flight did
+		// not confirm is a row that is still publishable.
+		r.cut()
 		return fault.Wrap("stop outbox relay", ctx.Err())
 	}
 }
 
-func (r *Relay) run(ctx context.Context) {
+func (r *Relay) run(scanning, work context.Context) {
 	defer close(r.done)
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-scanning.Done():
 			return
 		case <-ticker.C:
-			r.turn(ctx)
+			r.turn(scanning, work)
 		}
 	}
 }
@@ -115,19 +143,19 @@ func (r *Relay) run(ctx context.Context) {
 // A failure of the scan ends the turn and not the relay: the queue is read again
 // on the next tick, and a database that is out comes back without the process
 // being restarted.
-func (r *Relay) turn(ctx context.Context) {
-	due, err := r.scanner.Due(ctx, batch)
+func (r *Relay) turn(scanning, work context.Context) {
+	due, err := r.scanner.Due(scanning, batch)
 	if err != nil {
-		r.failed(ctx, "scan the outbox queue", err)
+		r.failed(scanning, "scan the outbox queue", err)
 		return
 	}
 	for _, candidate := range due {
-		if ctx.Err() != nil {
+		if scanning.Err() != nil {
 			// The signal came mid-batch. The rest of the candidates are left for
 			// whoever scans next, here or in another replica.
 			return
 		}
-		r.publish(ctx, candidate)
+		r.publish(work, candidate)
 	}
 }
 
@@ -143,12 +171,14 @@ func (r *Relay) publish(ctx context.Context, candidate storage.OutboxCandidate) 
 }
 
 // failed records the failure: the chain that names where it came from, and the
-// frames of where it was first seen. A turn cut short by the shutdown is not a
-// failure, and only the cancellation itself is read as one being stopped.
+// frames of where it was first seen. A turn the shutdown deadline cut is not a
+// failure, and only the cancellation itself is read as one being cut.
 func (r *Relay) failed(ctx context.Context, message string, err error, attrs ...slog.Attr) {
-	// Read off the error and not off the context: once Stop has cancelled, a
-	// context test drops every failure that merely raced the signal, and that is
-	// the last one the process gets to report.
+	// Read off the error and not off the context: once the deadline has cancelled
+	// the work, a context test drops every failure that merely raced it, and that
+	// is the last one the process gets to report. What this drops is a send left
+	// unfinished, never a send that went through: the confirmation of one that
+	// did takes no cancellation at all.
 	if errors.Is(err, context.Canceled) {
 		return
 	}

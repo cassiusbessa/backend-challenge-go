@@ -22,7 +22,7 @@ func TestTurn_handsEveryCandidateOfAScanToTheUseCase(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{due: candidates(t, 3)}
 	relayer := &sends{}
-	New(scanner, relayer, quiet(), tick).turn(context.Background())
+	New(scanner, relayer, quiet(), tick).turn(context.Background(), context.Background())
 	if len(relayer.seen) != 3 {
 		t.Fatalf("candidates relayed = %d, want the 3 the scan chose", len(relayer.seen))
 	}
@@ -39,14 +39,15 @@ func TestTurn_claimsNoNewRowOnceTheContextIsDone(t *testing.T) {
 	relay := New(&queue{due: candidates(t, 3)}, relayer, quiet(), tick)
 	signalled, stop := context.WithCancel(context.Background())
 	relayer.hold = func(context.Context) { stop() }
-	relay.turn(signalled)
+	relay.turn(signalled, context.Background())
 	if len(relayer.seen) != 1 {
 		t.Fatalf("rows claimed mid-batch = %d, want the 1 already in flight when the signal came", len(relayer.seen))
 	}
 }
 
-// The signal stops the run, and nothing is claimed from there on. What the turn
-// in flight did not confirm stays publishable for another replica.
+// The signal stops the run, and nothing is claimed from there on. What it does
+// not do is reach the send in flight: go-outbox gives that one the lease to
+// finish in, and the turn ends because it ended, not because it was cut.
 func TestStop_claimsNoNewRowAfterTheSignal(t *testing.T) {
 	t.Parallel()
 	relayer := &sends{}
@@ -54,10 +55,15 @@ func TestStop_claimsNoNewRowAfterTheSignal(t *testing.T) {
 	stopped := make(chan error, 1)
 	relayer.hold = func(ctx context.Context) {
 		// The stop takes the values of the turn without its cancellation, because
-		// cancelling the run is exactly what it is about to do.
+		// a test that handed its own cancellation in could not tell the two apart.
 		stopping := context.WithoutCancel(ctx)
 		go func() { stopped <- relay.Stop(stopping) }()
-		<-ctx.Done()
+		// The signal has landed by the time this reads: what is asserted next is
+		// the state of the send while the process is already stopping.
+		<-relay.claiming
+		if err := ctx.Err(); err != nil {
+			t.Errorf("context of the send in flight = %v, want the signal not to have touched it", err)
+		}
 	}
 	if err := relay.Start(context.Background()); err != nil {
 		t.Fatalf("Start before the signal = %v, want nil", err)
@@ -67,6 +73,25 @@ func TestStop_claimsNoNewRowAfterTheSignal(t *testing.T) {
 	}
 	if len(relayer.seen) != 1 {
 		t.Fatalf("rows claimed = %d, want the 1 already in flight when the signal came", len(relayer.seen))
+	}
+}
+
+// The signal cancels the scan, which the send it may be holding is not. A scan
+// cut short loses nothing — whoever scans next reads the same queue — while a
+// shutdown that waited on a database that is out would be a process that never
+// leaves.
+func TestStop_cancelsTheScanAtTheSignal(t *testing.T) {
+	t.Parallel()
+	scanner := &queue{blocks: true, scanned: make(chan struct{}, 1)}
+	relay := New(scanner, &sends{}, quiet(), tick)
+	if err := relay.Start(context.Background()); err != nil {
+		t.Fatalf("Start before the signal = %v, want nil", err)
+	}
+	<-scanner.scanned
+	// The context of the stop carries no deadline: what has to end the wait is
+	// the scan answering the signal, not a deadline running out over it.
+	if err := relay.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop over a scan that does not answer = %v, want nil", err)
 	}
 }
 
@@ -97,10 +122,14 @@ func TestStop_answersNilForARelayThatNeverStarted(t *testing.T) {
 func TestStop_answersTheFailureWhenTheShutdownDeadlineComesFirst(t *testing.T) {
 	t.Parallel()
 	held := make(chan struct{})
-	release := make(chan struct{})
-	relayer := &sends{hold: func(context.Context) {
+	cut := make(chan error, 1)
+	relayer := &sends{hold: func(ctx context.Context) {
 		close(held)
-		<-release
+		// The deadline is the one thing that does cancel the work: the process
+		// promised to be gone, and a send still running is no longer its to
+		// finish.
+		<-ctx.Done()
+		cut <- ctx.Err()
 	}}
 	relay := New(&queue{due: candidates(t, 1)}, relayer, quiet(), tick)
 	if err := relay.Start(context.Background()); err != nil {
@@ -110,9 +139,11 @@ func TestStop_answersTheFailureWhenTheShutdownDeadlineComesFirst(t *testing.T) {
 	expired, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := relay.Stop(expired)
-	close(release)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Stop past its deadline = %v, want %v", err, context.Canceled)
+	}
+	if cutWith := <-cut; !errors.Is(cutWith, context.Canceled) {
+		t.Fatalf("context of the send past the deadline = %v, want %v", cutWith, context.Canceled)
 	}
 }
 
@@ -166,14 +197,14 @@ func TestTurn_relaysNothingWhenTheScanFailed(t *testing.T) {
 	relayer := &sends{}
 	scanner := &queue{due: candidates(t, 2), failFirst: errors.New("postgres: connection reset by peer")}
 	relay := New(scanner, relayer, slog.New(slog.NewJSONHandler(&written, nil)), tick)
-	relay.turn(context.Background())
+	relay.turn(context.Background(), context.Background())
 	if len(relayer.seen) != 0 {
 		t.Fatalf("rows relayed after a scan that failed = %d, want 0", len(relayer.seen))
 	}
 	if !strings.Contains(written.String(), "scan the outbox queue") {
 		t.Fatalf("log = %q, want the failure of the scan in it", written.String())
 	}
-	relay.turn(context.Background())
+	relay.turn(context.Background(), context.Background())
 	if len(relayer.seen) != 2 {
 		t.Fatalf("rows relayed on the turn after = %d, want 2", len(relayer.seen))
 	}
@@ -187,9 +218,10 @@ type queue struct {
 	limit     int
 	failFirst error
 	scanned   chan struct{}
+	blocks    bool
 }
 
-func (q *queue) Due(_ context.Context, limit int) ([]storage.OutboxCandidate, error) {
+func (q *queue) Due(ctx context.Context, limit int) ([]storage.OutboxCandidate, error) {
 	q.scans++
 	q.limit = limit
 	if q.scanned != nil {
@@ -197,6 +229,13 @@ func (q *queue) Due(_ context.Context, limit int) ([]storage.OutboxCandidate, er
 		case q.scanned <- struct{}{}:
 		default:
 		}
+	}
+	if q.blocks {
+		// A database that does not answer. The adapter comes back with the error
+		// of the context, and a fake that returned at once would not be a scan
+		// the shutdown has to get out of.
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	if q.failFirst != nil && q.scans == 1 {
 		return nil, q.failFirst

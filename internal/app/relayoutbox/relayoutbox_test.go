@@ -29,12 +29,21 @@ func TestRelay_publishesUnderTheTokenOfItsOwnClaim(t *testing.T) {
 
 // The deadline of the send fits inside the lease, so a replica is never still
 // publishing a row its lease no longer covers.
+//
+// What is asserted is a window still open, and not an instant: a deadline is
+// read against the clock of the runtime, so one built from the injected clock
+// would be a send that arrives already expired and a case that never notices.
 func TestRelay_givesTheSendLessTimeThanTheLease(t *testing.T) {
 	t.Parallel()
 	sender := &publisher{}
+	before := time.Now()
 	relay(t, queueWith(t), sender)
-	if !sender.deadline.After(frozen) || !sender.deadline.Before(frozen.Add(lease)) {
-		t.Fatalf("send deadline = %s, want it inside the lease that ends at %s", sender.deadline, frozen.Add(lease))
+	window := sender.deadline.Sub(before)
+	if window <= 0 || window > lease {
+		t.Fatalf("send window = %s, want it open and no wider than the lease of %s", window, lease)
+	}
+	if sender.ctxErr != nil {
+		t.Fatalf("context of the send = %v, want a live one", sender.ctxErr)
 	}
 }
 
@@ -148,6 +157,27 @@ func TestRelay_answersTheFailureOfAClaimItCouldNotTake(t *testing.T) {
 	}
 }
 
+// The shutdown deadline landing between the send and the confirmation does not
+// take the confirmation with it. The message is on the topic from the moment the
+// broker took it, and a row left unconfirmed is one another replica publishes a
+// second time.
+func TestRelay_confirmsTheSendThatWentThroughEvenAfterTheWorkWasCancelled(t *testing.T) {
+	t.Parallel()
+	queue := queueWith(t)
+	cut, cancel := context.WithCancel(context.Background())
+	sender := &publisher{onSend: cancel}
+	service := New(queue, sender, noSpan, frozenClock{}, quietLogger(), lease)
+	if err := service.Relay(cut, candidate(t)); err != nil {
+		t.Fatalf("Relay over a send the deadline cut after the broker took it = %v, want nil", err)
+	}
+	if queue.confirmed != token {
+		t.Fatalf("confirmed under %q, want the row confirmed under %q", queue.confirmed, token)
+	}
+	if queue.confirmCtxErr != nil {
+		t.Fatalf("context of the confirmation = %v, want one the cancellation did not reach", queue.confirmCtxErr)
+	}
+}
+
 // A write of the turn that failed for anything other than a lost lease is the
 // failure of the turn, and it names the write that could not be made.
 func TestRelay_answersTheFailureOfTheWriteThatEndsTheTurn(t *testing.T) {
@@ -160,7 +190,7 @@ func TestRelay_answersTheFailureOfTheWriteThatEndsTheTurn(t *testing.T) {
 	if !errors.Is(err, broken) {
 		t.Fatalf("Relay over a confirmation that failed = %v, want %v", err, broken)
 	}
-	if !strings.Contains(err.Error(), "publish outbox row") {
+	if !strings.Contains(err.Error(), "confirm outbox row") {
 		t.Fatalf("failure = %v, want the write that could not be made named in the chain", err)
 	}
 }
@@ -232,14 +262,16 @@ func allowingLogger(into *bytes.Buffer) *slog.Logger {
 // queue is the publication queue in memory: it hands out one claimed row and
 // records which of the three ends of the turn was written.
 type queue struct {
-	claimed      storage.OutboxRow
-	claimErr     error
-	confirmErr   error
-	confirmed    string
-	rescheduled  bool
-	killed       bool
-	next         time.Time
-	claimedLease time.Duration
+	claimed       storage.OutboxRow
+	claimErr      error
+	confirmErr    error
+	confirmCtxErr error
+	confirmed     string
+	rescheduled   bool
+	refused       bool
+	killed        bool
+	next          time.Time
+	claimedLease  time.Duration
 }
 
 func (q *queue) Due(context.Context, int) ([]storage.OutboxCandidate, error) {
@@ -254,7 +286,8 @@ func (q *queue) Claim(_ context.Context, _ identity.EventID, lease time.Duration
 	return q.claimed, nil
 }
 
-func (q *queue) Confirm(_ context.Context, _ identity.EventID, token string, _ time.Time) error {
+func (q *queue) Confirm(ctx context.Context, _ identity.EventID, token string, _ time.Time) error {
+	q.confirmCtxErr = ctx.Err()
 	if q.confirmErr != nil {
 		return q.confirmErr
 	}
@@ -291,8 +324,12 @@ func queueWith(t *testing.T) *queue {
 type publisher struct {
 	sent      *Message
 	deadline  time.Time
+	ctxErr    error
 	refuse    error
 	permanent bool
+	// onSend acts while the send is in flight, which is how a case puts the
+	// signal exactly between the message leaving and the row being confirmed.
+	onSend func()
 }
 
 func (p *publisher) Publish(ctx context.Context, message Message) error {
