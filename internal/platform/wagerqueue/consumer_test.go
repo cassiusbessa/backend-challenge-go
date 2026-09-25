@@ -346,6 +346,80 @@ func TestStop_answersNilWhenTheConsumerNeverStarted(t *testing.T) {
 	}
 }
 
+// A broker that refuses the answer is reported and nothing else: the message stays
+// where it is, and the window it is already held under runs out on its own.
+func TestDecide_reportsTheBrokerRefusingTheAnswerAndLeavesTheMessage(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("connection refused")
+	cases := []struct {
+		name     string
+		queue    *fakeQueue
+		receiver *fakeReceiver
+		reported string
+	}{
+		{
+			// The decision is committed and the message stays in the queue. The
+			// inbox is what makes the delivery that follows change nothing.
+			name:     "a delete that failed on a settled message",
+			queue:    &fakeQueue{deleteErr: broken},
+			receiver: &fakeReceiver{status: wager.Processed},
+			reported: "delete a settled message",
+		},
+		{
+			name:     "a delete that failed on an abandoned message",
+			queue:    &fakeQueue{deleteErr: broken},
+			receiver: &fakeReceiver{refuse: authz.ErrUnmappedSender},
+			reported: "delete an abandoned message",
+		},
+		{
+			name:     "a release that failed",
+			queue:    &fakeQueue{releaseErr: broken},
+			receiver: &fakeReceiver{refuse: errors.New("connection reset")},
+			reported: "release a message of the ingress queue",
+		},
+		{
+			name:     "a copy to the dead-letter queue that failed",
+			queue:    &fakeQueue{deadLetterErr: broken},
+			receiver: &fakeReceiver{refuse: authz.ErrUnmappedSender},
+			reported: "copy a message to the dead-letter queue",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" is reported", func(t *testing.T) {
+			consumer, logs, _ := consumerOver(t, tc.queue, tc.receiver)
+			consumer.decide(context.Background(), arrived(1))
+			line := lineWith(t, logs, tc.reported)
+			if line["messageId"] != messageID {
+				t.Fatalf("messageId = %v, want %s", line["messageId"], messageID)
+			}
+			if _, carried := line["stack"]; !carried {
+				t.Fatalf("line carries no stack, want the frames of the failure: %v", line)
+			}
+		})
+	}
+}
+
+// A poll that failed does not spin: the loop reports it and waits one base window
+// before asking again, because the wait of the long poll is no longer what paces it.
+func TestRun_reportsAPollThatFailedAndDoesNotSpin(t *testing.T) {
+	t.Parallel()
+	queue := &fakeQueue{receiveErr: errors.New("connection refused"), fetched: make(chan struct{})}
+	consumer, logs, _ := consumerOver(t, queue, &fakeReceiver{})
+	if err := consumer.Start(context.Background()); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	queue.awaitFetch(t)
+	if err := consumer.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop = %v, want nil", err)
+	}
+	// The pause is a whole base window, so a loop that spun would have fetched far
+	// more than a handful of times before the signal landed.
+	if got := queue.fetches(); got > 2 {
+		t.Fatalf("fetches = %d, want at most 2: a poll that failed waits before the next", got)
+	}
+	lineWith(t, logs, "receive from the ingress queue")
+}
+
 func TestMeasure_movesTheDepthOfTheDeadLetterQueueIntoTheMetric(t *testing.T) {
 	t.Parallel()
 	queue := &fakeQueue{depth: 4}
@@ -424,6 +498,9 @@ type fakeQueue struct {
 	depth         int64
 	depthErr      error
 	deadLetterErr error
+	deleteErr     error
+	releaseErr    error
+	receiveErr    error
 	fetched       chan struct{}
 	once          sync.Once
 	cut           bool
@@ -438,6 +515,9 @@ func (q *fakeQueue) Receive(ctx context.Context, wait, _ time.Duration) ([]Deliv
 			close(q.fetched)
 		}
 	})
+	if q.receiveErr != nil {
+		return nil, q.receiveErr
+	}
 	// The poll blocks the way a long poll does, and answers nothing: every case
 	// about a message drives decide directly.
 	timer := time.NewTimer(wait)
@@ -459,14 +539,29 @@ func (q *fakeQueue) cancelled() bool {
 	return q.cut
 }
 
-func (q *fakeQueue) Delete(context.Context, string) error {
+// The three answers back to the broker honour the context, the way a real call
+// would: an answer taken on a context that is already done reaches nobody, which is
+// what makes the window the consumer chooses for them observable.
+func (q *fakeQueue) Delete(ctx context.Context, _ string) error {
+	if err := reachable(ctx); err != nil {
+		return err
+	}
+	if q.deleteErr != nil {
+		return q.deleteErr
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.deleted++
 	return nil
 }
 
-func (q *fakeQueue) Release(_ context.Context, _ string, after time.Duration) error {
+func (q *fakeQueue) Release(ctx context.Context, _ string, after time.Duration) error {
+	if err := reachable(ctx); err != nil {
+		return err
+	}
+	if q.releaseErr != nil {
+		return q.releaseErr
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.released++
@@ -474,7 +569,10 @@ func (q *fakeQueue) Release(_ context.Context, _ string, after time.Duration) er
 	return nil
 }
 
-func (q *fakeQueue) DeadLetter(context.Context, Delivery) error {
+func (q *fakeQueue) DeadLetter(ctx context.Context, _ Delivery) error {
+	if err := reachable(ctx); err != nil {
+		return err
+	}
 	if q.deadLetterErr != nil {
 		return q.deadLetterErr
 	}
@@ -482,6 +580,10 @@ func (q *fakeQueue) DeadLetter(context.Context, Delivery) error {
 	defer q.mu.Unlock()
 	q.abandoned++
 	return nil
+}
+
+func reachable(ctx context.Context) error {
+	return ctx.Err()
 }
 
 func (q *fakeQueue) DeadLetterDepth(context.Context) (int64, error) {

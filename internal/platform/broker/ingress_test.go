@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -168,6 +169,80 @@ func TestDeadLetterDepth_answersTheFailureOfTheBroker(t *testing.T) {
 	fake := &fakeMessenger{refuse: broken}
 	if _, err := ingress(fake).DeadLetterDepth(context.Background()); !errors.Is(err, broken) {
 		t.Fatalf("DeadLetterDepth over a broker that is out = %v, want %v", err, broken)
+	}
+}
+
+// Every call back to the broker answers its failure rather than swallowing it:
+// the consumer reads it to decide whether the message was answered for.
+func TestIngress_answersTheFailureOfEachCallBackToTheBroker(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("connection refused")
+	cases := []struct {
+		name string
+		call func(*Ingress) error
+	}{
+		{name: "a delete that failed", call: func(i *Ingress) error {
+			return i.Delete(context.Background(), "receipt-1")
+		}},
+		{name: "a release that failed", call: func(i *Ingress) error {
+			return i.Release(context.Background(), "receipt-1", time.Second)
+		}},
+		{name: "a copy that failed", call: func(i *Ingress) error {
+			return i.DeadLetter(context.Background(), wagerqueue.Delivery{Body: []byte("{}")})
+		}},
+		{name: "a fetch that failed", call: func(i *Ingress) error {
+			_, err := i.Receive(context.Background(), time.Second, time.Second)
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" is answered", func(t *testing.T) {
+			if err := tc.call(ingress(&fakeMessenger{refuse: broken})); !errors.Is(err, broken) {
+				t.Fatalf("call = %v, want %v", err, broken)
+			}
+		})
+	}
+}
+
+// The delivery count only ever moves the give-up forward, so a count the broker did
+// not register reads as the first delivery rather than as the highest.
+func TestCount_readsTheDeliveryTheBrokerRegistered(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		raw  string
+		want int64
+	}{
+		{raw: "1", want: 1},
+		{raw: "5", want: 5},
+		{raw: "0", want: 1},
+		{raw: "-2", want: 1},
+		{raw: "", want: 1},
+		{raw: "many", want: 1},
+	}
+	for _, tc := range cases {
+		t.Run("a count of "+tc.raw+" reads as "+strconv.FormatInt(tc.want, 10), func(t *testing.T) {
+			if got := count(tc.raw); got != tc.want {
+				t.Fatalf("count(%q) = %d, want %d", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// The window is bounded by what the API accepts and never by what the type holds: a
+// duration past twelve hours would otherwise wrap into a negative one.
+func TestSeconds_boundsTheWindowToWhatTheAPITakes(t *testing.T) {
+	t.Parallel()
+	if got := seconds(20 * time.Second); got != 20 {
+		t.Fatalf("seconds of 20s = %d, want 20", got)
+	}
+	if got := seconds(500 * time.Millisecond); got != 0 {
+		t.Fatalf("seconds of half a second = %d, want 0", got)
+	}
+	if got := seconds(-time.Second); got != 0 {
+		t.Fatalf("seconds of a negative window = %d, want 0", got)
+	}
+	if got := seconds(30 * time.Hour); got != maxWindowSeconds {
+		t.Fatalf("seconds far past the ceiling = %d, want %d", got, maxWindowSeconds)
 	}
 }
 
