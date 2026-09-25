@@ -66,3 +66,7 @@ func (t *transaction) Entries() storage.Entries {
 func (t *transaction) Outbox() storage.Outbox {
 	return outbox{tx: t.tx}
 }
+
+func (t *transaction) Inbox() storage.Inbox {
+	return inbox{tx: t.tx}
+}

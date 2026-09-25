@@ -55,6 +55,7 @@ type txStub struct {
 func (t *txStub) Wallets() Wallets           { return nil }
 func (t *txStub) Transactions() Transactions { return nil }
 func (t *txStub) Entries() Entries           { return nil }
+func (t *txStub) Inbox() Inbox               { return nil }
 func (t *txStub) Outbox() Outbox             { return t.outbox }
 
 type outboxRows struct {

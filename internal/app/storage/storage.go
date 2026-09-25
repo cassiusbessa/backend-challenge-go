@@ -80,6 +80,10 @@ type Tx interface {
 	Transactions() Transactions
 	Entries() Entries
 	Outbox() Outbox
+
+	// Inbox is reachable only from a commit that a message caused. An operation
+	// that came by HTTP simply never asks for it.
+	Inbox() Inbox
 }
 
 // Wallets reads the wallet row for writing and writes it.

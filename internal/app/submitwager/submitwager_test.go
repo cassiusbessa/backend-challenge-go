@@ -564,6 +564,13 @@ type book struct {
 	// wallet before the cited operation and the cited operation before the
 	// question of the reversal.
 	calls []string
+
+	// messages is what the inbox recorded, staged like the rest so a rollback
+	// takes the row with it.
+	messages []storage.Message
+	// recorded is the row the unicity of the inbox answers, keyed by consumer and
+	// message identifier, and it is what a redelivery meets.
+	recorded map[string]storage.Message
 }
 
 type balanceWrite struct {
@@ -588,6 +595,7 @@ func (b *book) Within(_ context.Context, work func(storage.Tx) error) error {
 		b.entries = nil
 		b.balances = nil
 		b.events = nil
+		b.messages = nil
 		return err
 	}
 	b.commits++
@@ -643,6 +651,28 @@ func (b *book) Entries() storage.Entries {
 
 func (b *book) Outbox() storage.Outbox {
 	return outboxRows{book: b}
+}
+
+func (b *book) Inbox() storage.Inbox {
+	return inboxRows{book: b}
+}
+
+type inboxRows struct {
+	book *book
+}
+
+// Insert answers the row already recorded when the unicity refuses this one,
+// which is what the adapter does over the savepoint.
+func (r inboxRows) Insert(_ context.Context, message storage.Message) (storage.Message, error) {
+	if already, ok := r.book.recorded[messageKeyOf(message)]; ok {
+		return already, storage.ErrMessageRecorded
+	}
+	r.book.messages = append(r.book.messages, message)
+	return message, nil
+}
+
+func messageKeyOf(message storage.Message) string {
+	return message.Consumer + "|" + message.MessageID
 }
 
 type outboxRows struct {

@@ -27,6 +27,11 @@ const (
 	// externalUniqueIndex is one transaction per provider and external id.
 	externalUniqueIndex = "wager_transactions_one_per_provider_and_external_id"
 
+	// inboxUniqueConstraint is one inbox row per consumer and message. It is the
+	// arbiter of the redelivery for the same reason as the two above: a query
+	// taken first is a window two replicas both pass.
+	inboxUniqueConstraint = "inbox_messages_one_per_consumer_and_message"
+
 	// reversalUniqueIndex is one PROCESSED reversal per cited operation. It is
 	// named here to be left out of duplicateOf on purpose, and the name is what
 	// makes that decision visible instead of absent.
@@ -85,6 +90,8 @@ func duplicateOf(constraint string) error {
 		return wager.NewRejection(wager.IdempotencyConflict, nil)
 	case externalUniqueIndex:
 		return wager.NewRejection(wager.DuplicateExternalTransaction, nil)
+	case inboxUniqueConstraint:
+		return storage.ErrMessageRecorded
 	}
 	return nil
 }

@@ -256,6 +256,19 @@ func (b *book) Outbox() storage.Outbox {
 	return outboxRows{book: b}
 }
 
+// Inbox is here because the port belongs to Tx. This use case is never reached
+// by a message, so a call refuses instead of recording: the refusal is the fake
+// saying the wiring changed.
+func (b *book) Inbox() storage.Inbox {
+	return inboxRows{}
+}
+
+type inboxRows struct{}
+
+func (inboxRows) Insert(context.Context, storage.Message) (storage.Message, error) {
+	return storage.Message{}, errors.New("openwallet: an opening is never caused by a message")
+}
+
 type outboxRows struct {
 	book *book
 }
