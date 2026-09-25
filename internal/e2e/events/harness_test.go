@@ -7,6 +7,9 @@ package events
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -18,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/relayoutbox"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/broker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
@@ -196,3 +200,53 @@ func envOr(key, fallback string) string {
 func newID() string {
 	return uuid.NewV7().String()
 }
+
+// noSpan is the report of a send nothing is watching. The link between the send
+// and the commit has cases of its own beside the tracer; here it would only add
+// an exporter to every case.
+func noSpan(ctx context.Context, _, _ string) (context.Context, func(error)) {
+	return ctx, func(error) {}
+}
+
+func quiet() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+// sender publishes through the real topic and records what it sent, so a case
+// can tell a send that happened from one that did not.
+type sender struct {
+	topic *broker.Topic
+	sent  []string
+}
+
+func publisher(ctx context.Context, t *testing.T) *sender {
+	t.Helper()
+	topic := broker.NewTopic(config.Config{SNSEndpoint: endpoint(), SNSTopicARN: topicARN()})
+	if err := topic.Open(ctx); err != nil {
+		t.Fatalf("Open the topic = %v, want nil", err)
+	}
+	return &sender{topic: topic}
+}
+
+func (s *sender) Publish(ctx context.Context, message relayoutbox.Message) error {
+	s.sent = append(s.sent, message.DeduplicationID)
+	return s.topic.Publish(ctx, message)
+}
+
+func (s *sender) Permanent(err error) bool {
+	return s.topic.Permanent(err)
+}
+
+// refusing is a broker that answers the same refusal to every send, which is
+// how a case drives the backoff and the death of a row without an outage.
+type refusing struct {
+	permanent bool
+	sends     int
+}
+
+func (r *refusing) Publish(context.Context, relayoutbox.Message) error {
+	r.sends++
+	return errors.New("the broker refused the send")
+}
+
+func (r *refusing) Permanent(error) bool { return r.permanent }
