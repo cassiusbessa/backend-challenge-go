@@ -36,11 +36,22 @@ func TestRelay_publishesUnderTheTokenOfItsOwnClaim(t *testing.T) {
 func TestRelay_givesTheSendLessTimeThanTheLease(t *testing.T) {
 	t.Parallel()
 	sender := &publisher{}
-	before := time.Now()
-	relay(t, queueWith(t), sender)
-	window := sender.deadline.Sub(before)
-	if window <= 0 || window > lease {
-		t.Fatalf("send window = %s, want it open and no wider than the lease of %s", window, lease)
+	// The context of the turn stands for the lease: a send whose deadline falls
+	// inside this one is a send that ends while the row is still this replica's.
+	// Both deadlines are read off contexts rather than off the clock, so the case
+	// asserts the window and not the instant the suite happened to run at.
+	holding, cancel := context.WithTimeout(context.Background(), lease)
+	defer cancel()
+	service := New(queueWith(t), sender, noSpan, frozenClock{}, quietLogger(), lease)
+	if err := service.Relay(holding, candidate(t)); err != nil {
+		t.Fatalf("Relay = %v, want nil", err)
+	}
+	leaseEnds, ok := holding.Deadline()
+	if !ok {
+		t.Fatalf("deadline of the turn = %t, want the one the case set", ok)
+	}
+	if !sender.deadline.Before(leaseEnds) {
+		t.Fatalf("send deadline = %s, want it before the end of the lease at %s", sender.deadline, leaseEnds)
 	}
 	if sender.ctxErr != nil {
 		t.Fatalf("context of the send = %v, want a live one", sender.ctxErr)

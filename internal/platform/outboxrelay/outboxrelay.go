@@ -150,12 +150,24 @@ func (r *Relay) turn(scanning, work context.Context) {
 		return
 	}
 	for _, candidate := range due {
-		if scanning.Err() != nil {
+		if r.stopping() || scanning.Err() != nil {
 			// The signal came mid-batch. The rest of the candidates are left for
 			// whoever scans next, here or in another replica.
 			return
 		}
 		r.publish(work, candidate)
+	}
+}
+
+// stopping reports whether the signal has already come. It reads the signal
+// itself and not the context derived from it: the cancellation of that context
+// lands a moment later, and one row would be claimed inside that window.
+func (r *Relay) stopping() bool {
+	select {
+	case <-r.claiming:
+		return true
+	default:
+		return false
 	}
 }
 

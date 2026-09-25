@@ -134,16 +134,18 @@ func TestRefuse_countsTheRefusalApartFromTheAttemptThatDidNotPublish(t *testing.
 		t.Fatalf("Reschedule = %v, want nil", err)
 	}
 	afterRetry := claim(ctx, t, queue, host.events[0])
-	if afterRetry.Attempts != 1 || afterRetry.Refusals != 0 {
-		t.Fatalf("attempts = %d and refusals = %d after a transitory failure, want 1 and 0", afterRetry.Attempts, afterRetry.Refusals)
-	}
+	assertCounts(t, afterRetry, 1, 0, "after a transitory failure")
 	if err := queue.Refuse(ctx, host.events[0], afterRetry.LeaseToken, past); err != nil {
 		t.Fatalf("Refuse = %v, want nil", err)
 	}
 	assertNotPublished(ctx, t, host.events[0])
-	afterRefusal := claim(ctx, t, queue, host.events[0])
-	if afterRefusal.Attempts != 2 || afterRefusal.Refusals != 1 {
-		t.Fatalf("attempts = %d and refusals = %d after a permanent refusal, want 2 and 1", afterRefusal.Attempts, afterRefusal.Refusals)
+	assertCounts(t, claim(ctx, t, queue, host.events[0]), 2, 1, "after a permanent refusal")
+}
+
+func assertCounts(t *testing.T, row storage.OutboxRow, attempts, refusals int64, when string) {
+	t.Helper()
+	if row.Attempts != attempts || row.Refusals != refusals {
+		t.Fatalf("attempts = %d and refusals = %d %s, want %d and %d", row.Attempts, row.Refusals, when, attempts, refusals)
 	}
 }
 
