@@ -4,7 +4,8 @@ package identity
 // player is expected. The zero value of all of them is invalid, and the parse
 // at the border is the only constructor: a bare string does not get in.
 //
-// Wallet, player, transaction and ledger entry are ours, in canonical UUID.
+// Wallet, player, transaction, event and ledger entry are ours, in canonical
+// UUID.
 // Provider, external id, round, game and the idempotency key belong to the
 // provider and are kept as they arrived.
 
@@ -36,6 +37,16 @@ func ParseTransactionID(text string) (TransactionID, error) {
 		return TransactionID{}, err
 	}
 	return TransactionID{canonical: parsed}, nil
+}
+
+type EventID struct{ canonical }
+
+func ParseEventID(text string) (EventID, error) {
+	parsed, err := parseCanonical(text)
+	if err != nil {
+		return EventID{}, err
+	}
+	return EventID{canonical: parsed}, nil
 }
 
 type LedgerEntryID struct{ canonical }

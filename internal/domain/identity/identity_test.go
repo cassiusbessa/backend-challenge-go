@@ -77,6 +77,24 @@ func TestParseLedgerEntryID_takesTheUUIDAndNothingElse(t *testing.T) {
 	}
 }
 
+func TestParseEventID_takesTheUUIDAndNothingElse(t *testing.T) {
+	t.Parallel()
+	parsed, err := ParseEventID(uppercaseUUID)
+	if err != nil {
+		t.Fatalf("ParseEventID error = %v, want nil", err)
+	}
+	if parsed.String() != lowercaseUUID {
+		t.Fatalf("event id = %q, want %q", parsed.String(), lowercaseUUID)
+	}
+	refused, err := ParseEventID("not-a-uuid")
+	if !errors.Is(err, ErrInvalidUUID) {
+		t.Fatalf("ParseEventID of plain text error = %v, want ErrInvalidUUID", err)
+	}
+	if !refused.IsZero() {
+		t.Fatalf("refused event id = %q, want the zero value", refused.String())
+	}
+}
+
 func TestParseProviderID_keepsTheProviderTextAndRefusesTheAbsence(t *testing.T) {
 	t.Parallel()
 	parsed, err := ParseProviderID("Provider-A")
