@@ -13,6 +13,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerqueue"
 )
 
 func TestDecodeSubmit_readsTheCommandFromTheBodyAndTheHeader(t *testing.T) {
@@ -472,4 +473,46 @@ func keyOf(t *testing.T) identity.IdempotencyKey {
 		t.Fatalf("ParseIdempotencyKey = %v, want nil", err)
 	}
 	return parsed
+}
+
+// The same business over the two channels has to reach the use case as the same
+// command, because the hash of the body is taken from that command by a single
+// function: two commands alike in every business field hash alike, and the
+// idempotency of the provider cannot tell the two channels apart.
+//
+// The two envelopes differ where go-idempotency says they may: the key arrives in
+// a header over HTTP and in the body over the queue, and the identity of the
+// message and the correlation belong to the queue alone.
+func TestDecodeSubmit_answersTheSameCommandAsTheQueueForTheSameBusiness(t *testing.T) {
+	t.Parallel()
+	overHTTP, err := decode(t, submission(nil), "key-1")
+	if err != nil {
+		t.Fatalf("decodeSubmit = %v, want nil", err)
+	}
+	overQueue, err := wagerqueue.Decode(queueMessage(t))
+	if err != nil {
+		t.Fatalf("wagerqueue.Decode = %v, want nil", err)
+	}
+	if overHTTP != overQueue.Command {
+		t.Fatalf("command over the queue = %+v, want the one over HTTP %+v", overQueue.Command, overHTTP)
+	}
+}
+
+// queueMessage is the same bet as submission, in the envelope of the queue.
+func queueMessage(t *testing.T) []byte {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(submission(nil)), &body); err != nil {
+		t.Fatalf("Unmarshal of the submission = %v, want nil", err)
+	}
+	body["idempotencyKey"] = "key-1"
+	raw, err := json.Marshal(map[string]any{
+		"messageId":     "44444444-4444-4444-8444-444444444444",
+		"correlationId": "corr-1",
+		"data":          body,
+	})
+	if err != nil {
+		t.Fatalf("Marshal of the message = %v, want nil", err)
+	}
+	return raw
 }
