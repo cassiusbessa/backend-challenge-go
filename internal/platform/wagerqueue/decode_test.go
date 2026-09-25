@@ -14,12 +14,22 @@ func TestDecode_readsTheEnvelopeAndTheOperationOfTheBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode = %v, want nil", err)
 	}
+	assertEnvelope(t, decoded)
+	assertOperation(t, decoded)
+}
+
+func assertEnvelope(t *testing.T, decoded Message) {
+	t.Helper()
 	if decoded.MessageID != messageID {
 		t.Fatalf("messageId = %q, want %q", decoded.MessageID, messageID)
 	}
 	if decoded.CorrelationID != correlationID {
 		t.Fatalf("correlationId = %q, want %q", decoded.CorrelationID, correlationID)
 	}
+}
+
+func assertOperation(t *testing.T, decoded Message) {
+	t.Helper()
 	if decoded.Command.Kind != wager.KindBet {
 		t.Fatalf("kind = %s, want BET", decoded.Command.Kind)
 	}

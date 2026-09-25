@@ -26,6 +26,12 @@ func TestIngress_settlesABetThatArrivedOnTheQueue(t *testing.T) {
 	at.queues.awaitEmpty(ctx, t)
 	recorded := awaitEvents(ctx, t, conn, holder.id, openingEvents+2)
 
+	assertSettled(ctx, t, conn, holder, identity)
+	assertCausedBy(t, recorded, identity)
+}
+
+func assertSettled(ctx context.Context, t *testing.T, conn *pgx.Conn, holder owner, identity string) {
+	t.Helper()
 	if stored := storedWallet(ctx, t, conn, holder.id); stored.cents != 97500 || stored.version != 2 {
 		t.Fatalf("balance and version = %d and %d, want 97500 and 2", stored.cents, stored.version)
 	}
@@ -36,8 +42,12 @@ func TestIngress_settlesABetThatArrivedOnTheQueue(t *testing.T) {
 	if got := countInbox(ctx, t, conn, identity); got != 1 {
 		t.Fatalf("inbox rows = %d, want 1", got)
 	}
-	// The events of the commit the message caused name it as the cause, and the two
-	// of the opening — which no message caused — carry none.
+}
+
+// assertCausedBy pins the cause of each commit: the events the message caused name
+// it, and the two of the opening — which no message caused — name nothing.
+func assertCausedBy(t *testing.T, recorded []event, identity string) {
+	t.Helper()
 	for _, each := range recorded[openingEvents:] {
 		if each.causationID != identity {
 			t.Fatalf("causationId of %s = %q, want the message %s", each.eventType, each.causationID, identity)
@@ -97,7 +107,7 @@ func TestIngress_abandonsAMessageWhoseBodyDeclaresAnotherProvider(t *testing.T) 
 	body := holder.bet(identity, "25.00", map[string]any{"providerId": unmappedProvider})
 	at.queues.send(ctx, t, mappedSender, holder.id, body)
 
-	at.queues.awaitDeadLetter(ctx, t, 1)
+	at.queues.awaitDeadLetter(ctx, t)
 	at.queues.awaitEmpty(ctx, t)
 	assertUntouched(ctx, t, conn, holder, identity)
 }
@@ -111,7 +121,7 @@ func TestIngress_abandonsAMessageFromASenderTheMapDoesNotName(t *testing.T) {
 	identity := newID()
 	at.queues.send(ctx, t, unmappedSender, holder.id, holder.bet(identity, "25.00", nil))
 
-	at.queues.awaitDeadLetter(ctx, t, 1)
+	at.queues.awaitDeadLetter(ctx, t)
 	at.queues.awaitEmpty(ctx, t)
 	assertUntouched(ctx, t, conn, holder, identity)
 }
@@ -124,7 +134,7 @@ func TestIngress_abandonsABodyItCouldNotRead(t *testing.T) {
 	broken := holder.bet(identity, "25.001", nil)
 	at.queues.send(ctx, t, mappedSender, holder.id, broken)
 
-	at.queues.awaitDeadLetter(ctx, t, 1)
+	at.queues.awaitDeadLetter(ctx, t)
 	at.queues.awaitEmpty(ctx, t)
 	assertUntouched(ctx, t, conn, holder, identity)
 }
@@ -142,7 +152,7 @@ func TestIngress_abandonsARecordedIdentifierThatArrivesWithAnotherBody(t *testin
 	settled := storedWallet(ctx, t, conn, holder.id)
 
 	at.queues.send(ctx, t, mappedSender, holder.id, holder.bet(identity, "40.00", nil))
-	at.queues.awaitDeadLetter(ctx, t, 1)
+	at.queues.awaitDeadLetter(ctx, t)
 	at.queues.awaitEmpty(ctx, t)
 
 	if again := storedWallet(ctx, t, conn, holder.id); again != settled {

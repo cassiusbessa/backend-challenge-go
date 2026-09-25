@@ -301,11 +301,12 @@ func (q *queues) awaitEmpty(ctx context.Context, t *testing.T) {
 	})
 }
 
-// awaitDeadLetter waits until that many messages are on the dead-letter queue.
-func (q *queues) awaitDeadLetter(ctx context.Context, t *testing.T, want int64) {
+// awaitDeadLetter waits until the abandoned message is on the dead-letter queue.
+// Every case that reaches it abandons exactly one.
+func (q *queues) awaitDeadLetter(ctx context.Context, t *testing.T) {
 	t.Helper()
-	until(t, "the dead-letter queue to hold "+strconv.FormatInt(want, 10), func() bool {
-		return q.depth(ctx, t, q.dead) == want
+	until(t, "the dead-letter queue to hold the abandoned message", func() bool {
+		return q.depth(ctx, t, q.dead) == 1
 	})
 }
 

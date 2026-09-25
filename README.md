@@ -153,7 +153,9 @@ O apply cria:
 - tópico SNS FIFO `wallet-events.fifo`, sem subscription — não há consumidor dos eventos ainda, e é para ele que o relay publica
 - usuário IAM `wager-sender`, com `sqs:SendMessage` só na fila de entrada
 
-A access key gerada fica em `deploy/terraform/localstack/wager-sender.keys`, fora do Git. O principal versionado está em `deploy/local/queue-senders.yaml` e pode enviar por `provider-a` e `provider-b`.
+A access key gerada fica em `deploy/terraform/localstack/wager-sender.keys`, fora do Git. O mapa versionado de remetente está em `deploy/local/queue-senders.yaml`, e ele **não** nomeia o principal IAM: esse nome não chega ao consumidor, então um mapa por ele não poderia ser conferido contra mensagem nenhuma. Cada entrada é chaveada pela identidade que o consumidor observa na mensagem, com a própria lista de provedores; no broker local essa identidade é o identificador da conta, e a entrada dela pode enviar por `provider-a` e `provider-b`.
+
+O mapa admite mais de uma entrada, ainda que o apply crie um remetente só. É assim que a configuração de produção nomeia vários remetentes, e é o que permite a suíte de jornada exercitar a recusa escolhendo a credencial de envio — o broker local deriva da access key a identidade que registra.
 
 No LocalStack community o IAM é parcial: a chave do `wager-sender` consegue `SendMessage`, mas a política pode não ser aplicada como na AWS. O principal continua criado.
 
@@ -161,11 +163,13 @@ O LocalStack community não persiste: qualquer reinício do container esvazia fi
 
 O ready do processo só fica verde depois desse apply: a fila `wager-transactions.fifo` precisa existir, e sem ela `GET /health/ready` responde 503 enquanto `GET /health/live` continua 200. O tópico não entra no ready, mas precisa existir para o relay publicar: sem ele a linha da outbox fica na fila e o log do processo mostra a recusa. O `pprof` escuta em `127.0.0.1:6060` dentro do container e o Compose não publica essa porta.
 
-No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` os dois componentes de fundo param de reivindicar. O worker de referência conclui ou desfaz a espera que já reivindicou dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica. O relay conclui o envio em curso dentro do lease que já segura — o sinal corta a varredura, não o envio que já tem reivindicação, e quem corta o envio é o prazo do processo. O que ele não confirmar continua publicável, com o mesmo `eventId`, e outra réplica reivindica depois do prazo.
+No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` os três componentes de fundo param de reivindicar ou buscar. O worker de referência conclui ou desfaz a espera que já reivindicou dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica. O relay conclui o envio em curso dentro do lease que já segura — o sinal corta a varredura, não o envio que já tem reivindicação, e quem corta o envio é o prazo do processo. O que ele não confirmar continua publicável, com o mesmo `eventId`, e outra réplica reivindica depois do prazo. O consumidor da fila para de buscar mensagem nova e conclui a que tem em mãos dentro do prazo; cortada por ele, a mensagem volta à fila com visibilidade zero, para ser entregue de novo sem esperar a invisibilidade que ninguém mais vai servir.
 
-Quatro variáveis configuram o trabalho de fundo, e as quatro têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila de esperas, 1 segundo; `OUTBOX_INTERVAL` é de quanto em quanto tempo o relay varre a outbox, 1 segundo; `OUTBOX_LEASE` é quanto uma reivindicação segura a linha, 30 segundos. Qualquer uma delas escrita com algo que não seja uma duração positiva impede a subida em vez de cair no padrão.
+Sete variáveis configuram o trabalho de fundo, e as sete têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila de esperas, 1 segundo; `OUTBOX_INTERVAL` é de quanto em quanto tempo o relay varre a outbox, 1 segundo; `OUTBOX_LEASE` é quanto uma reivindicação segura a linha, 30 segundos; `QUEUE_POLL` é a espera do long poll, 20 segundos; `QUEUE_VISIBILITY` é a invisibilidade da mensagem, 30 segundos; `QUEUE_TIMEOUT` é o prazo de uma decisão, 8 segundos. Qualquer uma delas escrita com algo que não seja uma duração positiva impede a subida em vez de cair no padrão.
 
-`SNS_ENDPOINT` e `SNS_TOPIC_ARN` não têm padrão: sem o endereço do tópico o processo não abre a porta HTTP e não sobe o relay. No Compose eles apontam para o LocalStack e para `arn:aws:sns:us-east-1:000000000000:wallet-events.fifo`.
+As três últimas não são três números independentes: a invisibilidade tem de cobrir a espera do long poll somada ao prazo da decisão. Com invisibilidade menor que a espera, medido no broker local, a busca devolve resposta vazia **e consome a entrega** — a mensagem queima o orçamento de entregas sem nunca ter sido processada, sem erro e sem log. Os padrões são os da fila que o apply provisiona: 20 de espera sob 30 de invisibilidade, com o prazo da decisão abaixo dos 10 que sobram.
+
+`SNS_ENDPOINT` e `SNS_TOPIC_ARN` não têm padrão: sem o endereço do tópico o processo não abre a porta HTTP e não sobe o relay. `SQS_QUEUE_URL`, `SQS_DLQ_URL` e `QUEUE_SENDERS_PATH` também não: sem a fila de entrada o consumidor não tem de onde buscar, sem a DLQ ele não teria como abandonar uma mensagem envenenada — que ficaria na frente da carteira dela para sempre —, e sem o mapa de remetente o processo não sabe quem pode enviar. No Compose eles apontam para o LocalStack e para `arn:aws:sns:us-east-1:000000000000:wallet-events.fifo`.
 
 ## Eventos
 
@@ -202,7 +206,7 @@ Todos saem no mesmo envelope, com dinheiro em string decimal de duas casas, igua
 }
 ```
 
-`causationId` sai omitido enquanto não houver entrada por SQS: por HTTP a operação não tem mensagem que a cause. O construtor fixa o tipo e a `version`; nenhum chamador escolhe os dois.
+`causationId` é o `messageId` da mensagem que causou o commit, e sai omitido em todo commit que nenhuma mensagem causou: por HTTP a operação não tem mensagem que a cause, e o commit que o worker de referência conclui por prazo vencido é disparado pelo relógio. Emprestar ali o identificador da mensagem que abriu a espera diria que ela causou um evento que ela não causou; quem liga os dois commits é o identificador da transação, que o primeiro evento carrega e o segundo usa como correlação. O construtor fixa o tipo e a `version`; nenhum chamador escolhe os dois.
 
 ### Como o evento sai
 
@@ -221,6 +225,40 @@ docker compose logs -f wager | grep "outbox event"
 ```
 
 O tópico é provisionado sem subscription, então não há de onde ler as mensagens fora da suíte de jornada, que anexa um assinante só pelo tempo do caso. Para olhar à mão, crie uma fila FIFO e assine com `RawMessageDelivery`.
+
+## Aposta pela fila
+
+O consumidor da fila é o terceiro componente de fundo do binário. Ele busca em long poll, decide cada mensagem pelo mesmo caso de uso da rota HTTP, e responde ao broker: apaga a mensagem cujo desfecho commitou, devolve com backoff a que falhou de forma transitória, e copia para a DLQ a que nenhuma repetição resolveria.
+
+O envelope leva o `messageId` e, opcionalmente, o `correlationId`; a operação vai em `data`, com o mesmo corpo da rota HTTP mais a chave de idempotência em `data.idempotencyKey`. O grupo da mensagem é o id da carteira em minúsculas, e a deduplicação é o `messageId` do envelope.
+
+```bash
+# a access key do apply está em deploy/terraform/localstack/wager-sender.keys
+BODY=$(cat <<JSON
+{"messageId":"$MESSAGE_ID","data":{
+  "providerId":"provider-a","externalTransactionId":"external-1",
+  "idempotencyKey":"key-1","playerId":"$PLAYER_ID","walletId":"$WALLET_ID",
+  "roundId":"round-1","gameId":"game-1","kind":"BET",
+  "money":{"amount":"25.00","currency":"BRL"}}}
+JSON
+)
+
+aws --endpoint-url http://localhost:4566 sqs send-message \
+  --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
+  --message-group-id "$WALLET_ID" \
+  --message-deduplication-id "$MESSAGE_ID" \
+  --message-body "$BODY"
+```
+
+Rejeição de negócio é desfecho concluído: a transação fica `REJECTED` com o `failureCode` e a mensagem sai da fila, porque reentregar não mudaria a decisão. A espera gravada é tratada do mesmo modo — a linha é durável e o worker de referência a conclui, então a mensagem de entrada não fica na fila esperando por isso.
+
+Quatro razões levam uma mensagem à DLQ, e nenhuma delas grava linha financeira: corpo que a borda não leu, remetente que o mapa não nomeia, corpo declarando provedor fora da lista daquele remetente, e o `messageId` já gravado chegando com outro corpo. Some-se a desistência na quinta entrega, abaixo do `maxReceiveCount` 15 da fila: o grupo da mensagem é a carteira, então uma mensagem envenenada segura as operações daquela carteira até sair do caminho, e é por isso que o consumidor a tira antes do broker.
+
+Toda ida para a DLQ sai no log com a razão e o `messageId`, e a recusa por remetente sai com a identidade observada — é esse valor que corrige o mapa. As mesmas razões contam na série `wager_ingress_messages_abandoned_total`, e a profundidade da DLQ sai em `wager_ingress_dead_letter_depth`.
+
+```bash
+docker compose logs -f wager | grep "dead-letter"
+```
 
 ## Token
 

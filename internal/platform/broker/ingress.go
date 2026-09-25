@@ -195,6 +195,14 @@ func (i *Ingress) DeadLetterDepth(ctx context.Context) (int64, error) {
 // seconds is the unit the API takes for both windows. A duration below one second
 // rounds to zero, which for the poll means no wait at all and for the visibility
 // means the message comes straight back — both of them what the caller asked for.
+//
+// The value is bounded by what the API accepts rather than by what the type holds:
+// the twelve hours of the visibility is the widest either window takes, and a
+// configuration past it would be refused by the broker with the whole call.
 func seconds(window time.Duration) int32 {
-	return int32(window / time.Second)
+	return int32(min(max(window/time.Second, 0), maxWindowSeconds))
 }
+
+// maxWindowSeconds is the widest window the API takes, which is the twelve hours
+// of the visibility timeout.
+const maxWindowSeconds = 12 * 60 * 60

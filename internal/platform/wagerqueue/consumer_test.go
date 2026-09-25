@@ -299,13 +299,20 @@ func TestStop_fetchesNoNewMessageAfterTheSignal(t *testing.T) {
 		t.Fatalf("Start = %v, want nil", err)
 	}
 	queue.awaitFetch(t)
+	during := queue.fetches()
+	// Stop answers nil only once the loop has left, so the count cannot grow after
+	// it: there is nobody left to fetch. That is the assertion, and it needs no
+	// waiting — a sleep here would only be a slower way of reading the same thing.
 	if err := consumer.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop = %v, want nil", err)
 	}
-	after := queue.fetches()
-	time.Sleep(3 * quick.Poll)
-	if got := queue.fetches(); got != after {
-		t.Fatalf("fetches after the signal = %d, want the %d it had stopped at", got, after)
+	if got := queue.fetches(); got != during {
+		t.Fatalf("fetches after the signal = %d, want the %d it had stopped at", got, during)
+	}
+	// The poll in flight is cancelled by the signal, which is what makes the loop
+	// leave inside the deadline instead of waiting out the long poll.
+	if !queue.cancelled() {
+		t.Fatalf("poll cancelled by the signal = false, want true")
 	}
 }
 
@@ -419,6 +426,7 @@ type fakeQueue struct {
 	deadLetterErr error
 	fetched       chan struct{}
 	once          sync.Once
+	cut           bool
 }
 
 func (q *fakeQueue) Receive(ctx context.Context, wait, _ time.Duration) ([]Delivery, error) {
@@ -438,8 +446,17 @@ func (q *fakeQueue) Receive(ctx context.Context, wait, _ time.Duration) ([]Deliv
 	case <-timer.C:
 		return nil, nil
 	case <-ctx.Done():
+		q.mu.Lock()
+		q.cut = true
+		q.mu.Unlock()
 		return nil, ctx.Err()
 	}
+}
+
+func (q *fakeQueue) cancelled() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.cut
 }
 
 func (q *fakeQueue) Delete(context.Context, string) error {
