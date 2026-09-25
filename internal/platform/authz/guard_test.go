@@ -15,7 +15,7 @@ func TestOnly_letsTheInternalClientReachTheHandler(t *testing.T) {
 	reached := false
 	recorder := guard(t, tokens{client: "wallet-internal"}).call(t, "Bearer good", &reached)
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", recorder.Code)
+		t.Fatalf("status for the internal client = %d, want 200", recorder.Code)
 	}
 	if !reached {
 		t.Fatalf("handler reached = %v, want true for the internal client", reached)
@@ -27,7 +27,7 @@ func TestOnly_refusesAProviderByPermission(t *testing.T) {
 	reached := false
 	recorder := guard(t, tokens{client: "provider-a"}).call(t, "Bearer good", &reached)
 	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", recorder.Code)
+		t.Fatalf("status for a provider on the wallet route = %d, want 403", recorder.Code)
 	}
 	if reached {
 		t.Fatalf("handler reached = %v, want false: a provider does not open a wallet", reached)
@@ -39,7 +39,7 @@ func TestOnly_refusesAValidTokenOfAnUnmappedClientByPermission(t *testing.T) {
 	reached := false
 	recorder := guard(t, tokens{client: "provider-c"}).call(t, "Bearer good", &reached)
 	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", recorder.Code)
+		t.Fatalf("status for a client outside the map = %d, want 403", recorder.Code)
 	}
 	if reached {
 		t.Fatalf("handler reached = %v, want false for a client outside the map", reached)
@@ -61,7 +61,7 @@ func TestOnly_refusesAnAbsentOrMalformedCredential(t *testing.T) {
 			reached := false
 			recorder := guard(t, tokens{client: "wallet-internal"}).call(t, tc.header, &reached)
 			if recorder.Code != http.StatusUnauthorized {
-				t.Fatalf("status = %d, want 401", recorder.Code)
+				t.Fatalf("status without a credential = %d, want 401", recorder.Code)
 			}
 			if reached {
 				t.Fatalf("handler reached = %v, want false without a credential", reached)
@@ -75,7 +75,7 @@ func TestOnly_refusesAnExpiredTokenByCredential(t *testing.T) {
 	reached := false
 	recorder := guard(t, tokens{err: ErrInvalidToken}).call(t, "Bearer expired", &reached)
 	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", recorder.Code)
+		t.Fatalf("status for an expired token = %d, want 401", recorder.Code)
 	}
 	if reached {
 		t.Fatalf("handler reached = %v, want false for an expired token", reached)
@@ -94,6 +94,41 @@ func TestOnly_answersEveryRefusalAsProblemDetails(t *testing.T) {
 		if strings.Contains(body, banned) {
 			t.Fatalf("body = %s, want it without %q", body, banned)
 		}
+	}
+}
+
+// The wager border checks the provider of the body against the client of the
+// token, and only the guard knows who that is.
+func TestOnly_handsTheResolvedClientToTheHandler(t *testing.T) {
+	t.Parallel()
+	var got Client
+	found := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, found = ClientOf(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	recorder := guard(t, tokens{client: "provider-a"}).reach(t, Provider, next)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status with the client resolved in the context = %d, want 200", recorder.Code)
+	}
+	if !found {
+		t.Fatalf("client found in the context = %t, want true for the one of the token", found)
+	}
+	if got.ProviderID().String() != "provider-a" {
+		t.Fatalf("provider = %s, want provider-a", got.ProviderID())
+	}
+}
+
+// A handler outside the guard has no client, and reading it answers the zero
+// value instead of panicking.
+func TestClientOf_answersNothingOutsideTheGuard(t *testing.T) {
+	t.Parallel()
+	client, found := ClientOf(context.Background())
+	if found {
+		t.Fatalf("client outside the guard = %+v, want none", client)
+	}
+	if !client.ProviderID().IsZero() {
+		t.Fatalf("provider = %s, want the zero identifier", client.ProviderID())
 	}
 }
 
@@ -130,6 +165,17 @@ func guard(t *testing.T, verifier TokenVerifier) harness {
 		t.Fatalf("LoadClients = %v, want nil", err)
 	}
 	return harness{guard: NewGuard(verifier, clients)}
+}
+
+// reach runs a handler of its own behind the guard, for a case that looks at what
+// the request carries and not only at whether it got through.
+func (h harness) reach(t *testing.T, role Role, next http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/wagering/transactions", nil)
+	request.Header.Set("Authorization", "Bearer good")
+	recorder := httptest.NewRecorder()
+	h.guard.Only(role, next).ServeHTTP(recorder, request)
+	return recorder
 }
 
 func (h harness) call(t *testing.T, header string, reached *bool) *httptest.ResponseRecorder {

@@ -29,8 +29,13 @@ func NewGuard(tokens TokenVerifier, clients *Clients) *Guard {
 	return &Guard{tokens: tokens, clients: clients}
 }
 
-// Only lets just the named role reach the handler. Health stays outside this
-// wrapper and therefore public.
+// Only lets just the named role reach the handler, and carries the client it
+// resolved into the request context. Health stays outside this wrapper and
+// therefore public.
+//
+// The client travels because the wager border has to check the provider of the
+// body against the one of the token, and only the guard knows who the token
+// belongs to.
 //
 // The refusal writes problem details and nothing else: it reveals no balance, no
 // amount and not even whether the record behind the route exists.
@@ -45,7 +50,7 @@ func (g *Guard) Only(role Role, next http.Handler) http.Handler {
 			problem.Write(w, r, problem.Of(problem.Unauthorized))
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(withClient(r.Context(), client)))
 	})
 }
 
