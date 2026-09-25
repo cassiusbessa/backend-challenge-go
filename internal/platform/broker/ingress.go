@@ -115,10 +115,10 @@ func deliveryOf(message types.Message) wagerqueue.Delivery {
 // reading it as the highest would abandon a message on its first arrival.
 func count(raw string) int64 {
 	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value < 1 {
+	if err != nil {
 		return 1
 	}
-	return value
+	return max(value, 1)
 }
 
 // traceOf answers the propagation the sender carried, or nothing for a message

@@ -227,7 +227,7 @@ func (c *Consumer) turn(polling, work context.Context, deliveries []Delivery) {
 			// The signal came mid batch. The rest of the messages stay in the
 			// queue, invisible until their window runs out, and are handed out
 			// again — here or in another replica.
-			c.release(work, work, delivery, c.timing.Visibility)
+			c.release(work, delivery, c.timing.Visibility)
 			continue
 		}
 		c.decide(work, delivery)
@@ -252,7 +252,7 @@ func (c *Consumer) decide(work context.Context, delivery Delivery) {
 		// The message has had every delivery this consumer grants it. It leaves
 		// before the broker discards the ones behind it in its group.
 		closeSpan(nil)
-		c.abandon(ctx, work, delivery, reasonDeliveryLimit, nil)
+		c.abandon(ctx, delivery, reasonDeliveryLimit, nil)
 		return
 	}
 	result, err := c.settle(ctx, delivery, decoded, refusal)
@@ -294,12 +294,12 @@ func (c *Consumer) answer(ctx, work context.Context, delivery Delivery, result s
 	switch answer {
 	case Remove:
 		c.reporter.Settled(ctx, result)
-		c.remove(ctx, work, delivery)
+		c.remove(ctx, delivery)
 	case Abandon:
-		c.abandon(ctx, work, delivery, reason, err)
+		c.abandon(ctx, delivery, reason, err)
 	case Return:
 		c.reporter.Failed(ctx, "settle a message of the ingress queue", err)
-		c.release(ctx, work, delivery, c.returned(work, delivery))
+		c.release(ctx, delivery, c.returned(work, delivery))
 	}
 }
 
@@ -316,8 +316,8 @@ func (c *Consumer) returned(work context.Context, delivery Delivery) time.Durati
 	return Backoff(delivery.Deliveries)
 }
 
-func (c *Consumer) remove(ctx, work context.Context, delivery Delivery) {
-	answering, cancel := c.answering(ctx, work)
+func (c *Consumer) remove(ctx context.Context, delivery Delivery) {
+	answering, cancel := c.answering(ctx)
 	defer cancel()
 	if err := c.queue.Delete(answering, delivery.Receipt); err != nil {
 		// The decision is committed and the message stays in the queue. The inbox
@@ -329,8 +329,8 @@ func (c *Consumer) remove(ctx, work context.Context, delivery Delivery) {
 // abandon copies the message to the dead-letter queue and takes it out of the
 // ingress one, in that order: a message deleted first and copied after would be a
 // message lost when the copy fails.
-func (c *Consumer) abandon(ctx, work context.Context, delivery Delivery, reason string, err error) {
-	answering, cancel := c.answering(ctx, work)
+func (c *Consumer) abandon(ctx context.Context, delivery Delivery, reason string, err error) {
+	answering, cancel := c.answering(ctx)
 	defer cancel()
 	if failure := c.queue.DeadLetter(answering, delivery); failure != nil {
 		c.reporter.Failed(answering, "copy a message to the dead-letter queue", failure)
@@ -342,8 +342,8 @@ func (c *Consumer) abandon(ctx, work context.Context, delivery Delivery, reason 
 	}
 }
 
-func (c *Consumer) release(ctx, work context.Context, delivery Delivery, after time.Duration) {
-	answering, cancel := c.answering(ctx, work)
+func (c *Consumer) release(ctx context.Context, delivery Delivery, after time.Duration) {
+	answering, cancel := c.answering(ctx)
 	defer cancel()
 	if err := c.queue.Release(answering, delivery.Receipt, after); err != nil {
 		// The window the broker already holds the message under runs out on its
@@ -359,8 +359,12 @@ func (c *Consumer) release(ctx, work context.Context, delivery Delivery, after t
 //
 // The values of the decision are kept, so the line that reports a broker refusing
 // the answer still names the message it was about.
-func (c *Consumer) answering(ctx, work context.Context) (context.Context, context.CancelFunc) {
-	if ctx.Err() == nil && work.Err() == nil {
+//
+// Asking the decision alone is enough: it is derived from the work, so the shutdown
+// cancelling the work cancels it too, and a second test of the work would answer
+// the same thing twice.
+func (c *Consumer) answering(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
 		return context.WithTimeout(ctx, answerWindow)
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), answerWindow)
