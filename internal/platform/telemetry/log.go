@@ -124,3 +124,25 @@ func Correlation(ctx context.Context) string {
 	correlation, _ := ctx.Value(correlationKey{}).(string)
 	return correlation
 }
+
+// causationKey is the context key the immediate cause of one commit travels
+// under. It is a type of its own for the same reason as the correlation.
+type causationKey struct{}
+
+// WithCausation carries the identity of the message that caused one commit down
+// the call, so every event that commit writes names it as its cause.
+//
+// Only a message is a cause here. Work the clock started has none: a deferred
+// resolution is fired by a deadline, and borrowing the identity of the message
+// that opened the wait would say that message caused an event it did not.
+func WithCausation(ctx context.Context, causation string) context.Context {
+	return context.WithValue(ctx, causationKey{}, causation)
+}
+
+// Causation answers the cause carried by the context, or the empty string when
+// nothing put one there, which is the shape of an arrival over HTTP and of every
+// turn of a background worker.
+func Causation(ctx context.Context) string {
+	causation, _ := ctx.Value(causationKey{}).(string)
+	return causation
+}

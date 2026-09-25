@@ -110,3 +110,41 @@ func TestInsert_refusesAnEnvelopeThatCannotBeRendered(t *testing.T) {
 		t.Fatalf("failure = %v, want the operation that could not render it named in the chain", err)
 	}
 }
+
+// The message that caused the commit is the cause of every event it writes. The
+// commit a deadline fires — the deferred resolution of a wait — carries none, and
+// the field is omitted rather than sent empty.
+func TestInsert_namesTheCausingMessageInThePayloadAndOmitsItWhenThereIsNone(t *testing.T) {
+	t.Parallel()
+	caused := &recordingTx{}
+	ctx := telemetry.WithCausation(telemetry.WithCorrelation(context.Background(), "corr-1"), "message-1")
+	if err := (outbox{tx: caused}).Insert(ctx, processedEvent(t)); err != nil {
+		t.Fatalf("Insert of a commit a message caused = %v, want nil", err)
+	}
+	if got := causationInPayload(t, caused.args[3]); got != "message-1" {
+		t.Fatalf("causationId in the payload = %q, want message-1", got)
+	}
+	deferred := &recordingTx{}
+	later := telemetry.WithCorrelation(context.Background(), "transaction-1")
+	if err := (outbox{tx: deferred}).Insert(later, processedEvent(t)); err != nil {
+		t.Fatalf("Insert of a deferred commit = %v, want nil", err)
+	}
+	if got := causationInPayload(t, deferred.args[3]); got != "" {
+		t.Fatalf("causationId of a deferred commit = %q, want it absent", got)
+	}
+}
+
+func causationInPayload(t *testing.T, payload any) string {
+	t.Helper()
+	raw, ok := payload.([]byte)
+	if !ok {
+		t.Fatalf("payload = %T, want the marshalled bytes", payload)
+	}
+	var out struct {
+		CausationID string `json:"causationId"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("Unmarshal = %v, want nil", err)
+	}
+	return out.CausationID
+}

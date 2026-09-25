@@ -571,6 +571,8 @@ type book struct {
 	// recorded is the row the unicity of the inbox answers, keyed by consumer and
 	// message identifier, and it is what a redelivery meets.
 	recorded map[string]storage.Message
+	// messageErr makes the insert of the inbox row fail as infrastructure.
+	messageErr error
 }
 
 type balanceWrite struct {
@@ -664,6 +666,9 @@ type inboxRows struct {
 // Insert answers the row already recorded when the unicity refuses this one,
 // which is what the adapter does over the savepoint.
 func (r inboxRows) Insert(_ context.Context, message storage.Message) (storage.Message, error) {
+	if r.book.messageErr != nil {
+		return storage.Message{}, r.book.messageErr
+	}
 	if already, ok := r.book.recorded[messageKeyOf(message)]; ok {
 		return already, storage.ErrMessageRecorded
 	}

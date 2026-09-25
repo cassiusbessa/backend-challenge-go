@@ -42,6 +42,15 @@ var (
 	// loser re-reads it, which only happens when the winner rolled back. It is
 	// transient for the same reason.
 	ErrRaceUnresolved error = transient{errors.New("submitwager: row that won the key is no longer there")}
+
+	// ErrMessageBodyDiffers is a message identifier this consumer already
+	// recorded, arriving again with another body.
+	//
+	// It is neither a rule refusing the operation nor a failure that resolves
+	// itself: the same bytes will be refused the same way for as long as the row
+	// is there, so whoever received the message takes it out of the queue instead
+	// of returning it. No row is written, and the operation is not applied.
+	ErrMessageBodyDiffers = errors.New("submitwager: recorded message arrived with another body")
 )
 
 // transient carries the failure that resolves by itself shortly, so the border
@@ -102,6 +111,27 @@ type Command struct {
 	ReferenceExternalID identity.ExternalTransactionID
 }
 
+// Caused is the message that caused the submission: which consumer took it,
+// which message it was, and the hash of the body that arrived.
+//
+// The zero value is no message, which is the shape of an arrival over HTTP. The
+// instant is not here because the row takes the instant of the operation it
+// caused: one commit, one instant.
+type Caused struct {
+	Consumer  string
+	MessageID string
+	BodyHash  string
+}
+
+// IsZero reports whether no message caused the submission.
+func (c Caused) IsZero() bool {
+	return c.MessageID == ""
+}
+
+func (c Caused) recorded(at time.Time) storage.Message {
+	return storage.Message{Consumer: c.Consumer, MessageID: c.MessageID, BodyHash: c.BodyHash, At: at}
+}
+
 // Result is the outcome as the border answers it. ObservedBalance is the balance
 // of the commit that closed the operation, and on a replay it is the one observed
 // back then and not the current one.
@@ -157,18 +187,31 @@ func New(uow storage.UnitOfWork, reads storage.Reads, minter Minter, clock Clock
 // Submit records the operation and answers the outcome. A rule refusing it comes
 // back as a wager.Rejection, which the border tells apart from a failure.
 func (s *Service) Submit(ctx context.Context, cmd Command) (Result, error) {
-	result, err := s.submit(ctx, cmd)
+	return s.SubmitCaused(ctx, cmd, Caused{})
+}
+
+// SubmitCaused is Submit for an operation a message caused: the row of the inbox
+// enters the same commit as the movement, so the memory of the message and the
+// balance live or die together.
+//
+// A message this consumer already recorded with the same body is not applied
+// again — what it answers is the outcome the first delivery recorded, through the
+// idempotency of the key. The same identifier with another body answers
+// ErrMessageBodyDiffers and writes nothing.
+func (s *Service) SubmitCaused(ctx context.Context, cmd Command, caused Caused) (Result, error) {
+	result, err := s.submit(ctx, cmd, caused)
 	if err != nil {
 		return Result{}, fmt.Errorf("submit wager: %w", err)
 	}
 	return result, nil
 }
 
-func (s *Service) submit(ctx context.Context, cmd Command) (Result, error) {
+func (s *Service) submit(ctx context.Context, cmd Command, caused Caused) (Result, error) {
 	job, err := s.pending(cmd)
 	if err != nil {
 		return Result{}, err
 	}
+	job.caused = caused
 	decided, err := s.settle(ctx, job)
 	if err != nil {
 		return s.afterRace(ctx, job, err)
@@ -187,6 +230,10 @@ type pending struct {
 	move    wager.Movement
 	outcome identity.EventID
 	balance identity.EventID
+
+	// caused is the message that brought this operation, and the zero value is an
+	// arrival over HTTP, which records nothing in the inbox.
+	caused Caused
 }
 
 func (p pending) at() time.Time {
@@ -296,11 +343,39 @@ func (s *Service) settle(ctx context.Context, job pending) (settlement, error) {
 }
 
 func (s *Service) decide(ctx context.Context, tx storage.Tx, job pending) (settlement, error) {
+	if err := receive(ctx, tx, job); err != nil {
+		return settlement{}, err
+	}
 	recorded, found, err := s.recorded(ctx, tx, job)
 	if found || err != nil {
 		return recorded, err
 	}
 	return s.apply(ctx, tx, job)
+}
+
+// receive records the message that caused the operation, before anything is
+// decided and before any lock is taken.
+//
+// It is first because a redelivery must not reach the wallet at all, and it takes
+// no lock of its own, so it does not stand between a submission and the wallet it
+// moves. The identifier this consumer already recorded with the same body is not
+// an outcome here: what answers it is the transaction under the idempotency key,
+// which the first delivery committed, and the read right after this one finds it.
+//
+// An operation that came over HTTP records nothing: there is no message to
+// remember.
+func receive(ctx context.Context, tx storage.Tx, job pending) error {
+	if job.caused.IsZero() {
+		return nil
+	}
+	already, err := tx.Inbox().Insert(ctx, job.caused.recorded(job.at()))
+	if !errors.Is(err, storage.ErrMessageRecorded) {
+		return err
+	}
+	if already.BodyHash != job.caused.BodyHash {
+		return ErrMessageBodyDiffers
+	}
+	return nil
 }
 
 // recorded is the fast path of a replay: the transaction already written under

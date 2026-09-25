@@ -23,10 +23,14 @@ type outbox struct {
 	tx pgx.Tx
 }
 
-// Insert records the event beside the balance it came from, with the
-// correlation of the request and the trace of the commit that wrote it. The row
-// is publishable from the instant it is committed, so the first attempt is due
-// at once.
+// Insert records the event beside the balance it came from, with the origin of
+// the operation and the trace of the commit that wrote it. The row is publishable
+// from the instant it is committed, so the first attempt is due at once.
+//
+// The origin is read off the context and not off the event: the correlation and
+// the causing message are decided at the border, and the settlement knows
+// neither. A commit no message caused omits the cause rather than carrying an
+// empty one.
 //
 // The instant of that first attempt is the clock of the database and not the
 // one of the process: the scan compares it against now(), and two clocks in one
@@ -35,7 +39,10 @@ type outbox struct {
 // A commit outside any span still writes the row: the trace of an event is what
 // links it back, not what makes it valid.
 func (r outbox) Insert(ctx context.Context, envelope event.Envelope) error {
-	origin := event.Origin{CorrelationID: telemetry.Correlation(ctx)}
+	origin := event.Origin{
+		CorrelationID: telemetry.Correlation(ctx),
+		CausationID:   telemetry.Causation(ctx),
+	}
 	payload, err := envelope.Marshal(origin)
 	if err != nil {
 		return wrap("marshal outbox event", err)
