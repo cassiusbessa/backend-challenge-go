@@ -72,7 +72,7 @@ func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Load(envWithClients(filepath.Join(t.TempDir(), "absent.yaml")))
 	if err != nil {
-		t.Fatalf("load config = %v, want nil", err)
+		t.Fatalf("load config for the absent client map = %v, want nil", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
@@ -85,7 +85,7 @@ func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
 func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	cfg, err := config.Load(testEnv)
 	if err != nil {
-		t.Fatalf("load config = %v, want nil", err)
+		t.Fatalf("load config of the test environment = %v, want nil", err)
 	}
 	gate := &hold{entered: make(chan struct{}), release: make(chan struct{})}
 	gotSrv := make(chan *httpapi.Server, 1)
@@ -104,14 +104,37 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	base := "http://" + srv.Addr()
 	go func() { _ = readyStatus(base + "/health/ready") }()
 	waitCh(t, gate.entered)
+	// A start that succeeded has to wait for the signal. Run returning here would
+	// leave the process up with nobody listening for the shutdown, and the
+	// listener and the telemetry buffer would outlive the call that owns them.
+	select {
+	case early := <-errCh:
+		t.Fatalf("Run returned %v before the signal, want it waiting for one", early)
+	default:
+	}
 	sigs <- syscall.SIGTERM
 	waitRefused(t, base+"/health/live")
-	assertNotFlushed(t, <-gotPipe)
+	pipe := recvPipeline(t, gotPipe)
+	assertNotFlushed(t, pipe)
 	close(gate.release)
 	err = waitExit(t, errCh)
 	if err != nil {
 		t.Fatalf("exit = %v, want nil", err)
 	}
+	// The lifecycle flushes the buffer on the way out, so a process that exited
+	// cleanly leaves the pipeline stopped.
+	waitCh(t, pipe.Stopped())
+}
+
+func recvPipeline(t *testing.T, ch <-chan *telemetry.Pipeline) *telemetry.Pipeline {
+	t.Helper()
+	select {
+	case pipe := <-ch:
+		return pipe
+	case <-time.After(stepWait):
+		t.Fatalf("the telemetry pipeline was not built within %s", stepWait)
+	}
+	return nil
 }
 
 func assertNotFlushed(t *testing.T, pipe *telemetry.Pipeline) {

@@ -10,8 +10,10 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
+	"github.com/junglegaming/backend-challenge-go/internal/app/readwager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/clock"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
@@ -20,6 +22,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/walletapi"
 )
 
@@ -82,13 +85,18 @@ func business() []fx.Option {
 		fx.Provide(newReads),
 		fx.Provide(func() openwallet.Minter { return mint.UUIDv7{} }),
 		fx.Provide(func() openwallet.Clock { return clock.UTC{} }),
+		fx.Provide(func() submitwager.Minter { return mint.UUIDv7{} }),
+		fx.Provide(func() submitwager.Clock { return clock.UTC{} }),
 		fx.Provide(openwallet.New),
 		fx.Provide(readwallet.New),
+		fx.Provide(submitwager.New),
+		fx.Provide(readwager.New),
 		// The client map is loaded here, so a map that is missing or malformed
 		// fails the graph and the process never opens the HTTP port.
 		fx.Provide(newClients),
 		fx.Provide(newGuard),
 		fx.Provide(newReporter),
+		fx.Provide(newWagerReporter),
 		fx.Invoke(register),
 	}
 }
@@ -113,6 +121,10 @@ func newReporter(pipe *telemetry.Pipeline) *walletapi.Reporter {
 	return walletapi.NewReporter(pipe.Logger)
 }
 
+func newWagerReporter(pipe *telemetry.Pipeline) *wagerapi.Reporter {
+	return wagerapi.NewReporter(pipe.Logger)
+}
+
 func newServer(cfg config.Config, pipe *telemetry.Pipeline) *httpapi.Server {
 	return httpapi.NewServer(cfg, http.NewServeMux(), pipe.Logger)
 }
@@ -122,18 +134,21 @@ func newServer(cfg config.Config, pipe *telemetry.Pipeline) *httpapi.Server {
 type wiring struct {
 	fx.In
 
-	Config   config.Config
-	Pipeline *telemetry.Pipeline
-	Postgres *postgres.Pool
-	Queue    *probe.Queue
-	Ready    *httpapi.Ready
-	Registry *prometheus.Registry
-	Latency  *prometheus.HistogramVec
-	Server   *httpapi.Server
-	Guard    *authz.Guard
-	Opener   *openwallet.Service
-	Reader   *readwallet.Service
-	Reporter *walletapi.Reporter
+	Config        config.Config
+	Pipeline      *telemetry.Pipeline
+	Postgres      *postgres.Pool
+	Queue         *probe.Queue
+	Ready         *httpapi.Ready
+	Registry      *prometheus.Registry
+	Latency       *prometheus.HistogramVec
+	Server        *httpapi.Server
+	Guard         *authz.Guard
+	Opener        *openwallet.Service
+	Reader        *readwallet.Service
+	Reporter      *walletapi.Reporter
+	Submitter     *submitwager.Service
+	WagerReader   *readwager.Service
+	WagerReporter *wagerapi.Reporter
 }
 
 func register(lc fx.Lifecycle, parts wiring) {
@@ -159,8 +174,13 @@ func routes(parts wiring) http.Handler {
 		// sends wagers and never touches these two routes.
 		OpenWallet: parts.Guard.Only(authz.InternalWallet, walletapi.Open(parts.Opener, parts.Reporter)),
 		ReadWallet: parts.Guard.Only(authz.InternalWallet, walletapi.Read(parts.Reader, parts.Reporter)),
-		Logger:     parts.Pipeline.Logger,
-		Tracer:     parts.Pipeline.Tracer,
-		Latency:    parts.Latency,
+		// Only a provider sends a wager and reads its own transaction. The client
+		// of the token decides it, and the guard hands that client to the border,
+		// which checks the provider of the body against it.
+		SubmitWager:     parts.Guard.Only(authz.Provider, wagerapi.Submit(parts.Submitter, parts.WagerReporter)),
+		ReadTransaction: parts.Guard.Only(authz.Provider, wagerapi.Read(parts.WagerReader, parts.WagerReporter)),
+		Logger:          parts.Pipeline.Logger,
+		Tracer:          parts.Pipeline.Tracer,
+		Latency:         parts.Latency,
 	})
 }
