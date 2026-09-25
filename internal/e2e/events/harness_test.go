@@ -28,6 +28,29 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
 )
 
+// TestMain falls back to the LocalStack credential when it does not come from
+// the environment, so the local gate does not depend on a prepared shell.
+//
+// The suites that spawn the binary hand it these three; this one builds its own
+// SNS and SQS clients in the process of the test, so it is this process that has
+// to carry them.
+func TestMain(m *testing.M) {
+	for key, value := range localAWS {
+		if os.Getenv(key) == "" {
+			if err := os.Setenv(key, value); err != nil {
+				panic(err)
+			}
+		}
+	}
+	os.Exit(m.Run())
+}
+
+var localAWS = map[string]string{
+	"AWS_ACCESS_KEY_ID":     "test",
+	"AWS_SECRET_ACCESS_KEY": "test",
+	"AWS_REGION":            "us-east-1",
+}
+
 // delivered is one message as it reached the subscriber: the body the topic
 // carried, and the two fields the FIFO topic required of the send.
 type delivered struct {
