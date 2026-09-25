@@ -3,6 +3,7 @@ package broker
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/sns/types"
@@ -57,6 +58,27 @@ func chained(err error) error {
 		return nil
 	}
 	return errors.Join(err)
+}
+
+// The upper bound of the status rule. The five statuses the SDK already calls
+// repeatable never reach this far, but the rest of the server side does, and
+// reading one of those as a refusal of the bytes would give up on a row over a
+// broker having a bad minute.
+func TestPermanentStatus_stopsAtTheServerSideOfTheRange(t *testing.T) {
+	t.Parallel()
+	cases := map[int]bool{
+		http.StatusBadRequest:          true,
+		http.StatusUnprocessableEntity: true,
+		http.StatusInternalServerError: false,
+		http.StatusNotImplemented:      false,
+	}
+	for status, want := range cases {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			if got := permanentStatus(responseError(status)); got != want {
+				t.Fatalf("permanentStatus of %d = %t, want %t", status, got, want)
+			}
+		})
+	}
 }
 
 // responseError is the shape the SDK hands over when the API answered a status
