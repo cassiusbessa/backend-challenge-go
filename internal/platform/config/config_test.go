@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+// The two refusals of the configuration reach the operator as a line and
+// nothing else: the process did not come up, and the key is the whole message.
+// They also have to read apart from each other, because what the operator does
+// about an absent value is not what they do about an invalid one.
+func TestError_namesTheKeyAndWhatIsWrongWithIt(t *testing.T) {
+	t.Parallel()
+	cases := map[error]string{
+		MissingError{Key: "DATABASE_URL"}: "config: DATABASE_URL is missing",
+		InvalidError{Key: "OUTBOX_LEASE"}: "config: OUTBOX_LEASE is not valid",
+	}
+	for err, want := range cases {
+		t.Run(want, func(t *testing.T) {
+			if got := err.Error(); got != want {
+				t.Fatalf("Error() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestEmptyDatabaseURLDoesNotListen(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(envWith("", "DATABASE_URL"))
