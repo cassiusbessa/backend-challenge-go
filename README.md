@@ -43,7 +43,7 @@ docker compose run --rm migrate
 
 Reverter em desenvolvimento é o `down` da migration, ou `docker compose down -v` para recriar do zero.
 
-As três tabelas financeiras são `wallets`, `wager_transactions` e `ledger_entries`. As invariantes que o agregado não substitui ficam no banco: saldo não negativo, unicidade de jogador mais moeda, os campos exigidos por tipo e por status, uma reversão `PROCESSED` por transação citada, e o ledger recusando `UPDATE`, `DELETE` e `TRUNCATE`.
+As três tabelas financeiras são `wallets`, `wager_transactions` e `ledger_entries`, e ao lado delas fica a `outbox_events`, com o `eventId` como chave, o payload imutável depois da inserção e o índice parcial que serve a varredura da fila de publicação. As invariantes que o agregado não substitui ficam no banco: saldo não negativo, unicidade de jogador mais moeda, os campos exigidos por tipo e por status, uma reversão `PROCESSED` por transação citada, e o ledger recusando `UPDATE`, `DELETE` e `TRUNCATE`.
 
 A migration cria o papel `wager_app`, que tem apenas `SELECT` e `INSERT` no ledger, e concede esse papel a quem conectou. A aplicação entra com `SET ROLE` em cada conexão do pool, então o privilégio vale mesmo quando quem conecta é superusuário. Sem o schema aplicado, `GET /health/ready` responde 503 e `GET /health/live` continua 200.
 
@@ -150,7 +150,7 @@ O apply cria:
 
 - fila FIFO `wager-transactions.fifo`, long poll de 20s, visibility de 30s, redrive com `maxReceiveCount` 15
 - DLQ FIFO `wager-transactions-dlq.fifo`
-- tópico SNS FIFO `wallet-events.fifo`, sem subscription
+- tópico SNS FIFO `wallet-events.fifo`, sem subscription — não há consumidor dos eventos ainda, e é para ele que o relay publica
 - usuário IAM `wager-sender`, com `sqs:SendMessage` só na fila de entrada
 
 A access key gerada fica em `deploy/terraform/localstack/wager-sender.keys`, fora do Git. O principal versionado está em `deploy/local/queue-senders.yaml` e pode enviar por `provider-a` e `provider-b`.
@@ -159,11 +159,68 @@ No LocalStack community o IAM é parcial: a chave do `wager-sender` consegue `Se
 
 O LocalStack community não persiste: qualquer reinício do container esvazia filas e tópico, com ou sem `docker compose down -v`. O `terraform.tfstate` no disco continua afirmando que eles existem, e é o refresh do próximo `terraform apply` que percebe a diferença e recria tudo. Depois de reiniciar o LocalStack, rode o apply de novo. A access key do `wager-sender` muda nessa recriação, e `wager-sender.keys` é reescrito.
 
-O ready do processo só fica verde depois desse apply: a fila `wager-transactions.fifo` precisa existir. Sem ela, `GET /health/ready` responde 503 e `GET /health/live` continua 200. O `pprof` escuta em `127.0.0.1:6060` dentro do container e o Compose não publica essa porta.
+O ready do processo só fica verde depois desse apply: a fila `wager-transactions.fifo` precisa existir, e sem ela `GET /health/ready` responde 503 enquanto `GET /health/live` continua 200. O tópico não entra no ready, mas precisa existir para o relay publicar: sem ele a linha da outbox fica na fila e o log do processo mostra a recusa. O `pprof` escuta em `127.0.0.1:6060` dentro do container e o Compose não publica essa porta.
 
-No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` o worker de referência para de reivindicar espera nova, e a que ele já reivindicou conclui ou desfaz dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica.
+No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` os dois componentes de fundo param de reivindicar. O worker de referência conclui ou desfaz a espera que já reivindicou dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica. O relay conclui o envio em curso dentro do lease que já segura; o que ele não confirmar continua publicável, com o mesmo `eventId`, e outra réplica reivindica depois do prazo.
 
-Duas variáveis configuram a espera por referência, e as duas têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila, 1 segundo. Qualquer uma delas escrita com algo que não seja uma duração positiva impede a subida em vez de cair no padrão.
+Quatro variáveis configuram o trabalho de fundo, e as quatro têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila de esperas, 1 segundo; `OUTBOX_INTERVAL` é de quanto em quanto tempo o relay varre a outbox, 1 segundo; `OUTBOX_LEASE` é quanto uma reivindicação segura a linha, 30 segundos. Qualquer uma delas escrita com algo que não seja uma duração positiva impede a subida em vez de cair no padrão.
+
+`SNS_ENDPOINT` e `SNS_TOPIC_ARN` não têm padrão: sem o endereço do tópico o processo não abre a porta HTTP e não sobe o relay. No Compose eles apontam para o LocalStack e para `arn:aws:sns:us-east-1:000000000000:wallet-events.fifo`.
+
+## Eventos
+
+A liquidação publica quatro eventos, e só estes:
+
+| Evento | Quando |
+| --- | --- |
+| `WagerTransactionProcessed` | a transação terminou `PROCESSED`, inclusive `LOSS` e a abertura de carteira com saldo positivo |
+| `WagerTransactionRejected` | a transação terminou `REJECTED`, com o `failureCode` gravado |
+| `WalletBalanceChanged` | o saldo da carteira mudou |
+| `WagerTransactionPendingReference` | a espera pela operação citada foi gravada |
+
+`FAILED` não tem evento próprio. `LOSS` e a abertura com saldo zero não emitem `WalletBalanceChanged`, porque nenhum dos dois produz lançamento. Replay e os dois conflitos de idempotência não emitem nada, porque nenhum deles grava transação.
+
+Todos saem no mesmo envelope, com dinheiro em string decimal de duas casas, igual ao contrato de entrada. O `aggregateId` é a carteira, que é o que ordena a publicação:
+
+```json
+{
+  "eventId": "019974a4-0000-7000-8000-00000000e001",
+  "eventType": "WalletBalanceChanged",
+  "version": 1,
+  "aggregateId": "019974a4-0000-7000-8000-00000000a11e",
+  "correlationId": "01a0d779-f2df-7a49-9bb1-ac7e4e0c185f",
+  "occurredAt": "2026-09-24T12:00:00Z",
+  "data": {
+    "walletId": "019974a4-0000-7000-8000-00000000a11e",
+    "transactionId": "019974a4-0000-7000-8000-0000000000c1",
+    "direction": "DEBIT",
+    "money": { "amount": "25.00", "currency": "BRL" },
+    "balanceBefore": { "amount": "1000.00", "currency": "BRL" },
+    "balanceAfter": { "amount": "975.00", "currency": "BRL" },
+    "walletVersion": 2
+  }
+}
+```
+
+`causationId` sai omitido enquanto não houver entrada por SQS: por HTTP a operação não tem mensagem que a cause. O construtor fixa o tipo e a `version`; nenhum chamador escolhe os dois.
+
+### Como o evento sai
+
+A linha do evento entra na mesma transação SQL que grava saldo, transação e lançamento — saldo e evento vivem ou morrem juntos, e uma operação desfeita não deixa evento nenhum. Nada é publicado antes do commit.
+
+O relay é o segundo componente de fundo do binário. A cada `OUTBOX_INTERVAL` ele varre a outbox e, por carteira, pega o evento não publicado mais antigo; reivindica a linha com um token novo e um lease de `OUTBOX_LEASE`, publica no tópico com a carteira como grupo e o `eventId` como deduplicação, e confirma só se o token ainda for o da reivindicação. A linha que outra réplica segura é pulada, não esperada, então uma carteira travada não para a fila das outras.
+
+Falha transitória do broker devolve a linha para nova tentativa, com backoff de 1s, fator 2 e teto de 60s. Recusa permanente repetida dez vezes marca a linha como morta e solta a carteira, para os eventos seguintes dela seguirem; a linha permanece no banco, com o mesmo `eventId` e o mesmo payload.
+
+A entrega é ao menos uma vez. A deduplicação do broker pelo `eventId` cobre a janela de cinco minutos do FIFO, e o `eventId` estável cobre o resto — do lado de quem consome.
+
+O envio aparece no log com identificadores apenas: `eventId`, `walletId`, o tipo do evento, o desfecho, e o `trace_id` e o `span_id` do commit que gravou a linha.
+
+```bash
+docker compose logs -f wager | grep "outbox event"
+```
+
+O tópico é provisionado sem subscription, então não há de onde ler as mensagens fora da suíte de jornada, que anexa um assinante só pelo tempo do caso. Para olhar à mão, crie uma fila FIFO e assine com `RawMessageDelivery`.
 
 ## Token
 
