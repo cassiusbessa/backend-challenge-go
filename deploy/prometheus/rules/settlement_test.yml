@@ -77,3 +77,43 @@ tests:
       - eval_time: 1m45s
         alertname: OutboxOldestPendingTooOld
         exp_alerts: []
+
+  # O veredito que o observador não produziu dispara na hora, sem `for`.
+  - interval: 15s
+    input_series:
+      - series: 'wager_reconciliation_failures_total{origin="watch"}'
+        values: '0 0 0 0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: ReconciliationVerdictFailed
+        exp_alerts: []
+      - eval_time: 1m15s
+        alertname: ReconciliationVerdictFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: The divergence watcher could not produce the verdict of a wallet
+              description: The watcher's reconciliation failures rose in the last 15 minutes. The log line names the wallet and carries the stack.
+
+  # A falha só da rota não dispara: quem chamou já recebeu a resposta.
+  - interval: 15s
+    input_series:
+      - series: 'wager_reconciliation_failures_total{origin="http"}'
+        values: '0 0 0 0 1 2 3 4'
+      - series: 'wager_reconciliation_failures_total{origin="watch"}'
+        values: '0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m45s
+        alertname: ReconciliationVerdictFailed
+        exp_alerts: []
+
+  # Uma série estável, ainda que acima de zero, não dispara.
+  - interval: 15s
+    input_series:
+      - series: 'wager_reconciliation_failures_total{origin="watch"}'
+        values: '2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 1m45s
+        alertname: ReconciliationVerdictFailed
+        exp_alerts: []

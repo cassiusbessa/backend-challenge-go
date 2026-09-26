@@ -22,7 +22,7 @@ make migrate     # o schema nos dois bancos, cada um nomeado no comando
 make test        # a suíte de unidade
 make test-journey  # a suíte de jornada, em série e no banco dela
 make scenarios   # os oito cenários de concorrência do enunciado, um go test cada
-make rules-test  # o teste de unidade das duas regras de alerta, com o promtool da imagem
+make rules-test  # o teste de unidade das três regras de alerta, com o promtool da imagem
 make verify      # o ambiente está no estado que os arquivos versionados declaram?
 make down        # derruba a stack e descarta os volumes dela
 ```
@@ -425,14 +425,15 @@ Troque `client_id` e `client_secret` por `provider-a` / `provider-a-local` ou `p
 
 ## Telemetria
 
-O coletor recebe OTLP, aplica batch e entrega trace ao Tempo, log ao Loki e métrica ao Prometheus. O Grafana provisiona esses três datasources e o painel "Liquidação"; o Prometheus carrega as duas regras de alerta. Os dois são arquivos do repositório, lidos na subida.
+O coletor recebe OTLP, aplica batch e entrega trace ao Tempo, log ao Loki e métrica ao Prometheus. O Grafana provisiona esses três datasources e o painel "Liquidação"; o Prometheus carrega as três regras de alerta. Os dois são arquivos do repositório, lidos na subida.
 
 O painel está em `deploy/grafana/dashboards/liquidacao.json` e abre em `localhost:3000` com a senha de exemplo. No topo, as divergências de reconciliação dos últimos 15 minutos, vermelhas acima de zero; abaixo, cinco faixas na ordem: saúde e latência, com o p99 cujos pontos abrem o trace no Tempo; resultado financeiro, com desfechos, rejeições por `failureCode` e duplicatas; fila e referência pendente, com as duas profundidades, os retries e a idade da espera mais antiga; outbox, com pendentes, a idade do mais antigo, as linhas mortas e os retries; reconciliação, com carteiras conferidas e divergências por origem. O painel é provisionado: pela interface ele se explora, mas não se salva, porque o arquivo é a fonte.
 
-As regras estão em `deploy/prometheus/rules/settlement.yml`, e a página `localhost:9095/alerts` mostra o estado das duas:
+As regras estão em `deploy/prometheus/rules/settlement.yml`, e a página `localhost:9095/alerts` mostra o estado das três:
 
 - `ReconciliationDivergenceFound` dispara quando `wager_reconciliation_divergences_total` subiu nos últimos 15 minutos, sem espera: a divergência é achado, não tendência.
 - `OutboxOldestPendingTooOld` dispara quando o evento pendente mais antigo passa de 30 s por mais de um minuto. O lease de um envio é de 30 s, e o minuto é o que deixa um envio lento legítimo passar sem alerta.
+- `ReconciliationVerdictFailed` dispara quando `wager_reconciliation_failures_total{origin="watch"}` subiu nos últimos 15 minutos: o observador não conseguiu produzir o veredito de uma carteira, que é o estado que a divergência não enxerga. A falha da rota não o aciona, porque quem chamou já recebeu a resposta.
 
 Não há Alertmanager: o alerta aparece no Prometheus e no Grafana, e não há para onde notificar num ambiente local. As regras têm teste de unidade, que roda sem a stack com o `promtool` da mesma imagem do Prometheus:
 
