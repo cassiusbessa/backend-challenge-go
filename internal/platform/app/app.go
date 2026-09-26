@@ -266,8 +266,8 @@ func newReporter(pipe *telemetry.Pipeline) *walletapi.Reporter {
 	return walletapi.NewReporter(pipe.Logger)
 }
 
-func newWagerReporter(pipe *telemetry.Pipeline) *wagerapi.Reporter {
-	return wagerapi.NewReporter(pipe.Logger)
+func newWagerReporter(pipe *telemetry.Pipeline, series *metrics.Settlement) *wagerapi.Reporter {
+	return wagerapi.NewReporter(pipe.Logger, series)
 }
 
 func newServer(cfg config.Config, pipe *telemetry.Pipeline) *httpapi.Server {

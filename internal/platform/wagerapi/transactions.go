@@ -75,7 +75,7 @@ func Submit(submitter Submitter, reporter *Reporter) http.Handler {
 		if err != nil {
 			// A rule that refused wrote a row of its own, and the result names it.
 			// Rejected takes it; the refusals above wrote nothing to name.
-			reporter.Rejected(w, r, settled.TransactionID, err)
+			reporter.Rejected(w, r, settled, err)
 			return
 		}
 		reporter.Settled(r, settled)

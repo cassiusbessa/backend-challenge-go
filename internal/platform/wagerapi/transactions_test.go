@@ -12,12 +12,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
@@ -424,7 +427,7 @@ func behind(t *testing.T, client string, handler http.Handler) http.Handler {
 }
 
 func reporter() *Reporter {
-	return NewReporter(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	return NewReporter(slog.New(slog.NewJSONHandler(io.Discard, nil)), metrics.New(prometheus.NewRegistry()))
 }
 
 type verifier struct {

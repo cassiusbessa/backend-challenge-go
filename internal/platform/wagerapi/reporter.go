@@ -11,26 +11,35 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
-// Reporter is the only place in this package that logs and marks the span.
+// Reporter is the only place in this package that logs, marks the span and
+// moves a counter.
 //
-// Whoever decides the outcome logs it, and logs it once. No line here carries an
-// amount, a balance, a body, a token or the idempotency key: the log of a
-// settlement is identifiers and the outcome.
+// Whoever decides the outcome reports it, and reports it once. No line here
+// carries an amount, a balance, a body, a token or the idempotency key: the log
+// of a settlement is identifiers and the outcome.
 type Reporter struct {
-	log *slog.Logger
+	log     *slog.Logger
+	metrics *metrics.Settlement
 }
 
-func NewReporter(log *slog.Logger) *Reporter {
-	return &Reporter{log: log}
+func NewReporter(log *slog.Logger, series *metrics.Settlement) *Reporter {
+	return &Reporter{log: log, metrics: series}
 }
 
 // Settled records the outcome of a submission that reached a decision, including a
 // replay of one already recorded.
+//
+// The replay is not a new outcome: it is counted as a duplicate and never as a
+// settlement, so the series of settlements is what was decided and not what was
+// answered.
 func (rep *Reporter) Settled(r *http.Request, settled submitwager.Result) {
+	rep.countSettled(settled)
 	trace.SpanFromContext(r.Context()).SetAttributes(
 		attribute.String("wager.transaction.id", settled.TransactionID.String()),
 		attribute.String("wager.kind", settled.Kind.String()),
@@ -43,13 +52,21 @@ func (rep *Reporter) Settled(r *http.Request, settled submitwager.Result) {
 	)
 }
 
+func (rep *Reporter) countSettled(settled submitwager.Result) {
+	if settled.IdempotentReplay {
+		rep.metrics.Duplicate(metrics.OriginHTTP, metrics.ReasonReplay)
+		return
+	}
+	rep.metrics.Settled(metrics.OriginHTTP, settled.Kind, settled.Status)
+}
+
 // Refuse classifies the failure, answers problem details and records the outcome.
 //
 // The refusals that reach it wrote no row: a body this border did not take, a
 // client speaking for another provider, a transaction of someone else. A rule that
 // refused the operation did write one, and Rejected is what names it.
 func (rep *Reporter) Refuse(w http.ResponseWriter, r *http.Request, err error) {
-	rep.answer(w, r, identity.TransactionID{}, err)
+	rep.answer(w, r, submitwager.Result{}, err)
 }
 
 // Rejected answers a rule that refused the operation, naming the transaction the
@@ -57,16 +74,55 @@ func (rep *Reporter) Refuse(w http.ResponseWriter, r *http.Request, err error) {
 //
 // go-observability asks the rejection to log its row, and only the commit knows
 // which one it is: the token says which rule refused, and the identifier is what
-// joins the line to the transaction the provider can read back.
-func (rep *Reporter) Rejected(w http.ResponseWriter, r *http.Request, id identity.TransactionID, err error) {
-	rep.answer(w, r, id, err)
+// joins the line to the transaction the provider can read back. The result is
+// what carries it, together with the kind the series of settlements counts by.
+func (rep *Reporter) Rejected(w http.ResponseWriter, r *http.Request, settled submitwager.Result, err error) {
+	rep.answer(w, r, settled, err)
 }
 
-func (rep *Reporter) answer(w http.ResponseWriter, r *http.Request, id identity.TransactionID, err error) {
+func (rep *Reporter) answer(w http.ResponseWriter, r *http.Request, settled submitwager.Result, err error) {
 	details := problem.From(err)
 	details.Detail = detailOf(err)
-	rep.record(r, id, err, details)
+	rep.count(settled, err, details)
+	rep.record(r, settled.TransactionID, err, details)
 	problem.Write(w, r, details)
+}
+
+// count moves the series the refusal belongs to, by class and never by number:
+// a retryable answer shares its number with an outage, and the two conflicts
+// of idempotency share their number with every other rule.
+//
+// A rule that refused and wrote a row is a settlement that ended REJECTED. A
+// rule that refused without a row — the wallet that does not exist, the kind
+// the border does not take — is answered and logged and is not a settlement,
+// because nothing was recorded to count.
+func (rep *Reporter) count(settled submitwager.Result, err error, details problem.Details) {
+	switch {
+	case details.Class == problem.Retryable, details.Class == problem.Unavailable:
+		rep.metrics.Retry(metrics.ComponentHTTP, metrics.RetryReason(err))
+	case details.Class != problem.BusinessRejection:
+		return
+	case details.IdempotentReplay:
+		rep.metrics.Duplicate(metrics.OriginHTTP, metrics.ReasonReplay)
+	default:
+		rep.countRejection(settled, details.FailureCode)
+	}
+}
+
+func (rep *Reporter) countRejection(settled submitwager.Result, token string) {
+	code, err := wager.ParseFailureCode(token)
+	if err != nil {
+		return
+	}
+	if reason, duplicate := metrics.DuplicateReason(code); duplicate {
+		rep.metrics.Duplicate(metrics.OriginHTTP, reason)
+		return
+	}
+	if settled.TransactionID.IsZero() {
+		return
+	}
+	rep.metrics.Settled(metrics.OriginHTTP, settled.Kind, wager.Rejected)
+	rep.metrics.Rejected(metrics.OriginHTTP, code)
 }
 
 // record marks the span and logs once.

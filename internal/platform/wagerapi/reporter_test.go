@@ -11,14 +11,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
@@ -204,7 +208,14 @@ func TestRefused_leavesOutTheAttributesThatHoldNothing(t *testing.T) {
 // reporterWriting logs through the same allow list the process uses, so what the
 // test reads is what Loki would receive.
 func reporterWriting(sink *bytes.Buffer) *Reporter {
-	return NewReporter(slog.New(telemetry.Allow(slog.NewJSONHandler(sink, nil))))
+	return NewReporter(slog.New(telemetry.Allow(slog.NewJSONHandler(sink, nil))), metrics.New(prometheus.NewRegistry()))
+}
+
+// reporterCounting builds a reporter over a registry of its own, so a case
+// reads the series it moved and nothing another case moved.
+func reporterCounting() (*Reporter, *metrics.Settlement) {
+	series := metrics.New(prometheus.NewRegistry())
+	return NewReporter(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), series), series
 }
 
 func requestOf(t *testing.T) *http.Request {
@@ -220,7 +231,7 @@ func TestRejected_namesTheTransactionTheCommitWroteForTheRefusal(t *testing.T) {
 	var written bytes.Buffer
 	id := transactionOf(t)
 	rejected := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.InsufficientFunds, nil))
-	reporterWriting(&written).Rejected(httptest.NewRecorder(), requestOf(t), id, rejected)
+	reporterWriting(&written).Rejected(httptest.NewRecorder(), requestOf(t), rejectedRow(id), rejected)
 	line := written.String()
 	if !strings.Contains(line, `"transactionId":"`+id.String()+`"`) {
 		t.Fatalf("rejected line = %s, want the transaction of the row it wrote", line)
@@ -237,12 +248,171 @@ func TestRejected_namesNoTransactionForARefusalThatWroteNoRow(t *testing.T) {
 	t.Parallel()
 	var written bytes.Buffer
 	conflict := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.IdempotencyConflict, nil))
-	reporterWriting(&written).Rejected(httptest.NewRecorder(), requestOf(t), identity.TransactionID{}, conflict)
+	reporterWriting(&written).Rejected(httptest.NewRecorder(), requestOf(t), submitwager.Result{}, conflict)
 	line := written.String()
 	if strings.Contains(line, `"transactionId"`) {
 		t.Fatalf("conflict line = %s, want no transaction named: it wrote no row", line)
 	}
 	if !strings.Contains(line, `"failureCode":"IDEMPOTENCY_CONFLICT"`) {
 		t.Fatalf("conflict line = %s, want the token of the conflict", line)
+	}
+}
+
+// replayMarker is a recorded refusal answered again, as the use case marks it:
+// the rejection stays reachable underneath, and the behaviour says it is a
+// replay. It is a type of this file because the marker of the use case keeps
+// its rejection private.
+type replayMarker struct {
+	error
+}
+
+func (m replayMarker) Unwrap() error { return m.error }
+
+func (replayMarker) IdempotentReplay() bool { return true }
+
+func replayedRefusal() error {
+	return replayMarker{error: wager.NewRejection(wager.InsufficientFunds, nil)}
+}
+
+// rejectedRow is the result a rule that refused comes back with: the row it
+// wrote, in REJECTED, with the kind of the operation.
+func rejectedRow(id identity.TransactionID) submitwager.Result {
+	return submitwager.Result{TransactionID: id, Kind: wager.KindBet, Status: wager.Rejected}
+}
+
+func TestSettled_countsTheOutcomeByKindAndStatus(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	reporter.Settled(requestOf(t), settled(t, false))
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("http", "BET", "PROCESSED")); got != 1 {
+		t.Fatalf("settlements{http,BET,PROCESSED} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", "replay")); got != 0 {
+		t.Fatalf("duplicates{http,replay} after a first outcome = %v, want 0", got)
+	}
+}
+
+// A replay is not a new outcome: the series of settlements is what was decided,
+// and what was answered again is a duplicate.
+func TestSettled_countsAReplayAsADuplicateAndNotAsASettlement(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	reporter.Settled(requestOf(t), settled(t, true))
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", "replay")); got != 1 {
+		t.Fatalf("duplicates{http,replay} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("http", "BET", "PROCESSED")); got != 0 {
+		t.Fatalf("settlements{http,BET,PROCESSED} after a replay = %v, want 0", got)
+	}
+}
+
+func TestRejected_countsTheRowAsASettlementThatEndedRejectedAndByItsToken(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	rejected := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.InsufficientFunds, nil))
+	reporter.Rejected(httptest.NewRecorder(), requestOf(t), rejectedRow(transactionOf(t)), rejected)
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("http", "BET", "REJECTED")); got != 1 {
+		t.Fatalf("settlements{http,BET,REJECTED} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("http", "INSUFFICIENT_FUNDS")); got != 1 {
+		t.Fatalf("rejections{http,INSUFFICIENT_FUNDS} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Retries.WithLabelValues("http", "transient")); got != 0 {
+		t.Fatalf("retries{http,transient} after a business rejection = %v, want 0", got)
+	}
+}
+
+// The recorded refusal answered again is a replay: nothing new was decided, so
+// neither the settlement nor the rejection moves.
+func TestRejected_countsAReplayedRefusalAsADuplicate(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	replayed := fmt.Errorf("submit wager: %w", replayedRefusal())
+	reporter.Rejected(httptest.NewRecorder(), requestOf(t), rejectedRow(transactionOf(t)), replayed)
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", "replay")); got != 1 {
+		t.Fatalf("duplicates{http,replay} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("http", "INSUFFICIENT_FUNDS")); got != 0 {
+		t.Fatalf("rejections{http,INSUFFICIENT_FUNDS} after a replay = %v, want 0", got)
+	}
+}
+
+// A rule that refused without writing a row is answered and logged, and it is
+// not a settlement: nothing was recorded to count.
+func TestRejected_countsNoSettlementForARefusalThatWroteNoRow(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	absent := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.WalletNotFound, nil))
+	reporter.Rejected(httptest.NewRecorder(), requestOf(t), submitwager.Result{}, absent)
+	if got := testutil.CollectAndCount(series.Settlements) + testutil.CollectAndCount(series.Rejections); got != 0 {
+		t.Fatalf("series moved by a refusal without a row = %d, want none", got)
+	}
+}
+
+// The two conflicts of idempotency wrote no row and are duplicates, each under
+// its own reason; neither is a rejection.
+func TestRefuse_countsTheTwoConflictsOfIdempotencyAsDuplicates(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		code   wager.FailureCode
+		reason string
+	}{
+		{code: wager.IdempotencyConflict, reason: "key_conflict"},
+		{code: wager.DuplicateExternalTransaction, reason: "external_duplicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.reason+" is counted", func(t *testing.T) {
+			reporter, series := reporterCounting()
+			reporter.Refuse(httptest.NewRecorder(), requestOf(t), fmt.Errorf("submit wager: %w", wager.NewRejection(tc.code, nil)))
+			if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", tc.reason)); got != 1 {
+				t.Fatalf("duplicates{http,%s} = %v, want 1", tc.reason, got)
+			}
+			if got := testutil.CollectAndCount(series.Rejections); got != 0 {
+				t.Fatalf("rejection series moved by %s = %d, want none", tc.code, got)
+			}
+		})
+	}
+}
+
+// A retry is counted by the reason read off the chain, for both classes that
+// share the number 503: the retryable answer and the outage.
+func TestRefuse_countsARetryByTheReasonOffTheChain(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{name: "a write that missed the lock", err: fmt.Errorf("submit wager: %w", storage.ErrLostWrite), reason: "version_conflict"},
+		{name: "an outcome in flight", err: fmt.Errorf("submit wager: %w", submitwager.ErrOutcomeInFlight), reason: "outcome_in_flight"},
+		{name: "a race nobody resolved", err: fmt.Errorf("submit wager: %w", submitwager.ErrRaceUnresolved), reason: "race_unresolved"},
+		{name: "a database that is out", err: fault.Wrap("acquire connection", errors.New("connection refused")), reason: "transient"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reporter, series := reporterCounting()
+			reporter.Refuse(httptest.NewRecorder(), requestOf(t), tc.err)
+			if got := testutil.ToFloat64(series.Retries.WithLabelValues("http", tc.reason)); got != 1 {
+				t.Fatalf("retries{http,%s} = %v, want 1", tc.reason, got)
+			}
+		})
+	}
+}
+
+// What is neither a rule, a duplicate nor a retry moves nothing: invalid input
+// and a defect are answered and logged, and no series is about them.
+func TestRefuse_movesNoSeriesForInvalidInputOrADefect(t *testing.T) {
+	t.Parallel()
+	for _, err := range []error{
+		fmt.Errorf("wagerapi: %w", problem.ErrInvalidInput),
+		errors.New("submitwager: kind is not settled by this use case"),
+	} {
+		reporter, series := reporterCounting()
+		reporter.Refuse(httptest.NewRecorder(), requestOf(t), err)
+		moved := testutil.CollectAndCount(series.Retries) + testutil.CollectAndCount(series.Duplicates) +
+			testutil.CollectAndCount(series.Settlements) + testutil.CollectAndCount(series.Rejections)
+		if moved != 0 {
+			t.Fatalf("series moved by %v = %d, want none", err, moved)
+		}
 	}
 }
