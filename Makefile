@@ -19,6 +19,10 @@ KC_BOOTSTRAP_ADMIN_USERNAME ?= admin
 KC_BOOTSTRAP_ADMIN_PASSWORD ?= admin
 GF_SECURITY_ADMIN_USER ?= admin
 GF_SECURITY_ADMIN_PASSWORD ?= admin
+# O número de réplicas do `up`, com o mesmo padrão do Compose: o `WAGER_REPLICAS`
+# do `.env`, ou três.
+WAGER_REPLICAS ?= 3
+REPLICAS ?= $(WAGER_REPLICAS)
 
 # Dentro da rede do Compose o host do banco é o nome do serviço; no host é
 # localhost. O `go test` roda no host, o `migrate` roda na rede.
@@ -48,8 +52,13 @@ WRITE_PROBE := BEGIN; SET ROLE wager_app; \
 help: ## lista os alvos
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -e 's/:.*## /|/' | awk -F'|' '{printf "%-24s %s\n", $$1, $$2}'
 
-up: ## sobe a stack inteira e espera cada serviço ficar saudável
-	docker compose up -d --build --wait
+# O Compose recusa só parte dos números inválidos, e sem nomear a variável: o
+# `--scale` com zero derruba as réplicas, e com -1 entra em pânico. Por isso o
+# número é conferido aqui, antes de qualquer passo.
+up: ## sobe a stack com REPLICAS réplicas do processo, três por padrão, e espera cada serviço ficar saudável
+	@case '$(REPLICAS)' in ''|*[!0-9]*) echo "REPLICAS must be an integer of at least 1, got '$(REPLICAS)'" >&2; exit 2;; esac; \
+	if [ '$(REPLICAS)' -lt 1 ]; then echo "REPLICAS must be an integer of at least 1, got '$(REPLICAS)'" >&2; exit 2; fi
+	docker compose up -d --build --wait --scale wager=$(REPLICAS)
 
 down: ## derruba a stack e descarta os volumes dela, voltando ao estado limpo
 	docker compose down -v
