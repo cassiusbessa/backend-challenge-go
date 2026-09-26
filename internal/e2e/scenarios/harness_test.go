@@ -18,6 +18,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -224,6 +225,15 @@ func (in *instance) stop(ctx context.Context, t *testing.T) {
 	}
 }
 
+// stop takes every instance of the fleet down, which is the whole process going
+// away: nothing any of them held in memory survives it.
+func (f fleet) stop(ctx context.Context, t *testing.T) {
+	t.Helper()
+	for _, each := range f {
+		each.stop(ctx, t)
+	}
+}
+
 // tally sums the samples of the family whose labels include the ones given. A
 // sample carries more labels than a case asks about, and each instance counts
 // only what it decided itself.
@@ -250,6 +260,21 @@ func includes(labels, match map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// front puts a proxy with those faculties between the broker at target and the
+// instances a case points at it, for the length of the case, and answers the
+// proxy and its address.
+func front(t *testing.T, target string, faculties Faculties) (*Proxy, string) {
+	t.Helper()
+	broker, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("url.Parse of the broker = %v, want nil", err)
+	}
+	proxy := NewProxy(broker, faculties)
+	server := httptest.NewServer(proxy)
+	t.Cleanup(server.Close)
+	return proxy, server.URL
 }
 
 // request is one call to an instance. The key travels in the header, which is
@@ -282,6 +307,14 @@ type outcome struct {
 type rejection struct {
 	FailureCode      string `json:"failureCode"`
 	IdempotentReplay bool   `json:"idempotentReplay"`
+}
+
+// reconciliation is what the reconciliation of a wallet answers, in the fields a
+// case asks about.
+type reconciliation struct {
+	StoredBalance externalMoney `json:"storedBalance"`
+	LedgerBalance externalMoney `json:"ledgerBalance"`
+	Consistent    bool          `json:"consistent"`
 }
 
 // externalMoney is money as the client reads it: two strings, never a number.
@@ -505,6 +538,14 @@ func (o owner) of(kind, amount string, changes map[string]any) operation {
 	}
 	maps.Copy(op, changes)
 	return op
+}
+
+// with is a copy of the operation with the given fields replaced, which is how a
+// case asks for the same operation with another body.
+func (op operation) with(changes map[string]any) operation {
+	out := maps.Clone(op)
+	maps.Copy(out, changes)
+	return out
 }
 
 func (op operation) body() string {
