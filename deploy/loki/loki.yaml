@@ -4,11 +4,11 @@ server:
   http_listen_port: 3100
 
 common:
-  path_prefix: /tmp/loki
+  path_prefix: /loki
   storage:
     filesystem:
-      chunks_directory: /tmp/loki/chunks
-      rules_directory: /tmp/loki/rules
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
   replication_factor: 1
   ring:
     kvstore:
@@ -24,5 +24,15 @@ schema_config:
         prefix: index_
         period: 24h
 
+# O teto de retenção, e o compactor que o aplica. O volume nomeado do Compose faz
+# o log sobreviver ao reinício; sem teto isso só troca "perco tudo a cada
+# reinício" por "o volume cresce até o disco acabar". Três dias cobrem olhar na
+# segunda para uma execução da sexta, que é o horizonte de um ambiente local.
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
 limits_config:
   allow_structured_metadata: true
+  retention_period: 72h

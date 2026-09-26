@@ -7,6 +7,13 @@ networks:
 volumes:
   postgres: {}
   tools: {}
+  # Trace, log e métrica sobrevivem ao reinício do serviço que os guarda. O teto
+  # de retenção de cada um nasce junto, no arquivo de configuração versionado do
+  # backend — o do Prometheus no `command:` dele, porque é flag e não arquivo.
+  # `docker compose down -v` continua sendo o caminho de volta ao estado limpo.
+  tempo: {}
+  loki: {}
+  prometheus: {}
 
 services:
   postgres:
@@ -72,6 +79,7 @@ services:
       - "3200:3200"
     volumes:
       - ./deploy/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo:/var/tempo
       - tools:/tools:ro
     networks:
       - junglegaming
@@ -92,6 +100,10 @@ services:
       - "3100:3100"
     volumes:
       - ./deploy/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      # `/loki` é o diretório de dados da própria imagem, e o dono dele é o
+      # usuário que o processo usa: um volume nomeado montado aqui nasce
+      # gravável, o que não vale para um caminho que a imagem não traz.
+      - loki:/loki
       - tools:/tools:ro
     networks:
       - junglegaming
@@ -175,10 +187,15 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.enable-lifecycle"
       - "--enable-feature=exemplar-storage"
+      # O teto de retenção da métrica. Três dias, o mesmo horizonte declarado nos
+      # arquivos do Tempo e do Loki.
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=72h"
     ports:
       - "9095:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus:/prometheus
     networks:
       - junglegaming
     depends_on:
@@ -226,7 +243,7 @@ services:
       dockerfile: Dockerfile
     environment:
       HTTP_ADDR: ":8090"
-      DATABASE_URL: postgres://junglegaming:junglegaming@postgres:5432/junglegaming?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-junglegaming}:${POSTGRES_PASSWORD:-junglegaming}@postgres:5432/${POSTGRES_DB:-junglegaming}?sslmode=disable
       SQS_ENDPOINT: http://localstack:4566
       SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
       SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
@@ -250,6 +267,14 @@ services:
     networks:
       - junglegaming
     stop_grace_period: 30s
+    # A saúde do processo é a própria rota de liveness dele, e não o fato de o
+    # container estar de pé: a porta abre depois do mapa de clientes e do pool.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8090/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -258,4 +283,8 @@ services:
       localstack:
         condition: service_healthy
       otel-collector:
+        condition: service_healthy
+      # Sem o IdP, o processo sobe e recusa todo token: o JWKS não responde, e a
+      # borda não tem como distinguir credencial inválida de emissor ausente.
+      keycloak:
         condition: service_healthy

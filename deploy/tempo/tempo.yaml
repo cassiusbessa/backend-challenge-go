@@ -17,3 +17,11 @@ storage:
       path: /var/tempo/traces
     wal:
       path: /var/tempo/wal
+
+# O teto de retenção. O volume nomeado do Compose faz o trace sobreviver ao
+# reinício; sem teto isso só troca "perco tudo a cada reinício" por "o volume
+# cresce até o disco acabar". Três dias cobrem olhar na segunda para uma
+# execução da sexta, que é o horizonte de um ambiente local.
+compactor:
+  compaction:
+    block_retention: 72h

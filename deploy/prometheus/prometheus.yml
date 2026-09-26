@@ -1,3 +1,7 @@
+# O teto de retenção não cabe aqui: o Prometheus o recebe como flag, e ele está
+# declarado no `command:` do serviço no `compose.yaml`, ao lado do volume nomeado
+# que faz a métrica sobreviver ao reinício.
+
 global:
   scrape_interval: 5s
 
