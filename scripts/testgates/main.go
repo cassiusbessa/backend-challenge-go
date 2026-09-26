@@ -31,7 +31,7 @@ func main() {
 
 func scanTests(root string) []string {
 	var out []string
-	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			if d != nil && (d.Name() == ".git" || d.Name() == "vendor" || d.Name() == "testgates") {
 				return filepath.SkipDir
@@ -63,6 +63,11 @@ func scanTests(root string) []string {
 		}
 		return nil
 	})
+	// A walk that stopped early has not seen every test file, and an incomplete
+	// scan must not read as a clean one.
+	if walkErr != nil {
+		out = append(out, fmt.Sprintf("%s: walk: %v", root, walkErr))
+	}
 	return out
 }
 
@@ -179,7 +184,7 @@ func isParallel(expr ast.Expr) bool {
 }
 
 func scanCover(root, profile string) []string {
-	data, err := os.ReadFile(profile)
+	data, err := os.ReadFile(profile) //nolint:gosec // the path comes from a flag the operator controls
 	if err != nil {
 		return []string{fmt.Sprintf("cover: %v", err)}
 	}
@@ -236,7 +241,12 @@ func scanCover(root, profile string) []string {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		if !hasProductionGo(full) {
+		production, err := hasProductionGo(full)
+		if err != nil {
+			out = append(out, fmt.Sprintf("%s: walk: %v", check.dir, err))
+			continue
+		}
+		if !production {
 			continue
 		}
 		out = append(out, checkFloor(check.dir, check.need, subtreeOf(byDir, check.dir))...)
@@ -269,10 +279,13 @@ func checkFloor(dir string, need float64, measured acc) []string {
 	return []string{fmt.Sprintf("%s: coverage %.1f%%, minimum %.0f%%", dir, ratio*100, need*100)}
 }
 
-func hasProductionGo(dir string) bool {
+func hasProductionGo(dir string) (bool, error) {
 	found := false
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
 			return nil
 		}
 		name := d.Name()
@@ -282,5 +295,5 @@ func hasProductionGo(dir string) bool {
 		}
 		return nil
 	})
-	return found
+	return found, err
 }
