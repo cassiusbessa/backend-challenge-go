@@ -16,6 +16,11 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
+// readBound is how long a read of a wallet held for writing is given before the
+// case calls it a wait. It is a bound, not a measurement: the read answers in
+// milliseconds when it takes no lock.
+const readBound = 5 * time.Second
+
 func TestReconcile_answersConsistentAfterThreeMovements(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
@@ -97,11 +102,12 @@ func TestReconcile_doesNotWaitForALockedWallet(t *testing.T) {
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	wallet := openFunded(ctx, t, base, internal)
 	holding := holdForUpdate(ctx, t, wallet.wallet.ID)
-	started := time.Now()
-	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the read took %s behind a locked wallet, want it answered without waiting", elapsed)
-	}
+	// The bound is the assertion: nothing releases the wallet until the rollback
+	// below, so a read that waited on the lock spends the deadline and dies instead
+	// of answering. Measuring the elapsed time would assert the load of the machine.
+	bounded, cancel := context.WithTimeout(ctx, readBound)
+	defer cancel()
+	report, status := reconcile(bounded, t, base, internal, wallet.wallet.ID)
 	assertConsistent(t, report, status, "1000.00", 1, 1)
 	if err := holding.Rollback(ctx); err != nil {
 		t.Fatalf("release the wallet = %v, want nil", err)
