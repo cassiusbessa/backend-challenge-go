@@ -83,7 +83,7 @@ func TestNew_refusesToStartWithAnUnreadableClientMap(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
-	err = New(cfg).Start(ctx)
+	err = New(cfg, owned(t, cfg)).Start(ctx)
 	if !errors.Is(err, authz.ErrUnreadableClientMap) {
 		t.Fatalf("start with no client map = %v, want %v", err, authz.ErrUnreadableClientMap)
 	}
@@ -98,7 +98,7 @@ func TestNew_refusesToStartWithAnUnreadableSenderMap(t *testing.T) {
 	cfg.SendersPath = filepath.Join(t.TempDir(), "absent.yaml")
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
-	if err := New(cfg).Start(ctx); !errors.Is(err, authz.ErrUnreadableSenderMap) {
+	if err := New(cfg, owned(t, cfg)).Start(ctx); !errors.Is(err, authz.ErrUnreadableSenderMap) {
 		t.Fatalf("start = %v, want %v", err, authz.ErrUnreadableSenderMap)
 	}
 }
@@ -110,7 +110,7 @@ func TestNew_comesUpWithTheRelayBesideTheReferenceWorker(t *testing.T) {
 	t.Parallel()
 	cfg := loaded(t)
 	got := make(chan *outboxrelay.Relay, 1)
-	application := New(cfg, fx.Invoke(func(relay *outboxrelay.Relay) { got <- relay }))
+	application := New(cfg, owned(t, cfg), fx.Invoke(func(relay *outboxrelay.Relay) { got <- relay }))
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
@@ -137,7 +137,7 @@ func TestNew_comesUpWithTheConsumerBesideTheOtherTwoBackgroundComponents(t *test
 	t.Parallel()
 	cfg := loaded(t)
 	got := make(chan *wagerqueue.Consumer, 1)
-	application := New(cfg, fx.Invoke(func(consumer *wagerqueue.Consumer) { got <- consumer }))
+	application := New(cfg, owned(t, cfg), fx.Invoke(func(consumer *wagerqueue.Consumer) { got <- consumer }))
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
@@ -163,7 +163,7 @@ func TestNew_refusesToStartWithoutTheAddressOfTheIngressQueue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
 	var missing config.MissingError
-	if err := New(cfg).Start(ctx); !errors.As(err, &missing) || missing.Key != "SQS_QUEUE_URL" {
+	if err := New(cfg, owned(t, cfg)).Start(ctx); !errors.As(err, &missing) || missing.Key != "SQS_QUEUE_URL" {
 		t.Fatalf("Start with no ingress address = %v, want MissingError on SQS_QUEUE_URL", err)
 	}
 }
@@ -178,7 +178,7 @@ func TestNew_refusesToStartWithoutTheAddressOfTheTopic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
 	defer cancel()
 	var missing config.MissingError
-	if err := New(cfg).Start(ctx); !errors.As(err, &missing) || missing.Key != "SNS_TOPIC_ARN" {
+	if err := New(cfg, owned(t, cfg)).Start(ctx); !errors.As(err, &missing) || missing.Key != "SNS_TOPIC_ARN" {
 		t.Fatalf("Start with no topic address = %v, want MissingError on SNS_TOPIC_ARN", err)
 	}
 }
@@ -531,6 +531,20 @@ func TestNewPipeline_answersAPipelineAlreadyExporting(t *testing.T) {
 	if !pipe.Exporting() {
 		t.Fatalf("pipeline straight from the provider exporting = %t, want true", pipe.Exporting())
 	}
+}
+
+// owned hands the graph a pipeline this case stops, instead of the one New
+// builds for itself. A graph that fails to build leaves no hook behind to stop
+// the exporters its construction already installed, and each one costs the test
+// binary a batch processor and a gRPC client for the rest of the run.
+func owned(t *testing.T, cfg config.Config) fx.Option {
+	t.Helper()
+	pipe, err := telemetry.Started(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("telemetry of the case = %v, want a started pipeline", err)
+	}
+	t.Cleanup(func() { _ = flushed(pipe) })
+	return fx.Replace(pipe)
 }
 
 // newRelay and newQueueReporter copy pipe.Tracer while the graph is built, so

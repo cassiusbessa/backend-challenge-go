@@ -174,6 +174,9 @@ func watched(t *testing.T) (*Pipeline, *recordingProcessor) {
 	pipe := NewPipeline(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
 	watcher := &recordingProcessor{}
 	pipe.tracer = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(watcher))
+	// installTrace leaves a live batcher and exporter in place of the watcher, and
+	// Shutdown is repeatable, so both cases can end the same way.
+	t.Cleanup(func() { _ = pipe.Shutdown(context.Background()) })
 	return pipe, watcher
 }
 
@@ -209,6 +212,7 @@ func TestStarted_answersAPipelineWithItsExportersInstalled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Started with an unreachable collector = %v, want nil", err)
 	}
+	t.Cleanup(func() { _ = pipe.Shutdown(context.Background()) })
 	if pipe.logs == nil {
 		t.Fatalf("log provider of a started pipeline = %v, want one installed", pipe.logs)
 	}
@@ -220,7 +224,7 @@ func TestExporting_answersFalseUntilTheExportersAreInstalled(t *testing.T) {
 	if pipe.Exporting() {
 		t.Fatalf("exporting straight from the constructor = %t, want false", pipe.Exporting())
 	}
-	if err := pipe.Start(context.Background()); err != nil {
+	if err := pipe.Start(t.Context()); err != nil {
 		t.Fatalf("start before asking again = %v, want nil", err)
 	}
 	t.Cleanup(func() { _ = pipe.Shutdown(context.Background()) })
