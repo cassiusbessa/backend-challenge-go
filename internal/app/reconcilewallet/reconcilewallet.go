@@ -53,7 +53,7 @@ func (d Divergence) String() string {
 // series per token be created ahead of the first verdict, and what a test of
 // exhaustiveness walks.
 func Vocabulary() []Divergence {
-	out := make([]Divergence, 0, divergenceCount-1)
+	var out []Divergence
 	for token := BalanceMismatch; token < divergenceCount; token++ {
 		out = append(out, token)
 	}

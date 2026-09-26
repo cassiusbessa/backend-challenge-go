@@ -289,6 +289,12 @@ func TestValidate_refusesABatchBelowOne(t *testing.T) {
 	if err := cfg.Validate(); !errors.As(err, &invalid) || invalid.Key != "RECONCILIATION_BATCH" {
 		t.Fatalf("Validate with a batch of zero = %v, want InvalidError on RECONCILIATION_BATCH", err)
 	}
+	// One is the smallest batch there is, and it is the boundary the refusal
+	// stops at.
+	cfg.ReconciliationBatch = 1
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate with a batch of one = %v, want nil", err)
+	}
 }
 
 func TestParsePositiveInt_answersTheDefaultOrTheValueThatWasSet(t *testing.T) {

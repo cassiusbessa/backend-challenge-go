@@ -51,7 +51,7 @@ func (s Scrape) Value(name string, labels map[string]string) (float64, bool) {
 		return 0, false
 	}
 	for _, sample := range family.GetMetric() {
-		if labelsOf(sample) == nil && len(labels) == 0 || maps.Equal(labelsOf(sample), labels) {
+		if maps.Equal(labelsOf(sample), labels) {
 			return valueOf(sample), true
 		}
 	}
