@@ -219,6 +219,8 @@ services:
       - "3000:3000"
     volumes:
       - ./deploy/grafana/provisioning/datasources/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./deploy/grafana/provisioning/dashboards/provider.yaml:/etc/grafana/provisioning/dashboards/provider.yaml:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - tools:/tools:ro
     networks:
       - junglegaming

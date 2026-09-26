@@ -1,0 +1,15 @@
+# O painel "Liquidação" é um arquivo versionado, provisionado na subida e não
+# criado à mão: o Grafana o lê de `/var/lib/grafana/dashboards`, onde o
+# `compose.yaml` monta `deploy/grafana/dashboards/`. Ele não pode ser editado
+# pela interface nem apagado, porque o arquivo é a fonte.
+apiVersion: 1
+
+providers:
+  - name: liquidacao
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

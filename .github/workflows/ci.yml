@@ -10,6 +10,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The dashboard is a hand-written file the Grafana provisions on the way
+      # up, and a file that is not JSON is a dashboard that silently never
+      # appears. It is the first thing checked, before any Go.
+      - name: dashboard is valid json
+        run: jq -e . deploy/grafana/dashboards/liquidacao.json > /dev/null
+
       # The rules are tested with the promtool of the very image the Compose
       # runs, so the version that tests is the version that evaluates. It comes
       # before any Go: a rule that stopped firing is red on its own.
