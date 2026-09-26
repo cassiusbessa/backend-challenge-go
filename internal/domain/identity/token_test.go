@@ -51,3 +51,27 @@ func TestParseToken_refusesTheAbsentIdentifier(t *testing.T) {
 		})
 	}
 }
+
+func TestParseToken_refusesTextTheDatabaseCannotStore(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+	}{
+		{name: "a byte out of UTF-8 is not text", text: "external-\xff"},
+		{name: "a lone continuation byte is not text", text: "\x80"},
+		{name: "a NUL inside the token is refused", text: "external-\x00-1"},
+		{name: "a NUL alone is refused", text: "\x00"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			parsed, err := parseToken(testCase.text)
+			if !errors.Is(err, ErrMalformedIdentifier) {
+				t.Fatalf("parseToken(%q) error = %v, want ErrMalformedIdentifier", testCase.text, err)
+			}
+			if !parsed.IsZero() {
+				t.Fatalf("malformed %q produced %q, want the zero value", testCase.text, parsed.String())
+			}
+		})
+	}
+}

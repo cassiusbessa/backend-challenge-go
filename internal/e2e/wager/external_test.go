@@ -130,6 +130,21 @@ func TestReadByExternal_refusesARequestWithNoCredential(t *testing.T) {
 	}
 }
 
+// ServeMux decodes the segment, so the URL reaches bytes a JSON body cannot:
+// PostgreSQL refuses both of these in a text column, and the border refuses
+// them first, as invalid input and not as an outage.
+func TestReadByExternal_refusesAnIdentifierTheDatabaseCannotStore(t *testing.T) {
+	ctx, at := start(t)
+	for name, external := range map[string]string{"a byte off UTF-8": "external-\xff", "a NUL": "external-\x00"} {
+		t.Run(name, func(t *testing.T) {
+			refused := readExternal(ctx, t, at, at.provider, providerClient, external)
+			if refused.status != http.StatusBadRequest {
+				t.Fatalf("read of an identifier with %s = %d, want 400: %s", name, refused.status, refused.body)
+			}
+		})
+	}
+}
+
 func readExternal(ctx context.Context, t *testing.T, at suite, bearer, provider, external string) answer {
 	t.Helper()
 	path := "/providers/" + url.PathEscape(provider) + wagerRoute + "/" + url.PathEscape(external)

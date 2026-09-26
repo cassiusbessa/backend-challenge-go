@@ -249,16 +249,22 @@ func TestDecodeTransactionID_readsTheIdentityTheURLNames(t *testing.T) {
 // identifier of the provider is kept as it arrived, so absence is its only fault.
 func TestDecodeExternal_refusesEachSegmentOutOfFormatByItsName(t *testing.T) {
 	t.Parallel()
-	for field, segments := range map[string][2]string{
-		"providerId":            {" ", "external-1"},
-		"externalTransactionId": {"provider-a", " "},
-	} {
-		t.Run(field, func(t *testing.T) {
+	cases := map[string]struct {
+		field    string
+		segments [2]string
+	}{
+		"blank provider":                {field: "providerId", segments: [2]string{" ", "external-1"}},
+		"blank external identifier":     {field: "externalTransactionId", segments: [2]string{"provider-a", " "}},
+		"external identifier off UTF-8": {field: "externalTransactionId", segments: [2]string{"provider-a", "\xff"}},
+		"external identifier with NUL":  {field: "externalTransactionId", segments: [2]string{"provider-a", "external-\x00"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := decodeExternal(externalRequest(segments[0], segments[1]))
+			_, _, err := decodeExternal(externalRequest(tc.segments[0], tc.segments[1]))
 			assertInvalidInput(t, err)
-			if got := detailOf(err); !strings.HasPrefix(got, field) {
-				t.Fatalf("detail of a blank segment = %q, want it naming %s", got, field)
+			if got := detailOf(err); !strings.HasPrefix(got, tc.field) {
+				t.Fatalf("detail of a refused segment = %q, want it naming %s", got, tc.field)
 			}
 		})
 	}
