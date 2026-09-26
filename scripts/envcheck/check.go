@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,7 +23,7 @@ type schemaState struct {
 const noSchema = "none"
 
 // parseSchemaRow reads what psql prints for the schema version in its unaligned
-// tuples-only form, which is "6|f" for version six applied cleanly. An empty
+// tuples-only form, which is "6|false" for version six applied cleanly. An empty
 // answer is a database whose version table has no row.
 func parseSchemaRow(name, raw string) (schemaState, error) {
 	trimmed := strings.TrimSpace(raw)
@@ -33,7 +34,14 @@ func parseSchemaRow(name, raw string) (schemaState, error) {
 	if len(fields) != 2 || fields[0] == "" {
 		return schemaState{}, fmt.Errorf("database %s: schema version row is %q", name, trimmed)
 	}
-	return schemaState{name: name, present: true, version: fields[0], dirty: fields[1] == "t"}, nil
+	// Concatenating the flag casts it to text, which renders `true` and `false`,
+	// not the `t` and `f` the output function of psql prints for a bare column.
+	// ParseBool takes either, so the reading holds whichever way it is asked.
+	dirty, err := strconv.ParseBool(fields[1])
+	if err != nil {
+		return schemaState{}, fmt.Errorf("database %s: schema version row carries %q for the dirty flag", name, fields[1])
+	}
+	return schemaState{name: name, present: true, version: fields[0], dirty: dirty}, nil
 }
 
 // compareSchema names every database that is missing, left dirty, or on a

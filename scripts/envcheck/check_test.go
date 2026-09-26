@@ -8,8 +8,11 @@ import (
 
 func TestParseSchemaRow_readsWhatPsqlPrintsForEachState(t *testing.T) {
 	t.Parallel()
+	// The flag arrives concatenated, so it is cast to text and reads `true` or
+	// `false`. The bare-column form is asserted below because psql prints that
+	// one whenever the flag is selected on its own.
 	t.Run("a clean version", func(t *testing.T) {
-		state, err := parseSchemaRow("junglegaming", "6|f\n")
+		state, err := parseSchemaRow("junglegaming", "6|false\n")
 		if err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
@@ -25,12 +28,35 @@ func TestParseSchemaRow_readsWhatPsqlPrintsForEachState(t *testing.T) {
 	})
 
 	t.Run("a version left dirty", func(t *testing.T) {
-		state, err := parseSchemaRow("junglegaming", "1|t")
+		state, err := parseSchemaRow("junglegaming", "6|true")
 		if err != nil {
 			t.Fatalf("parse of a dirty row: err = %v, want nil", err)
 		}
 		if !state.dirty {
-			t.Errorf("dirty on a t row = %v, want true", state.dirty)
+			t.Errorf("dirty on a true row = %v, want true", state.dirty)
+		}
+	})
+
+	t.Run("the flag as a bare column prints it", func(t *testing.T) {
+		dirty, err := parseSchemaRow("junglegaming", "6|t")
+		if err != nil {
+			t.Fatalf("parse of a t row: err = %v, want nil", err)
+		}
+		if !dirty.dirty {
+			t.Errorf("dirty on a t row = %v, want true", dirty.dirty)
+		}
+		clean, err := parseSchemaRow("junglegaming", "6|f")
+		if err != nil {
+			t.Fatalf("parse of an f row: err = %v, want nil", err)
+		}
+		if clean.dirty {
+			t.Errorf("dirty on an f row = %v, want false", clean.dirty)
+		}
+	})
+
+	t.Run("a dirty flag it cannot read", func(t *testing.T) {
+		if _, err := parseSchemaRow("junglegaming", "6|maybe"); err == nil {
+			t.Errorf("err on an unreadable dirty flag = %v, want one", err)
 		}
 	})
 
