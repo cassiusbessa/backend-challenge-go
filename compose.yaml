@@ -190,7 +190,8 @@ services:
   # não persiste, então cada subida o provisiona de novo; sobre um broker já
   # provisionado o apply termina sem mudança. Um processo de pé diante de um broker
   # sem tópico grava eventos que o relay mata na décima recusa, e por isso um apply
-  # que falha deixa o `wager` parado. A versão é a do CI, e as duas mudam juntas.
+  # que falha deixa o `wager` parado. O CI e o `make provision` rodam este mesmo
+  # serviço, então a versão do Terraform fica escrita só aqui.
   #
   # O estado e a chave ficam no diretório montado, onde o README os aponta. O
   # contêiner roda como root, e o último passo devolve ao dono do diretório os

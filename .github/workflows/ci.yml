@@ -16,6 +16,13 @@ jobs:
       - name: dashboard is valid json
         run: jq -e . deploy/grafana/dashboards/liquidacao.json > /dev/null
 
+      # The balancer is checked by the HAProxy of the very image the Compose
+      # runs. A configuration it refuses is a stack whose port 8090 never opens.
+      - name: balancer configuration
+        run: |
+          docker run --rm -v "$PWD/deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+            haproxy:3.4.5-alpine haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
       # The rules are tested with the promtool of the very image the Compose
       # runs, so the version that tests is the version that evaluates. It comes
       # before any Go: a rule that stopped firing is red on its own.
@@ -82,15 +89,11 @@ jobs:
           docker compose run --rm migrate -path=/migrations \
             -database "postgres://junglegaming:junglegaming@postgres:5432/junglegaming_test?sslmode=disable" up
 
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.13.3"
-          terraform_wrapper: false
-
+      # The same service the local bring-up runs before the replicas, with the
+      # Terraform version pinned in compose.yaml: what this step proves is the
+      # path the operator uses, and the runner needs no Terraform of its own.
       - name: provision the local broker
-        run: |
-          terraform -chdir=deploy/terraform/localstack init -input=false
-          terraform -chdir=deploy/terraform/localstack apply -auto-approve -input=false
+        run: docker compose run --rm provision
 
       # -p 1 is not a performance knob: the wallet suite shortens the access token
       # lifespan of the shared Keycloak realm to prove the border refuses an
