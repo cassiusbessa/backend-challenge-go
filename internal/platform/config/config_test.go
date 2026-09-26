@@ -297,6 +297,60 @@ func TestValidate_refusesABatchBelowOne(t *testing.T) {
 	}
 }
 
+// A duration Load would have refused is refused by Validate too: an interval
+// of zero would otherwise pass the hook and panic inside its ticker once the
+// component starts. One nanosecond is the smallest positive duration, and it is
+// the boundary the refusal stops at.
+func TestPositiveDurations_refusesEveryDurationLoadWouldHaveRefused(t *testing.T) {
+	t.Parallel()
+	fields := map[string]func(*Config) *time.Duration{
+		"SHUTDOWN_TIMEOUT":        func(c *Config) *time.Duration { return &c.ShutdownTimeout },
+		"REFERENCE_TTL":           func(c *Config) *time.Duration { return &c.ReferenceTTL },
+		"REFERENCE_INTERVAL":      func(c *Config) *time.Duration { return &c.ReferenceInterval },
+		"OUTBOX_INTERVAL":         func(c *Config) *time.Duration { return &c.OutboxInterval },
+		"OUTBOX_LEASE":            func(c *Config) *time.Duration { return &c.OutboxLease },
+		"RECONCILIATION_INTERVAL": func(c *Config) *time.Duration { return &c.ReconciliationInterval },
+	}
+	for key, field := range fields {
+		t.Run(key, func(t *testing.T) {
+			assertDurationBoundary(t, key, field)
+		})
+	}
+}
+
+// assertDurationBoundary starts from the defaults, refuses the one duration at
+// zero, and takes it at one nanosecond.
+func assertDurationBoundary(t *testing.T, key string, field func(*Config) *time.Duration) {
+	t.Helper()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load of the defaults before %s is zeroed = %v, want nil", key, err)
+	}
+	*field(&cfg) = 0
+	var invalid InvalidError
+	if err := cfg.positiveDurations(); !errors.As(err, &invalid) || invalid.Key != key {
+		t.Fatalf("positiveDurations with %s of zero = %v, want InvalidError on %s", key, err, key)
+	}
+	*field(&cfg) = time.Nanosecond
+	if err := cfg.positiveDurations(); err != nil {
+		t.Fatalf("positiveDurations with %s of one nanosecond = %v, want nil", key, err)
+	}
+}
+
+// Validate is the hook that refuses the boot, so it reads the durations too.
+func TestValidate_refusesAnIntervalOfZero(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load of the defaults before the interval is zeroed = %v, want nil", err)
+	}
+	cfg.ReconciliationInterval = 0
+	var invalid InvalidError
+	if err := cfg.Validate(); !errors.As(err, &invalid) || invalid.Key != "RECONCILIATION_INTERVAL" {
+		t.Fatalf("Validate with an interval of zero = %v, want InvalidError on RECONCILIATION_INTERVAL", err)
+	}
+}
+
 func TestParsePositiveInt_answersTheDefaultOrTheValueThatWasSet(t *testing.T) {
 	t.Parallel()
 	got, err := parsePositiveInt("RECONCILIATION_BATCH", "", 50)

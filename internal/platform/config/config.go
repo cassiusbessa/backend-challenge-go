@@ -89,6 +89,9 @@ func (c Config) Validate() error {
 	if err := ingressWindows(c.QueuePoll, c.QueueVisibility, c.QueueTimeout); err != nil {
 		return err
 	}
+	if err := c.positiveDurations(); err != nil {
+		return err
+	}
 	if c.ReconciliationBatch < 1 {
 		return InvalidError{Key: "RECONCILIATION_BATCH"}
 	}
@@ -105,6 +108,30 @@ func (c Config) Validate() error {
 		"QUEUE_SENDERS_PATH":          c.SendersPath,
 		"SQS_DLQ_URL":                 c.SQSDeadLetterURL,
 	})
+}
+
+// positiveDurations refuses a Config assembled past Load with a duration Load
+// would have refused. An interval of zero is not a refusal of the boot but a
+// panic inside the goroutine of its ticker, and a lease, a TTL or a deadline of
+// zero expires the moment it starts. The three windows of the ingress are left
+// to ingressWindows, which bounds them tighter.
+func (c Config) positiveDurations() error {
+	for _, each := range []struct {
+		key   string
+		value time.Duration
+	}{
+		{"SHUTDOWN_TIMEOUT", c.ShutdownTimeout},
+		{"REFERENCE_TTL", c.ReferenceTTL},
+		{"REFERENCE_INTERVAL", c.ReferenceInterval},
+		{"OUTBOX_INTERVAL", c.OutboxInterval},
+		{"OUTBOX_LEASE", c.OutboxLease},
+		{"RECONCILIATION_INTERVAL", c.ReconciliationInterval},
+	} {
+		if each.value <= 0 {
+			return InvalidError{Key: each.key}
+		}
+	}
+	return nil
 }
 
 func read(getenv func(string) string) map[string]string {
