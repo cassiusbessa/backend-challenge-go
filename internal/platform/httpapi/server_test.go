@@ -311,7 +311,7 @@ func listening(t *testing.T) (*Server, *http.Server, net.Listener, *bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(buf, nil))
 	server := NewServer(config.Config{HTTPAddr: "127.0.0.1:0", PPROFAddr: "127.0.0.1:0"}, http.NotFoundHandler(), logger)
 	srv := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for the fixture = %v, want nil", err)
 	}

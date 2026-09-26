@@ -23,6 +23,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/referenceworker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerqueue"
 )
@@ -508,7 +509,7 @@ func TestNew_handsTheBackgroundWorkTheTelemetryThatStartInstalls(t *testing.T) {
 	var pipe *telemetry.Pipeline
 	application := New(cfg,
 		fx.Populate(&pipe),
-		fx.Invoke(func(p *telemetry.Pipeline, _ *outboxrelay.Relay, _ *wagerqueue.Reporter) {
+		fx.Invoke(func(p *telemetry.Pipeline, _ *outboxrelay.Relay, _ *wagerqueue.Reporter, _ *referenceworker.Worker) {
 			handedOut <- p.Tracer
 			handedLog <- p.Logger
 		}),
