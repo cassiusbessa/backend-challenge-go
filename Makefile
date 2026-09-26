@@ -97,6 +97,12 @@ SCENARIO_REPEAT ?= 1
 # instâncias. A tela mostra só o que o teste relatou — o que mediu e por que
 # falhou — e o veredito; um `go test` que falha sem veredito, como um erro de
 # compilação, mostra o fim do log no lugar.
+#
+# Um `go test` cujo `-run` não casa com teste nenhum, ou com `-count=0`, sai 0
+# sem ter rodado nada; por isso o cenário só passa com o `--- PASS` do próprio
+# nome no log. O `-timeout 0` tira o limite de 10 minutos do binário inteiro,
+# que somaria todas as repetições: cada espera de um cenário já carrega o
+# `SCENARIO_DEADLINE`, e cada parada de instância o próprio teto.
 SCENARIO_LOGS := .quality/scenarios
 
 scenarios: ## os oito cenários obrigatórios, um `go test` cada, contra a stack de pé
@@ -104,9 +110,11 @@ scenarios: ## os oito cenários obrigatórios, um `go test` cada, contra a stack
 	for name in $(SCENARIOS); do \
 		log="$(SCENARIO_LOGS)/$$name.log"; \
 		echo "== $$name"; \
-		DATABASE_URL="$(SUITE_HOST_URL)" go test -v -race -count=$(SCENARIO_REPEAT) -tags=integration \
-			-run "^$${name}\$$" ./internal/e2e/scenarios/ > "$$log" 2>&1 || failed="$$failed $$name"; \
+		DATABASE_URL="$(SUITE_HOST_URL)" go test -v -race -timeout 0 -count=$(SCENARIO_REPEAT) -tags=integration \
+			-run "^$${name}\$$" ./internal/e2e/scenarios/ > "$$log" 2>&1; status=$$?; \
 		grep -E '^=== RUN .*/|^ *--- (PASS|FAIL|SKIP)|^ +[a-z_]+_test\.go:[0-9]+: ' "$$log" || tail -n 20 "$$log"; \
+		if [ $$status -ne 0 ]; then failed="$$failed $$name"; \
+		elif ! grep -q "^--- PASS: $$name " "$$log"; then echo "    no run of $$name passed"; failed="$$failed $$name"; fi; \
 	done; \
 	if [ -n "$$failed" ]; then \
 		echo "failed:"; for name in $$failed; do echo "  $$name ($(SCENARIO_LOGS)/$$name.log)"; done; \

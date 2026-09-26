@@ -479,7 +479,7 @@ Inválido é também o valor sob o qual um cenário não teria como falhar. Com 
 | `SCENARIO_RESTARTS` | `1` | estes cenários — o enunciado não fixa | inteiro ≥ 1 |
 | `SCENARIO_DEADLINE` | `2m` | estes cenários: o prazo de cada caso | duração > 0 |
 
-`make scenarios` roda os oito em sequência, cada um no próprio `go test`, contra o banco da suíte. Ele continua depois de um cenário que falhou, termina listando os que falharam e sai diferente de zero se algum falhou. Os parâmetros passam pela linha de comando ou pelo ambiente, e `SCENARIO_REPEAT` repete cada cenário — cada execução monta os próprios dados, então repetir contra a mesma stack é legítimo:
+`make scenarios` roda os oito em sequência, cada um no próprio `go test`, contra o banco da suíte. Ele continua depois de um cenário que falhou, termina listando os que falharam e sai diferente de zero se algum falhou. Um cenário que não rodou teste nenhum — um nome que não casa com o teste, ou `SCENARIO_REPEAT=0` — conta como falho, e não como aprovado. Os parâmetros passam pela linha de comando ou pelo ambiente, e `SCENARIO_REPEAT` repete cada cenário — cada execução monta os próprios dados, então repetir contra a mesma stack é legítimo:
 
 ```bash
 make scenarios
