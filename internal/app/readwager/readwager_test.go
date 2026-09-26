@@ -81,7 +81,7 @@ func TestByExternal_asksTheReadModelForTheProviderAndTheExternalIdentifier(t *te
 		t.Fatalf("ByExternal of the recorded operation = %v, want nil", err)
 	}
 	if asked.provider != provider || asked.external != external {
-		t.Fatalf("asked for %s of %s, want %s of %s", asked.external, asked.provider, external, provider)
+		t.Fatalf("asked for the external %s of %s, want %s of %s", asked.external, asked.provider, external, provider)
 	}
 	if found.ID != asked.view.ID {
 		t.Fatalf("found %s, want the %s the read model answered", found.ID, asked.view.ID)

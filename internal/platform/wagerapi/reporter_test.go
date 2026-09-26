@@ -295,6 +295,19 @@ func TestRejected_answersNoTransactionForARefusalThatWroteNoRow(t *testing.T) {
 	}
 }
 
+// The nil identity is well formed, so a refusal that wrote no row has to answer
+// nothing rather than a transaction nobody can read back.
+func TestRowOf_answersTheIdentityOnlyForARefusalThatWroteARow(t *testing.T) {
+	t.Parallel()
+	id := transactionOf(t)
+	if got := rowOf(rejectedRow(id)); got != id.String() {
+		t.Fatalf("rowOf the rejected row = %q, want %s", got, id)
+	}
+	if got := rowOf(submitwager.Result{}); got != "" {
+		t.Fatalf("rowOf a refusal that wrote no row = %q, want empty rather than the nil identity", got)
+	}
+}
+
 // replayMarker is a recorded refusal answered again, as the use case marks it:
 // the rejection stays reachable underneath, and the behaviour says it is a
 // replay. It is a type of this file because the marker of the use case keeps

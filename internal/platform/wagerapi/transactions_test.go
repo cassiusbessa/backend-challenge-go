@@ -60,20 +60,6 @@ func assertFirstCompletion(t *testing.T, answered externalTransaction) {
 	}
 }
 
-// The body is read by name, as a client following the challenge statement reads
-// it: the names are that document's, the former ones are gone, and the replay
-// marker is written even when it is false.
-func TestSubmit_answersTheNamesOfTheStatementWithTheReplayWrittenOnTheFirstCompletion(t *testing.T) {
-	t.Parallel()
-	fields := fieldsOf(t, post(t, &submitter{result: settled(t, false)}, "provider-a", submission(nil)))
-	assertFields(t, fields,
-		[]string{"transactionId", "status", "balance", "idempotentReplay"},
-		[]string{"id", "observedBalance"})
-	if got := string(fields["idempotentReplay"]); got != "false" {
-		t.Fatalf("idempotentReplay on the first completion = %s, want false written out", got)
-	}
-}
-
 // The operation that was accepted and is waiting answers a code of its own: the
 // row is durable and nothing moved, so it is neither the 201 of a completion nor
 // problem details, and there is no observed balance to answer.
@@ -266,16 +252,6 @@ func TestRead_answers200WithTheRecordedOutcome(t *testing.T) {
 	}
 }
 
-// A read is not an arrival of the operation, so it says nothing about a replay:
-// the marker is left out rather than answered false.
-func TestRead_answersTheNamesOfTheStatementWithNoReplayMarker(t *testing.T) {
-	t.Parallel()
-	recorder := get(t, &reader{view: view(t, wager.Processed, "975.00")}, "provider-a", transactionID)
-	assertFields(t, fieldsOf(t, recorder),
-		[]string{"transactionId", "providerId", "balance"},
-		[]string{"id", "observedBalance", "idempotentReplay"})
-}
-
 // The read of a transaction closed by a rule answers 200 with its token: the read
 // succeeded, and problem details is reserved for the refusal of the request.
 func TestRead_answers200WithTheTokenOfARejectedTransaction(t *testing.T) {
@@ -434,7 +410,7 @@ func TestReadByExternal_answersTheTransactionOfTheProviderOfTheToken(t *testing.
 	}
 	answered := answerOf(t, recorder)
 	if answered.TransactionID != transactionID || answered.Balance.Amount != "975.00" {
-		t.Fatalf("answered = %+v, want the recorded outcome", answered)
+		t.Fatalf("answered by external identifier = %+v, want the recorded outcome", answered)
 	}
 	assertFields(t, fieldsOf(t, recorder), []string{"providerId", "externalTransactionId"}, []string{"idempotentReplay"})
 }
@@ -818,6 +794,50 @@ func TestBalanceOf_answersNothingForABalanceThatWasNeverObserved(t *testing.T) {
 	}
 	if got.Amount() != "0.00" {
 		t.Fatalf("balance = %s, want 0.00", got.Amount())
+	}
+}
+
+// The submission is read by name, as a client following the challenge statement
+// reads it: the names are that document's, the former ones are gone, and the
+// replay marker is written even when it is false.
+func TestSettledResponse_answersTheNamesOfTheStatementWithTheReplayWrittenOnTheFirstCompletion(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	write(recorder, http.StatusCreated, settledResponse(settled(t, false)))
+	fields := fieldsOf(t, recorder)
+	assertFields(t, fields,
+		[]string{"transactionId", "status", "balance", "idempotentReplay"},
+		[]string{"id", "observedBalance"})
+	if got := string(fields["idempotentReplay"]); got != "false" {
+		t.Fatalf("idempotentReplay on the first completion = %s, want false written out", got)
+	}
+}
+
+// A read is not an arrival of the operation, so it says nothing about a replay:
+// the marker is left out rather than answered false, and the provider is there.
+func TestViewResponse_answersTheNamesOfTheStatementWithNoReplayMarker(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	write(recorder, http.StatusOK, viewResponse(view(t, wager.Processed, "975.00")))
+	assertFields(t, fieldsOf(t, recorder),
+		[]string{"transactionId", "providerId", "balance"},
+		[]string{"id", "observedBalance", "idempotentReplay"})
+}
+
+// Every answer that is not a refusal is plain JSON under the status it was given:
+// problem details is reserved for the refusal of the request.
+func TestWrite_answersJSONUnderTheStatusItWasGiven(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	write(recorder, http.StatusAccepted, viewResponse(view(t, wager.PendingReference, "")))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status written = %d, want the 202 it was given", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type written = %s, want application/json", got)
+	}
+	if got := answerOf(t, recorder).Status; got != "PENDING_REFERENCE" {
+		t.Fatalf("status of the body written = %s, want the PENDING_REFERENCE it was given", got)
 	}
 }
 

@@ -221,7 +221,7 @@ func TestSubmit_refusesTheOperationsThatCanCarryNoRow(t *testing.T) {
 			}
 			details := refused.refusal(t)
 			if details.FailureCode != tc.code {
-				t.Fatalf("failureCode = %s, want %s", details.FailureCode, tc.code)
+				t.Fatalf("failureCode of the refusal that wrote no row = %s, want %s", details.FailureCode, tc.code)
 			}
 			if details.TransactionID != "" {
 				t.Fatalf("transactionId = %s, want none: the refusal wrote no row", details.TransactionID)
