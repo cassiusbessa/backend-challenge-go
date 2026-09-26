@@ -2,7 +2,7 @@
 
 Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak, o cano de telemetria e o processo `wager`.
 
-A arquitetura está em [ARCHITECTURE.md](ARCHITECTURE.md), que é o índice: a estrutura com diagramas em `docs/`, e cada decisão de desenho — com a alternativa que rejeitou — em `docs/adr/`.
+A arquitetura está em [ARCHITECTURE.md](ARCHITECTURE.md): a visão de cima — estilo, padrões, estrutura de pastas, invariantes — com links para a estrutura detalhada em `docs/` e para cada decisão de desenho, com a alternativa que rejeitou, em `docs/adr/`.
 
 ## Pré-requisitos
 

@@ -4,6 +4,8 @@ O que está declarado em vez de apresentado como coberto. Cada item diz o que fa
 
 ## Não implementado
 
+Tudo o que não está nesta tabela está implementado e coberto pela suíte de jornada.
+
 | O quê | Estado | Nota |
 | --- | --- | --- |
 | Ledger paginado (`GET /wallets/{walletId}/ledger`) | decidido, não implementado | Cursor opaco sobre `(sequence_number, id)`; `created_at` sozinho não ordena. |
