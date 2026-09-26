@@ -485,4 +485,16 @@ make scenarios SCENARIO_INSTANCES=5 SCENARIO_SAME_BET_COPIES=200
 make scenarios SCENARIO_REPEAT=3
 ```
 
+A tela mostra, por cenário, o que ele mediu e o veredito — as instâncias que subiram, quantas chegadas cada uma decidiu, os desfechos contados, o saldo e a versão, quanto tempo cada espera levou —, e numa falha a linha que diz o que o caso esperava. O log inteiro de cada um, com o JSON de todas as instâncias, fica em `.quality/scenarios/<nome>.log`, e o resumo das falhas aponta para ele:
+
+```
+== TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce
+    samebet_test.go:29: 3 instances up: http://127.0.0.1:42231 http://127.0.0.1:43879 http://127.0.0.1:43425
+    samebet_test.go:39: sent 50 copies of one bet under one key at once
+    samebet_test.go:41: 1 settled as 01a0dee7-9a3d-… with 975.00 observed, 49 answered the replay of it
+    samebet_test.go:42: wallet: 975.00 at version 2, with one transaction under the key and one debit
+    samebet_test.go:43: arrivals each instance decided, by its own series: [17 17 16], 50 in all
+--- PASS: TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce (0.34s)
+```
+
 O passo de integração do CI roda o pacote com os padrões, dentro do `./...`. Medido na stack local, numa máquina de 16 CPUs, o pacote leva cerca de 14 s; metade disso é o cenário da interrupção, que espera os 6 s de invisibilidade separarem as duas entregas.

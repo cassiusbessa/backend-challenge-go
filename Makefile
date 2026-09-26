@@ -93,18 +93,26 @@ SCENARIOS := \
 	TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue
 SCENARIO_REPEAT ?= 1
 
+# O log inteiro de cada cenário fica neste diretório, com o JSON de todas as
+# instâncias. A tela mostra só o que o teste relatou — o que mediu e por que
+# falhou — e o veredito; um `go test` que falha sem veredito, como um erro de
+# compilação, mostra o fim do log no lugar.
+SCENARIO_LOGS := .quality/scenarios
+
 scenarios: ## os oito cenários obrigatórios, um `go test` cada, contra a stack de pé
-	@failed=""; \
+	@rm -rf $(SCENARIO_LOGS); mkdir -p $(SCENARIO_LOGS); failed=""; \
 	for name in $(SCENARIOS); do \
+		log="$(SCENARIO_LOGS)/$$name.log"; \
 		echo "== $$name"; \
-		DATABASE_URL="$(SUITE_HOST_URL)" go test -race -count=$(SCENARIO_REPEAT) -tags=integration \
-			-run "^$${name}\$$" ./internal/e2e/scenarios/ || failed="$$failed $$name"; \
+		DATABASE_URL="$(SUITE_HOST_URL)" go test -v -race -count=$(SCENARIO_REPEAT) -tags=integration \
+			-run "^$${name}\$$" ./internal/e2e/scenarios/ > "$$log" 2>&1 || failed="$$failed $$name"; \
+		grep -E '^=== RUN .*/|^ *--- (PASS|FAIL|SKIP)|^ +[a-z_]+_test\.go:[0-9]+: ' "$$log" || tail -n 20 "$$log"; \
 	done; \
 	if [ -n "$$failed" ]; then \
-		echo "failed:"; for name in $$failed; do echo "  $$name"; done; \
+		echo "failed:"; for name in $$failed; do echo "  $$name ($(SCENARIO_LOGS)/$$name.log)"; done; \
 		exit 1; \
 	fi; \
-	echo "every scenario passed"
+	echo "every scenario passed; the full log of each is in $(SCENARIO_LOGS)/"
 
 # O promtool vem da mesma imagem do Prometheus que o Compose sobe, então a
 # versão que testa é a que avalia. O diretório inteiro é montado porque o teste
