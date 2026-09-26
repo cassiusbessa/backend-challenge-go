@@ -221,6 +221,13 @@ func adminToken(o options) (string, error) {
 	if err := send(req, &body); err != nil {
 		return "", fmt.Errorf("ask the identity provider for an administrator token: %w", err)
 	}
+	// A wrong password is answered with a non-200 and is already a finding. This
+	// is the 200 whose body carries no token, which a proxy in front of the realm
+	// produces: without the guard the caller sends an empty bearer and the 401
+	// that comes back names the realm for a credential problem.
+	if body.AccessToken == "" {
+		return "", fmt.Errorf("the administrator grant was answered with no access_token")
+	}
 	return body.AccessToken, nil
 }
 

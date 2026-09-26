@@ -78,6 +78,9 @@ func declaredMigration(names []string) (string, error) {
 		if found == nil {
 			continue
 		}
+		// The capture is digits by construction, so this only answers for a version
+		// too long to fit an int. It stays because dropping it would discard the
+		// error, not because a migration is expected to reach it.
 		version, err := strconv.Atoi(found[1])
 		if err != nil {
 			return "", fmt.Errorf("read the version of migration %s: %w", filepath.Base(each), err)
