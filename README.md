@@ -2,7 +2,7 @@
 
 Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak, o cano de telemetria e o processo `wager`.
 
-As decisões de desenho — dinheiro, máquina de estados, idempotência, lock, reversões, inbox e outbox, autorização, Fx e encerramento — estão em [ARCHITECTURE.md](ARCHITECTURE.md), com o estado de implementação de cada uma.
+A arquitetura está em [ARCHITECTURE.md](ARCHITECTURE.md), que é o índice: a estrutura com diagramas em `docs/`, e cada decisão de desenho — com a alternativa que rejeitou — em `docs/adr/`.
 
 ## Pré-requisitos
 
