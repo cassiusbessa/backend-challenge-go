@@ -16,21 +16,11 @@ import (
 // configuration gave it.
 func TestCollect_answersTheThreeSeriesOfAnOpenPoolWithoutDialling(t *testing.T) {
 	t.Parallel()
-	pool := NewPool(config.Config{DatabaseURL: unreachable + "&pool_max_conns=7"})
-	if err := pool.Open(context.Background()); err != nil {
-		t.Fatalf("Open = %v, want nil", err)
-	}
-	t.Cleanup(func() { _ = pool.Close(context.Background()) })
-	reg := prometheus.NewPedanticRegistry()
-	reg.MustRegister(NewPoolStats(pool))
+	pool := openedPool(t, unreachable+"&pool_max_conns=7")
 	if got := testutil.CollectAndCount(NewPoolStats(pool)); got != 5 {
 		t.Fatalf("samples collected = %d, want the three states, the ceiling and the empty acquires", got)
 	}
-	gathered, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("Gather = %v, want nil", err)
-	}
-	values := valuesOf(gathered)
+	values := gatheredValues(t, NewPoolStats(pool))
 	if values["wager_db_pool_max_connections"] != 7 {
 		t.Fatalf("max connections = %v, want the 7 of the configuration", values["wager_db_pool_max_connections"])
 	}
@@ -59,6 +49,31 @@ func TestCollect_answersNothingWhileThePoolIsClosed(t *testing.T) {
 	if got := testutil.CollectAndCount(NewPoolStats(pool)); got != 0 {
 		t.Fatalf("samples collected of a closed pool = %d, want 0", got)
 	}
+}
+
+// openedPool opens a pool pointed at nothing, which pgxpool allows: it dials
+// on the first acquire and not before.
+func openedPool(t *testing.T, url string) *Pool {
+	t.Helper()
+	pool := NewPool(config.Config{DatabaseURL: url})
+	if err := pool.Open(context.Background()); err != nil {
+		t.Fatalf("Open = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = pool.Close(context.Background()) })
+	return pool
+}
+
+// gatheredValues registers the collector on a registry of its own and answers
+// what one gather reads off it.
+func gatheredValues(t *testing.T, collector prometheus.Collector) map[string]float64 {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(collector)
+	gathered, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather = %v, want nil", err)
+	}
+	return valuesOf(gathered)
 }
 
 // valuesOf flattens a gather into name{label=value} keys, so a case names the

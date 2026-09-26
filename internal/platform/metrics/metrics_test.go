@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
@@ -75,18 +76,27 @@ func TestNew_putsNoIdentityInALabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Gather = %v, want nil", err)
 	}
-	for _, family := range gathered {
-		for _, sample := range family.GetMetric() {
-			for _, label := range sample.GetLabel() {
-				if slices.Contains(forbiddenLabels, label.GetName()) {
-					t.Fatalf("series %s carries the label %q, want no identity in a label", family.GetName(), label.GetName())
-				}
-			}
+	for _, name := range labelNames(gathered) {
+		if slices.Contains(forbiddenLabels, name) {
+			t.Fatalf("a series carries the label %q, want no identity in a label", name)
 		}
 	}
 }
 
 var forbiddenLabels = []string{"walletId", "providerId", "transactionId", "messageId", "eventId"}
+
+// labelNames answers every label name of every sample gathered.
+func labelNames(gathered []*dto.MetricFamily) []string {
+	var names []string
+	for _, family := range gathered {
+		for _, sample := range family.GetMetric() {
+			for _, label := range sample.GetLabel() {
+				names = append(names, label.GetName())
+			}
+		}
+	}
+	return names
+}
 
 // moveEverything touches one child of every vector, so the gather lists the
 // labels of each family.
@@ -204,18 +214,14 @@ func TestRetryReason_namesTheConditionOffTheChain(t *testing.T) {
 // write no row, and the series of duplicates is where the catalog sends them.
 func TestDuplicateReason_namesOnlyTheTwoConflictsOfIdempotency(t *testing.T) {
 	t.Parallel()
-	if reason, duplicate := DuplicateReason(wager.IdempotencyConflict); !duplicate || reason != ReasonKeyConflict {
-		t.Fatalf("DuplicateReason of the key conflict = %q, %t, want key_conflict and true", reason, duplicate)
-	}
-	if reason, duplicate := DuplicateReason(wager.DuplicateExternalTransaction); !duplicate || reason != ReasonExternalDuplicate {
-		t.Fatalf("DuplicateReason of the external duplicate = %q, %t, want external_duplicate and true", reason, duplicate)
+	reasons := map[wager.FailureCode]string{
+		wager.IdempotencyConflict:          ReasonKeyConflict,
+		wager.DuplicateExternalTransaction: ReasonExternalDuplicate,
 	}
 	for _, code := range wager.Catalog() {
-		if code == wager.IdempotencyConflict || code == wager.DuplicateExternalTransaction {
-			continue
-		}
-		if reason, duplicate := DuplicateReason(code); duplicate || reason != "" {
-			t.Fatalf("DuplicateReason of %s = %q, %t, want no reason: it is a rejection", code, reason, duplicate)
+		reason, duplicate := DuplicateReason(code)
+		if want, conflict := reasons[code]; duplicate != conflict || reason != want {
+			t.Fatalf("DuplicateReason of %s = %q, %t, want %q, %t", code, reason, duplicate, want, conflict)
 		}
 	}
 }

@@ -115,46 +115,70 @@ func TestTurn_checksNoNewWalletOnceTheContextIsDone(t *testing.T) {
 	}
 }
 
-// A consistent wallet counts as checked and leaves no line; a divergent one
-// counts each token and leaves the line of the route: the wallet and the
-// tokens, never a balance.
-func TestChecked_logsOnlyTheDivergentWalletAndCountsEveryVerdict(t *testing.T) {
+// A consistent wallet counts as checked and leaves no line: there is nothing
+// to name, and a line per wallet per sweep would drown the ones that matter.
+func TestChecked_countsAConsistentWalletAndLeavesNoLine(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	moved := series()
+	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved)
+	reporter.Checked(context.Background(), reconcilewallet.Report{WalletID: wallets(t, 1)[0], Consistent: true, StoredBalance: brl(t, "1000.00")})
+	if written.Len() != 0 {
+		t.Fatalf("log of a consistent wallet = %q, want nothing", written.String())
+	}
+	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 1 {
+		t.Fatalf("wallets_checked{watch} = %v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(moved.Divergences); got != 2*len(reconcilewallet.Vocabulary()) {
+		t.Fatalf("divergence series = %d, want only the ones primed at zero", got)
+	}
+}
+
+// A divergent wallet counts each token it was found with and leaves the line
+// of the route: the wallet and the tokens, never a balance.
+func TestChecked_logsTheDivergentWalletAndCountsEveryToken(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	moved := series()
 	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved)
 	id := wallets(t, 1)[0]
-	reporter.Checked(context.Background(), reconcilewallet.Report{WalletID: id, Consistent: true, StoredBalance: brl(t, "1000.00")})
-	if written.Len() != 0 {
-		t.Fatalf("log of a consistent wallet = %q, want nothing", written.String())
-	}
 	reporter.Checked(context.Background(), reconcilewallet.Report{
 		WalletID:      id,
 		StoredBalance: brl(t, "2000.00"),
 		LedgerBalance: brl(t, "1000.00"),
 		Divergences:   []reconcilewallet.Divergence{reconcilewallet.BalanceMismatch, reconcilewallet.ChainBreak},
 	})
-	line := written.String()
-	for _, want := range []string{`"walletId":"` + id.String() + `"`, "BALANCE_MISMATCH", "CHAIN_BREAK"} {
+	assertLine(t, written.String(),
+		[]string{`"walletId":"` + id.String() + `"`, "BALANCE_MISMATCH", "CHAIN_BREAK"},
+		[]string{"2000.00", "1000.00", "storedBalance", "ledgerBalance"})
+	assertCounted(t, moved, map[string]float64{"BALANCE_MISMATCH": 1, "CHAIN_BREAK": 1, "SEQUENCE_GAP": 0})
+	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 1 {
+		t.Fatalf("wallets_checked{watch} = %v, want 1", got)
+	}
+}
+
+// assertLine pins what the line carries and what it must never carry.
+func assertLine(t *testing.T, line string, wanted, banned []string) {
+	t.Helper()
+	for _, want := range wanted {
 		if !strings.Contains(line, want) {
 			t.Fatalf("divergence line = %q, want %q in it", line, want)
 		}
 	}
-	for _, banned := range []string{"2000.00", "1000.00", "storedBalance", "ledgerBalance"} {
-		if strings.Contains(line, banned) {
-			t.Fatalf("divergence line = %q, want it without %q", line, banned)
+	for _, ban := range banned {
+		if strings.Contains(line, ban) {
+			t.Fatalf("divergence line = %q, want it without %q", line, ban)
 		}
 	}
-	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 2 {
-		t.Fatalf("wallets_checked{watch} = %v, want the 2 verdicts", got)
-	}
-	for _, token := range []string{"BALANCE_MISMATCH", "CHAIN_BREAK"} {
-		if got := testutil.ToFloat64(moved.Divergences.WithLabelValues("watch", token)); got != 1 {
-			t.Fatalf("divergences{watch,%s} = %v, want 1", token, got)
+}
+
+// assertCounted reads the divergence series of the watcher, one per token.
+func assertCounted(t *testing.T, moved *metrics.Settlement, want map[string]float64) {
+	t.Helper()
+	for token, count := range want {
+		if got := testutil.ToFloat64(moved.Divergences.WithLabelValues("watch", token)); got != count {
+			t.Fatalf("divergences{watch,%s} = %v, want %v", token, got, count)
 		}
-	}
-	if got := testutil.ToFloat64(moved.Divergences.WithLabelValues("watch", "SEQUENCE_GAP")); got != 0 {
-		t.Fatalf("divergences{watch,SEQUENCE_GAP} = %v, want 0: the verdict did not name it", got)
 	}
 }
 
@@ -271,22 +295,33 @@ type pages struct {
 func (p *pages) WalletIDsAfter(_ context.Context, after identity.WalletID, limit int) ([]identity.WalletID, error) {
 	p.pagesRead++
 	p.asked = append(p.asked, after)
-	if p.paged != nil {
-		select {
-		case p.paged <- struct{}{}:
-		default:
-		}
-	}
+	p.notify()
 	if p.failFirst != nil && p.pagesRead == 1 {
 		return nil, p.failFirst
 	}
+	return pageAfter(p.wallets, after, limit), nil
+}
+
+func (p *pages) notify() {
+	if p.paged == nil {
+		return
+	}
+	select {
+	case p.paged <- struct{}{}:
+	default:
+	}
+}
+
+// pageAfter is the predicate of the statement: the identities after the
+// cursor, in order, up to the limit.
+func pageAfter(wallets []identity.WalletID, after identity.WalletID, limit int) []identity.WalletID {
 	var page []identity.WalletID
-	for _, id := range p.wallets {
+	for _, id := range wallets {
 		if id.String() > after.String() && len(page) < limit {
 			page = append(page, id)
 		}
 	}
-	return page, nil
+	return page
 }
 
 // verdicts is the use case as the watcher sees it: what it was handed, the

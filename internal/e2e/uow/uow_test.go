@@ -104,6 +104,21 @@ func TestWithin_answersUnavailabilityWhenTheConnectionIsGone(t *testing.T) {
 // whatever else is there, and pages the whole table to find them.
 func TestWalletIDsAfter_pagesTheWalletsInTheOrderOfTheIdentity(t *testing.T) {
 	ctx, pool, unit := open(t)
+	mine := openThree(ctx, t, unit)
+	reads := postgres.NewReads(pool)
+	walked := walkWallets(ctx, t, reads, 2)
+	assertAscending(t, walked)
+	if seen := countOf(walked, mine); seen != 3 {
+		t.Fatalf("wallets of this case seen by the sweep = %d, want all 3", seen)
+	}
+	last := walked[len(walked)-1]
+	if page, err := reads.WalletIDsAfter(ctx, last, 2); err != nil || len(page) != 0 {
+		t.Fatalf("page after the last wallet = %v with %v, want an empty page and nil", page, err)
+	}
+}
+
+func openThree(ctx context.Context, t *testing.T, unit *postgres.UnitOfWork) map[identity.WalletID]bool {
+	t.Helper()
 	mine := map[identity.WalletID]bool{}
 	for range 3 {
 		opened := opening(t)
@@ -112,22 +127,17 @@ func TestWalletIDsAfter_pagesTheWalletsInTheOrderOfTheIdentity(t *testing.T) {
 		}
 		mine[opened.wallet.ID()] = true
 	}
-	reads := postgres.NewReads(pool)
-	walked := walkWallets(ctx, t, reads, 2)
-	assertAscending(t, walked)
+	return mine
+}
+
+func countOf(walked []identity.WalletID, mine map[identity.WalletID]bool) int {
 	seen := 0
 	for _, id := range walked {
 		if mine[id] {
 			seen++
 		}
 	}
-	if seen != 3 {
-		t.Fatalf("wallets of this case seen by the sweep = %d, want all 3", seen)
-	}
-	last := walked[len(walked)-1]
-	if page, err := reads.WalletIDsAfter(ctx, last, 2); err != nil || len(page) != 0 {
-		t.Fatalf("page after the last wallet = %v with %v, want an empty page and nil", page, err)
-	}
+	return seen
 }
 
 // walkWallets pages the whole table from the zero identity, two at a time, and

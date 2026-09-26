@@ -26,9 +26,7 @@ func TestSubmitCaused_recordsTheMessageInTheCommitOfTheMovement(t *testing.T) {
 	if result.Status != wager.Processed {
 		t.Fatalf("status = %s, want PROCESSED", result.Status)
 	}
-	if result.Redelivered {
-		t.Fatalf("redelivered = %t, want false on the first delivery", result.Redelivered)
-	}
+	assertRedelivered(t, result, false)
 	assertRows(t, book, 1, 1)
 	if len(book.messages) != 1 {
 		t.Fatalf("inbox rows = %d, want 1", len(book.messages))
@@ -64,9 +62,7 @@ func TestSubmitCaused_answersTheRecordedOutcomeOfARedeliveryAndAppliesNothing(t 
 	if !again.IdempotentReplay {
 		t.Fatalf("replay = %t, want true on a redelivery", again.IdempotentReplay)
 	}
-	if !again.Redelivered {
-		t.Fatalf("redelivered = %t, want true: the inbox already held the message", again.Redelivered)
-	}
+	assertRedelivered(t, again, true)
 	if again.TransactionID != first.TransactionID {
 		t.Fatalf("transaction = %s, want the one of the first delivery %s", again.TransactionID, first.TransactionID)
 	}
@@ -75,6 +71,15 @@ func TestSubmitCaused_answersTheRecordedOutcomeOfARedeliveryAndAppliesNothing(t 
 		t.Fatalf("inbox rows = %d, want the single one of the first delivery", len(book.messages))
 	}
 	assertBalance(t, book, 97500, 2)
+}
+
+// assertRedelivered reads the marker of the inbox on the result: true only when
+// the inbox already held the message that caused the arrival.
+func assertRedelivered(t *testing.T, result Result, want bool) {
+	t.Helper()
+	if result.Redelivered != want {
+		t.Fatalf("redelivered = %t, want %t", result.Redelivered, want)
+	}
 }
 
 // The same identifier with another body is not a redelivery of anything: it is
