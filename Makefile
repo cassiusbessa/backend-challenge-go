@@ -63,9 +63,10 @@ up: ## sobe a stack com REPLICAS réplicas do processo, três por padrão, e esp
 down: ## derruba a stack e descarta os volumes dela, voltando ao estado limpo
 	docker compose down -v
 
-provision: ## cria as filas, a DLQ, o tópico e o remetente IAM no broker local
-	terraform -chdir=deploy/terraform/localstack init -input=false
-	terraform -chdir=deploy/terraform/localstack apply -auto-approve -input=false
+# O mesmo serviço que o `up` roda antes das réplicas, e o que o CI roda: o
+# Terraform vem da imagem, na versão fixada no `compose.yaml`, e não do host.
+provision: ## roda de novo o apply do broker local: filas, DLQ, tópico e remetente IAM
+	docker compose run --rm provision
 
 migrate: ## aplica o schema nos dois bancos, cada um nomeado no comando
 	$(MIGRATE) "$(APP_URL)" up
