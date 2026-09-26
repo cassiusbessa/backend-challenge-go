@@ -43,7 +43,7 @@ WRITE_PROBE := BEGIN; SET ROLE wager_app; \
 	ROLLBACK
 
 .DEFAULT_GOAL := help
-.PHONY: help up down provision migrate test test-journey cover-journey mutation verify migrate-reversibility rules-test
+.PHONY: help up down provision migrate test test-journey scenarios cover-journey mutation verify migrate-reversibility rules-test
 
 help: ## lista os alvos
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -e 's/:.*## /|/' | awk -F'|' '{printf "%-24s %s\n", $$1, $$2}'
@@ -74,6 +74,37 @@ test: ## a suíte de unidade, que não sobe Docker
 
 test-journey: ## a suíte de jornada: em série, e contra o banco dela
 	DATABASE_URL="$(SUITE_HOST_URL)" go test -race -count=1 -p 1 -tags=integration ./...
+
+# Os cenários obrigatórios do enunciado, na ordem em que ele os lista, cada um no
+# próprio `go test`: é o que dá a cada cenário o próprio veredito e a própria
+# repetição, e o que deixa o alvo seguir depois de uma falha. Os parâmetros
+# `SCENARIO_*` não são declarados aqui: o make exporta para a receita o que veio
+# do ambiente ou da linha de comando, e o padrão de cada um mora no teste, num
+# lugar só. `SCENARIO_REPEAT` é o `-count` do `go test`, e não um parâmetro que o
+# teste lê.
+SCENARIOS := \
+	TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce \
+	TestRacingBets_settleAgainstTheBalanceAlreadyCommitted \
+	TestLockedWallet_doesNotHoldTheOthers \
+	TestInterruption_changesNothingWhenTheRemovalNeverReachedTheBroker \
+	TestPublishers_sendEachEventOnce \
+	TestEarlyReversal_waitsAndThenResolvesOrExpires \
+	TestRestart_keepsIdempotencyTheWaitAndTheLedger \
+	TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue
+SCENARIO_REPEAT ?= 1
+
+scenarios: ## os oito cenários obrigatórios, um `go test` cada, contra a stack de pé
+	@failed=""; \
+	for name in $(SCENARIOS); do \
+		echo "== $$name"; \
+		DATABASE_URL="$(SUITE_HOST_URL)" go test -race -count=$(SCENARIO_REPEAT) -tags=integration \
+			-run "^$${name}\$$" ./internal/e2e/scenarios/ || failed="$$failed $$name"; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo "failed:"; for name in $$failed; do echo "  $$name"; done; \
+		exit 1; \
+	fi; \
+	echo "every scenario passed"
 
 # O promtool vem da mesma imagem do Prometheus que o Compose sobe, então a
 # versão que testa é a que avalia. O diretório inteiro é montado porque o teste
