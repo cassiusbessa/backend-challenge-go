@@ -409,6 +409,16 @@ func (v *volley) answered(ctx context.Context, t *testing.T, index int) answer {
 	return v.answers[index]
 }
 
+// waiting reports whether the request of that index has not answered yet.
+func (v *volley) waiting(index int) bool {
+	select {
+	case <-v.done[index]:
+		return false
+	default:
+		return true
+	}
+}
+
 // all waits for every request and answers them in the order they were asked.
 func (v *volley) all(ctx context.Context, t *testing.T) []answer {
 	t.Helper()
@@ -423,6 +433,30 @@ func together(ctx context.Context, t *testing.T, asks []request) []answer {
 	t.Helper()
 	return release(ctx, asks).all(ctx, t)
 }
+
+// until polls the condition until it holds, and fails naming what it waited for
+// when the deadline of the case comes first.
+func until(ctx context.Context, t *testing.T, what string, holds func() bool) {
+	t.Helper()
+	ticker := time.NewTicker(pollEvery)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			t.Fatalf("waited for %s until the deadline of the case, and it did not happen", what)
+		}
+		if holds() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-ticker.C:
+		}
+	}
+}
+
+// pollEvery is how often a wait looks. It is well above the interval the
+// workers run at, and far below any deadline.
+const pollEvery = 50 * time.Millisecond
 
 // owner is a wallet a case operates on, with the player that owns it.
 type owner struct {
