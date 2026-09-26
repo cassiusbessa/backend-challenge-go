@@ -68,13 +68,13 @@ var localAWS = map[string]string{
 
 // scene is what one case runs over: its parameters, the pair of queues every
 // instance of it consumes, the configuration every instance starts from, and the
-// two tokens it speaks with.
+// two clients it speaks as.
 type scene struct {
 	params   Params
 	queues   *queues
 	env      map[string]string
-	internal string
-	provider string
+	internal *Credential
+	provider *Credential
 }
 
 // setUp reads the parameters before anything else, so an invalid one fails the
@@ -97,9 +97,20 @@ func setUp(t *testing.T) (context.Context, *scene) {
 		params:   params,
 		queues:   pair,
 		env:      caseEnv(t, pair),
-		internal: tokenFor(ctx, t, internalClient, internalSecret),
-		provider: tokenFor(ctx, t, providerClient, providerSecret),
+		internal: speakAs(ctx, t, internalClient, internalSecret),
+		provider: speakAs(ctx, t, providerClient, providerSecret),
 	}
+}
+
+// speakAs is the credential of that client, with a first token already asked
+// for, so a realm that is not imported fails the case before any instance is up.
+func speakAs(ctx context.Context, t *testing.T, clientID, secret string) *Credential {
+	t.Helper()
+	credential := NewCredential(issuer()+"/protocol/openid-connect/token", clientID, secret, time.Now)
+	if _, err := credential.Token(ctx); err != nil {
+		t.Fatalf("token of %s = %v, want nil", clientID, err)
+	}
+	return credential
 }
 
 // caseEnv is the configuration every instance of a case starts from.
@@ -298,11 +309,13 @@ func front(t *testing.T, target string, faculties Faculties) (*Proxy, string) {
 }
 
 // request is one call to an instance. The key travels in the header, which is
-// where the contract puts it over HTTP.
+// where the contract puts it over HTTP, and the token is taken from the
+// credential when the request leaves, so a request sent again carries one
+// still valid.
 type request struct {
 	method  string
 	url     string
-	bearer  string
+	bearer  *Credential
 	payload string
 	key     string
 }
@@ -382,7 +395,9 @@ func exchange(ctx context.Context, ask request) (answer, error) {
 	if err != nil {
 		return answer{}, fmt.Errorf("build %s: %w", ask.url, err)
 	}
-	ask.headers(req.Header)
+	if err := ask.headers(ctx, req.Header); err != nil {
+		return answer{}, fmt.Errorf("authorize %s: %w", ask.url, err)
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return answer{}, fmt.Errorf("call %s: %w", ask.url, err)
@@ -397,16 +412,22 @@ func exchange(ctx context.Context, ask request) (answer, error) {
 
 // headers sets what the request carries besides its body. A field left empty is
 // a header the request goes without, which is how a case leaves one out.
-func (ask request) headers(into http.Header) {
+func (ask request) headers(ctx context.Context, into http.Header) error {
 	if ask.payload != "" {
 		into.Set("Content-Type", "application/json")
-	}
-	if ask.bearer != "" {
-		into.Set("Authorization", "Bearer "+ask.bearer)
 	}
 	if ask.key != "" {
 		into.Set("Idempotency-Key", ask.key)
 	}
+	if ask.bearer == nil {
+		return nil
+	}
+	token, err := ask.bearer.Token(ctx)
+	if err != nil {
+		return err
+	}
+	into.Set("Authorization", "Bearer "+token)
+	return nil
 }
 
 func call(ctx context.Context, t *testing.T, ask request) answer {
@@ -606,37 +627,6 @@ func (s *scene) submit(ctx context.Context, t *testing.T, at *instance, key stri
 // newKey is an idempotency key no other arrival has used.
 func newKey() string {
 	return "key-" + suiteenv.NewID()
-}
-
-// tokenFor asks the IdP for a client_credentials token. The service never mints
-// one: whoever issues is the IdP.
-func tokenFor(ctx context.Context, t *testing.T, clientID, secret string) string {
-	t.Helper()
-	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {secret},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer()+"/protocol/openid-connect/token", strings.NewReader(form.Encode()))
-	if err != nil {
-		t.Fatalf("token request = %v, want nil", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("token call = %v, want nil", err)
-	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("token status = %d, want 200: the case needs the realm imported", res.StatusCode)
-	}
-	var issued struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&issued); err != nil {
-		t.Fatalf("decode the token = %v, want nil", err)
-	}
-	return issued.AccessToken
 }
 
 func issuer() string {

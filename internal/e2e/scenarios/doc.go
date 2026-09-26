@@ -3,7 +3,7 @@
 // of the process against the real stack. The scenarios build only under the
 // integration tag.
 //
-// The reader of the parameters and the proxy in front of the broker carry no
-// tag: neither needs the stack, so the unit suite proves both, and the scenarios
-// only use them.
+// The reader of the parameters, the proxy in front of the broker and the
+// credential that renews the token of a client carry no tag: none needs the
+// stack, so the unit suite proves them, and the scenarios only use them.
 package scenarios
