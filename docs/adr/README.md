@@ -4,7 +4,7 @@ Um arquivo por decisão, no formato [MADR](https://adr.github.io/madr/) mínimo 
 
 O que entra aqui é a decisão que teve **alternativa**: o que foi considerado, o que foi escolhido e o que se paga por isso. A estrutura do sistema está em [`docs/`](../); a divisão inteira está em [`ARCHITECTURE.md`](../../ARCHITECTURE.md).
 
-As vinte primeiras foram registradas em 2026-09-26, extraídas do que o `ARCHITECTURE.md` e os comentários do código já diziam em prosa. A data de cada uma é a do registro, não a da escolha.
+As vinte primeiras foram registradas em 2026-09-26, extraídas do que o `ARCHITECTURE.md` e os comentários do código já diziam em prosa. A data de cada uma é a do registro, não a da escolha. Da 0021 em diante, cada uma nasce no mesmo recorte do código que explica.
 
 ## Índice
 
@@ -31,3 +31,5 @@ As vinte primeiras foram registradas em 2026-09-26, extraídas do que o `ARCHITE
 | [0019](0019-mapa-de-remetentes-pela-identidade-observada.md) | Mapa de remetentes pela identidade observada | O nome do principal IAM não chega ao consumidor; o valor é opaco e comparado por igualdade. |
 | [0020](0020-jwks-separado-do-issuer.md) | JWKS separado do issuer | Sem descoberta OIDC na subida, para o IdP não entrar no caminho de boot. |
 | [0021](0021-telemetria-iniciada-no-construtor-antes-dos-hooks.md) | Telemetria iniciada no construtor dela | Todo construtor roda antes de todo hook; um start em hook entregava provider que ele substituía. |
+| [0022](0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md) | Reconciliação em uma sentença, com o veredito no caso de uso | Uma `SELECT` é o snapshot e não espera lock; o SQL devolve números e `reconcilewallet` nomeia o desvio. |
+| [0023](0023-cursor-opaco-amarrado-a-carteira.md) | Cursor opaco amarrado à carteira | O cursor de A apresentado em B é recusado como malformado; assinar não compra nada, posição nua responde errado em silêncio. |
