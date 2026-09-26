@@ -79,6 +79,10 @@ func TestParseStatus_readsTheStatusBack(t *testing.T) {
 	if !unknown.IsZero() {
 		t.Fatalf("a refused status produced %s, want the zero value", unknown)
 	}
+}
+
+func TestParseStatus_refusesTheEmptyToken(t *testing.T) {
+	t.Parallel()
 	empty, err := ParseStatus("")
 	if !errors.Is(err, ErrUnknownStatus) {
 		t.Fatalf("the empty token error = %v, want ErrUnknownStatus", err)

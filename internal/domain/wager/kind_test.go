@@ -44,6 +44,10 @@ func TestParseKind_readsTheKindBack(t *testing.T) {
 	if !unknown.IsZero() {
 		t.Fatalf("a refused kind produced %s, want the zero value", unknown)
 	}
+}
+
+func TestParseKind_refusesTheEmptyToken(t *testing.T) {
+	t.Parallel()
 	empty, err := ParseKind("")
 	if !errors.Is(err, ErrUnknownKind) {
 		t.Fatalf("the empty token error = %v, want ErrUnknownKind", err)
