@@ -148,7 +148,7 @@ func TestLoadedRules_readsEveryRuleOfEveryGroup(t *testing.T) {
 		{"name":"other","rules":[{"name":"job:up","type":"recording"}]}]}}`)
 	got, err := loadedRules(options{prometheus: prometheus, timeout: 5 * time.Second})
 	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
+		t.Fatalf("loadedRules err = %v, want nil", err)
 	}
 	if strings.Join(got, ",") != "ReconciliationDivergenceFound,OutboxOldestPendingTooOld,job:up" {
 		t.Errorf("rules = %v, want the three in the order of the answer", got)
@@ -159,6 +159,38 @@ func TestLoadedRules_answersTheFailureOfAPrometheusThatIsNotThere(t *testing.T) 
 	t.Parallel()
 	if _, err := loadedRules(options{prometheus: "http://127.0.0.1:1", timeout: time.Second}); err == nil {
 		t.Errorf("err of a Prometheus nothing answers on = %v, want one", err)
+	}
+}
+
+// getJSON sends the bearer only when there is one: the realm asks for it, and the
+// Prometheus takes no credential, where an empty bearer would be a header
+// carrying nothing.
+func TestGetJSON_sendsTheBearerOnlyWhenThereIsAToken(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{name: "no token sends no header", token: "", want: ""},
+		{name: "a token is sent as the bearer", token: "a-token", want: "Bearer a-token"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			heard := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				heard <- r.Header.Get("Authorization")
+				fmt.Fprint(w, `{}`)
+			}))
+			t.Cleanup(server.Close)
+			var body struct{}
+			if err := getJSON(options{timeout: 5 * time.Second}, server.URL, tc.token, &body); err != nil {
+				t.Fatalf("getJSON err = %v, want nil", err)
+			}
+			if got := <-heard; got != tc.want {
+				t.Errorf("Authorization = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
