@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,43 +43,55 @@ type options struct {
 	prometheus  string
 	rulesFile   string
 	timeout     time.Duration
+
+	// commands stands in for the processes run asks the environment through. It
+	// is nil outside the tests, which is the real process.
+	commands func(args []string) (stdout, stderr string, err error)
 }
 
 func main() {
-	opts := readFlags()
-	findings := inspect(opts)
-	for _, each := range findings {
-		fmt.Fprintln(os.Stderr, each)
-	}
-	if len(findings) > 0 {
-		os.Exit(1)
-	}
-	fmt.Println("environment matches the versioned files")
+	os.Exit(report(inspect(readFlags(os.Args[1:])), os.Stdout, os.Stderr))
 }
 
-func readFlags() options {
+// report prints every finding, or that there is none, and answers the exit code:
+// one when the environment diverged, which is what make verify stops on.
+func report(findings []string, stdout, stderr io.Writer) int {
+	for _, each := range findings {
+		fmt.Fprintln(stderr, each)
+	}
+	if len(findings) > 0 {
+		return 1
+	}
+	fmt.Fprintln(stdout, "environment matches the versioned files")
+	return 0
+}
+
+// readFlags reads the arguments into the options, exiting on one it cannot read
+// the way the flag package does for a command.
+func readFlags(args []string) options {
 	var opts options
-	flag.StringVar(&opts.root, "root", ".", "repository root")
-	flag.StringVar(&opts.user, "postgres-user", "junglegaming", "role that connects to PostgreSQL")
-	flag.StringVar(&opts.app, "app-db", "junglegaming", "database the application uses")
-	flag.StringVar(&opts.suite, "suite-db", "junglegaming_test", "database the journey suite uses")
-	flag.StringVar(&opts.idp, "idp", "http://localhost:8080", "base address of the identity provider")
-	flag.StringVar(&opts.realm, "realm", "junglegaming", "realm that issues the tokens")
-	flag.StringVar(&opts.realmFile, "realm-file", "deploy/keycloak/junglegaming-realm.json", "versioned realm, relative to root")
-	flag.StringVar(&opts.adminUser, "admin-user", "admin", "bootstrap administrator of the identity provider")
-	flag.StringVar(&opts.adminPass, "admin-password", "admin", "password of that administrator")
-	flag.StringVar(&opts.migrations, "migrations", "deploy/migrations", "versioned migrations, relative to root")
-	flag.StringVar(&opts.terraform, "terraform", "deploy/terraform/localstack", "versioned provisioning, relative to root")
-	flag.StringVar(&opts.service, "service", "wager", "Compose service that runs the application")
-	flag.StringVar(&opts.dockerfile, "dockerfile", "Dockerfile", "versioned image recipe, relative to root")
-	flag.StringVar(&opts.grafana, "grafana", "http://localhost:3000", "base address of the Grafana")
-	flag.StringVar(&opts.grafanaUser, "grafana-user", "admin", "administrator of the Grafana")
-	flag.StringVar(&opts.grafanaPass, "grafana-password", "admin", "password of that administrator")
-	flag.StringVar(&opts.dashboard, "dashboard", "Liquidação", "title of the provisioned dashboard")
-	flag.StringVar(&opts.prometheus, "prometheus", "http://localhost:9095", "base address of the Prometheus")
-	flag.StringVar(&opts.rulesFile, "rules-file", "deploy/prometheus/rules/settlement.yml", "versioned alert rules, relative to root")
-	flag.DurationVar(&opts.timeout, "timeout", 30*time.Second, "deadline of each command")
-	flag.Parse()
+	set := flag.NewFlagSet("envcheck", flag.ExitOnError)
+	set.StringVar(&opts.root, "root", ".", "repository root")
+	set.StringVar(&opts.user, "postgres-user", "junglegaming", "role that connects to PostgreSQL")
+	set.StringVar(&opts.app, "app-db", "junglegaming", "database the application uses")
+	set.StringVar(&opts.suite, "suite-db", "junglegaming_test", "database the journey suite uses")
+	set.StringVar(&opts.idp, "idp", "http://localhost:8080", "base address of the identity provider")
+	set.StringVar(&opts.realm, "realm", "junglegaming", "realm that issues the tokens")
+	set.StringVar(&opts.realmFile, "realm-file", "deploy/keycloak/junglegaming-realm.json", "versioned realm, relative to root")
+	set.StringVar(&opts.adminUser, "admin-user", "admin", "bootstrap administrator of the identity provider")
+	set.StringVar(&opts.adminPass, "admin-password", "admin", "password of that administrator")
+	set.StringVar(&opts.migrations, "migrations", "deploy/migrations", "versioned migrations, relative to root")
+	set.StringVar(&opts.terraform, "terraform", "deploy/terraform/localstack", "versioned provisioning, relative to root")
+	set.StringVar(&opts.service, "service", "wager", "Compose service that runs the application")
+	set.StringVar(&opts.dockerfile, "dockerfile", "Dockerfile", "versioned image recipe, relative to root")
+	set.StringVar(&opts.grafana, "grafana", "http://localhost:3000", "base address of the Grafana")
+	set.StringVar(&opts.grafanaUser, "grafana-user", "admin", "administrator of the Grafana")
+	set.StringVar(&opts.grafanaPass, "grafana-password", "admin", "password of that administrator")
+	set.StringVar(&opts.dashboard, "dashboard", "Liquidação", "title of the provisioned dashboard")
+	set.StringVar(&opts.prometheus, "prometheus", "http://localhost:9095", "base address of the Prometheus")
+	set.StringVar(&opts.rulesFile, "rules-file", "deploy/prometheus/rules/settlement.yml", "versioned alert rules, relative to root")
+	set.DurationVar(&opts.timeout, "timeout", 30*time.Second, "deadline of each command")
+	_ = set.Parse(args) // ExitOnError: a flag it cannot read has already ended the process
 	return opts
 }
 
@@ -508,6 +521,19 @@ func commitTime(o options, paths []string) (time.Time, error) {
 // output. Every question the verifier asks of the environment goes through here,
 // so a service that is not up produces a finding instead of a panic.
 func run(o options, args ...string) (string, error) {
+	stdout, stderr, err := o.execute(args)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w: %s", strings.Join(args, " "), err, firstLine(stderr))
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+// execute runs one command from the repository root under the deadline of each
+// command, or hands it to the stand-in of a case.
+func (o options) execute(args []string) (string, string, error) {
+	if o.commands != nil {
+		return o.commands(args)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
 	defer cancel()
 	// Every command here is a literal of this file; what varies is a database name
@@ -517,8 +543,6 @@ func run(o options, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s: %w: %s", strings.Join(args, " "), err, firstLine(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
 }
