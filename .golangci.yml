@@ -45,6 +45,19 @@ linters:
         text: "^G101:"
         path: (_test\.go|internal/suiteenv/)
 
+      # Os tetos de gocognit e gocyclo vêm de `go-object-calisthenics` e do domínio
+      # financeiro, onde a invariante mora dentro da função. As ferramentas de
+      # `scripts/` são de um arquivo cada, e suas funções são varredores lineares:
+      # um `for` sobre a árvore com uma condição por regra que elas conferem.
+      # Extrair helper por condição ali esconderia a lista de regras, que é o que
+      # se lê nessas funções. Todo linter de correção continua valendo nelas — foi
+      # `errcheck` e `nilerr` que acharam os dois defeitos que `testgates` carregava
+      # desde que nasceu, na primeira vez que o CI o lintou.
+      - linters:
+          - gocognit
+          - gocyclo
+        path: ^scripts/
+
 formatters:
   enable:
     - gofmt
