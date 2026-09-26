@@ -234,6 +234,10 @@ func (r *rows) DueWaits(context.Context, time.Time, int) ([]storage.WaitCandidat
 	return nil, nil
 }
 
+func (r *rows) OldestWait(context.Context, time.Time) (time.Duration, error) {
+	return 0, nil
+}
+
 func summaryOf(t *testing.T, stored string, ledgerCents, count, last, firstBreak int64) storage.LedgerSummary {
 	t.Helper()
 	balance, err := money.Parse(stored, "BRL")

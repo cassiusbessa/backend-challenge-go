@@ -99,6 +99,10 @@ func (r *rows) DueWaits(context.Context, time.Time, int) ([]storage.WaitCandidat
 	return nil, nil
 }
 
+func (r *rows) OldestWait(context.Context, time.Time) (time.Duration, error) {
+	return 0, nil
+}
+
 func (r *rows) TransactionByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {
 	return wager.State{}, storage.ErrTransactionNotFound
 }

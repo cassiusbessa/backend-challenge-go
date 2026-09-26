@@ -29,6 +29,15 @@ SELECT id, wallet_id
  ORDER BY next_attempt_at
  LIMIT $2`
 
+// The instant the oldest wait entered the queue. The entry is the creation of
+// the row: a wait is recorded in the very commit that creates the transaction.
+// The partial index of the second migration covers the predicate, so the
+// terminal rows are not walked.
+const selectOldestWait = `
+SELECT min(created_at)
+  FROM wager_transactions
+ WHERE status = 'PENDING_REFERENCE'`
+
 // Reads answers read models from the pool. A read opens no transaction and
 // writes nothing. The zero value is not used: NewReads is the only constructor.
 type Reads struct {
@@ -106,6 +115,30 @@ func (r *Reads) DueWaits(ctx context.Context, now time.Time, limit int) ([]stora
 	}
 	defer rows.Close()
 	return scanCandidates(rows)
+}
+
+// OldestWait answers the age of the oldest wait at that instant, and zero when
+// nothing is waiting.
+func (r *Reads) OldestWait(ctx context.Context, now time.Time) (time.Duration, error) {
+	pool, err := r.source.Querier()
+	if err != nil {
+		return 0, wrap("acquire pool", err)
+	}
+	var oldest *time.Time
+	if err := pool.QueryRow(ctx, selectOldestWait).Scan(&oldest); err != nil {
+		return 0, wrap("read the oldest reference wait", err)
+	}
+	return ageOf(now, oldest), nil
+}
+
+// ageOf answers how long the oldest wait has been waiting, and zero when there
+// is none. An entry stamped after the instant asked about — two clocks that
+// disagree — reads as no age rather than a negative one.
+func ageOf(now time.Time, oldest *time.Time) time.Duration {
+	if oldest == nil {
+		return 0
+	}
+	return max(now.Sub(*oldest), 0)
 }
 
 func scanCandidates(rows pgx.Rows) ([]storage.WaitCandidate, error) {

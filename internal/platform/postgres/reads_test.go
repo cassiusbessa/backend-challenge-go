@@ -250,3 +250,31 @@ func (r *stubRows) Close() {}
 func scanStamp() time.Time {
 	return time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
 }
+
+func TestOldestWait_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
+	t.Parallel()
+	reads := NewReads(NewPool(config.Config{DatabaseURL: unreachable}))
+	_, err := reads.OldestWait(context.Background(), time.Now())
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("OldestWait = %v, want %v", err, ErrPoolClosed)
+	}
+}
+
+// Nothing waiting is an age of zero, and a wait is measured from its entry. An
+// entry stamped after the instant asked about reads as no age rather than a
+// negative one.
+func TestAgeOf_measuresTheWaitFromItsEntry(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
+	if got := ageOf(now, nil); got != 0 {
+		t.Fatalf("age with nothing waiting = %s, want 0", got)
+	}
+	entered := now.Add(-90 * time.Second)
+	if got := ageOf(now, &entered); got != 90*time.Second {
+		t.Fatalf("age of a wait entered 90s ago = %s, want 1m30s", got)
+	}
+	ahead := now.Add(time.Second)
+	if got := ageOf(now, &ahead); got != 0 {
+		t.Fatalf("age of a wait stamped ahead of the clock = %s, want 0", got)
+	}
+}

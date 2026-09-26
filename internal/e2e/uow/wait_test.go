@@ -190,6 +190,22 @@ func TestDueWaits_answersNoMoreThanTheLimitAsked(t *testing.T) {
 	}
 }
 
+// The age of the queue is measured from the entry of its oldest wait. Every wait
+// this suite writes enters at the frozen instant, and every wait another suite
+// leaves behind enters at the wall clock, days later: the oldest is one of ours.
+func TestOldestWait_measuresTheQueueFromTheEntryOfItsOldestWait(t *testing.T) {
+	ctx, pool, unit := open(t)
+	opened := stored(ctx, t, unit)
+	storedWaitAt(ctx, t, unit, opened.wallet, stamp().Add(time.Minute))
+	age, err := postgres.NewReads(pool).OldestWait(ctx, stamp().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("OldestWait = %v, want nil", err)
+	}
+	if age != time.Hour {
+		t.Fatalf("age of the oldest wait = %s, want the 1h since the frozen entry", age)
+	}
+}
+
 // The wait a replica already holds is skipped and not queued behind: the second
 // session answers the absence at once instead of waiting for the lock.
 func TestClaimWait_skipsTheRowAnotherSessionHolds(t *testing.T) {

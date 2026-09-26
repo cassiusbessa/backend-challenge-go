@@ -191,8 +191,8 @@ func newSchedule(cfg config.Config) referencewait.Schedule {
 
 // newReferenceWorker is the first background component of the process. It scans
 // the queue of waits and hands each candidate to the use case that decides it.
-func newReferenceWorker(cfg config.Config, reads storage.Reads, resolver *resolvereference.Service, pipe *telemetry.Pipeline) *referenceworker.Worker {
-	return referenceworker.New(reads, resolver, clock.UTC{}, pipe.Logger, cfg.ReferenceInterval)
+func newReferenceWorker(cfg config.Config, reads storage.Reads, resolver *resolvereference.Service, pipe *telemetry.Pipeline, series *metrics.Settlement) *referenceworker.Worker {
+	return referenceworker.New(reads, resolver, clock.UTC{}, pipe.Logger, series, cfg.ReferenceInterval)
 }
 
 // newRelay is the use case that moves one committed event out: it claims a row

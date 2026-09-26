@@ -264,6 +264,10 @@ func (r *rows) DueWaits(context.Context, time.Time, int) ([]storage.WaitCandidat
 	return nil, nil
 }
 
+func (r *rows) OldestWait(context.Context, time.Time) (time.Duration, error) {
+	return 0, nil
+}
+
 // entriesOf builds one credit per sequence, each with an identity of its own,
 // so a cursor can be checked against the entry it points at.
 func entriesOf(t *testing.T, sequences ...int64) []storage.EntryView {

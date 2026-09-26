@@ -11,10 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 // tick is the interval the cases about the lifecycle run on. It is short because
@@ -28,7 +33,7 @@ func TestTurn_handsEveryCandidateOfAScanToTheUseCase(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{due: candidates(t, 3)}
 	resolver := &decisions{}
-	worker := New(scanner, resolver, frozen{}, quiet(), tick)
+	worker := New(scanner, resolver, frozen{}, quiet(), series(), tick)
 	worker.turn(context.Background())
 	if len(resolver.seen) != 3 {
 		t.Fatalf("candidates decided = %d, want the 3 the scan chose", len(resolver.seen))
@@ -45,7 +50,7 @@ func TestTurn_handsEveryCandidateOfAScanToTheUseCase(t *testing.T) {
 func TestTurn_asksTheScanForNoMoreThanOneBatch(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{}
-	New(scanner, &decisions{}, frozen{}, quiet(), tick).turn(context.Background())
+	New(scanner, &decisions{}, frozen{}, quiet(), series(), tick).turn(context.Background())
 	if scanner.limit != batch {
 		t.Fatalf("limit asked = %d, want the batch of %d", scanner.limit, batch)
 	}
@@ -58,7 +63,7 @@ func TestTurn_decidesNothingWhenTheScanFailed(t *testing.T) {
 	var written strings.Builder
 	resolver := &decisions{}
 	scanner := &queue{due: candidates(t, 2), failFirst: errors.New("postgres: connection reset by peer")}
-	worker := New(scanner, resolver, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	worker := New(scanner, resolver, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	worker.turn(context.Background())
 	if len(resolver.seen) != 0 {
 		t.Fatalf("candidates decided after a scan that failed = %d, want 0", len(resolver.seen))
@@ -77,7 +82,7 @@ func TestTurn_decidesNothingWhenTheScanFailed(t *testing.T) {
 func TestTurn_claimsNoNewWaitOnceTheContextIsDone(t *testing.T) {
 	t.Parallel()
 	resolver := &decisions{}
-	worker := New(&queue{due: candidates(t, 3)}, resolver, frozen{}, quiet(), tick)
+	worker := New(&queue{due: candidates(t, 3)}, resolver, frozen{}, quiet(), series(), tick)
 	signalled, stop := context.WithCancel(context.Background())
 	// The first decision is the one in flight when the signal comes, so what the
 	// loop does after it is what the case reads.
@@ -94,7 +99,7 @@ func TestDecide_logsTheFailureWithTheIdentitiesOfTheWait(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	resolver := &decisions{err: errors.New("postgres: connection reset by peer")}
-	worker := New(&queue{}, resolver, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	worker := New(&queue{}, resolver, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	candidate := candidates(t, 1)[0]
 	worker.decide(context.Background(), candidate)
 	logged := written.String()
@@ -110,7 +115,7 @@ func TestDecide_logsTheFailureWithTheIdentitiesOfTheWait(t *testing.T) {
 func TestDecide_logsNothingForAWaitThatWasDecided(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	worker.decide(context.Background(), candidates(t, 1)[0])
 	if written.Len() != 0 {
 		t.Fatalf("log = %q, want nothing for a wait that was decided", written.String())
@@ -122,7 +127,7 @@ func TestDecide_logsNothingForAWaitThatWasDecided(t *testing.T) {
 func TestFailed_recordsNothingForATurnTheShutdownCutShort(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	stopped, stop := context.WithCancel(context.Background())
 	stop()
 	cancelled := fmt.Errorf("claim reference wait: %w", context.Canceled)
@@ -138,7 +143,7 @@ func TestFailed_recordsNothingForATurnTheShutdownCutShort(t *testing.T) {
 func TestFailed_recordsAFailureThatMerelyRacedTheShutdown(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	stopped, stop := context.WithCancel(context.Background())
 	stop()
 	worker.failed(stopped, "resolve a pending reference", errors.New("connection refused"))
@@ -153,7 +158,7 @@ func TestFailed_recordsAFailureThatMerelyRacedTheShutdown(t *testing.T) {
 func TestFailed_recordsTheChainAndNotOnlyTheFrames(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	refusal := fmt.Errorf("resolve pending reference: %w", errors.New("kind cannot be waiting"))
 	worker.failed(context.Background(), "resolve a pending reference", refusal)
 	line := written.String()
@@ -172,7 +177,7 @@ func TestFailed_recordsTheChainAndNotOnlyTheFrames(t *testing.T) {
 func TestStart_comesUpOverAnEmptyQueueAndScansOnTheTicker(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{scanned: make(chan struct{}, 4)}
-	worker := New(scanner, &decisions{}, frozen{}, quiet(), tick)
+	worker := New(scanner, &decisions{}, frozen{}, quiet(), series(), tick)
 	if err := worker.Start(context.Background()); err != nil {
 		t.Fatalf("Start over an empty queue = %v, want nil", err)
 	}
@@ -187,7 +192,7 @@ func TestStart_comesUpOverAnEmptyQueueAndScansOnTheTicker(t *testing.T) {
 func TestStop_endsTheRunAndWaitsForTheTurnInFlight(t *testing.T) {
 	t.Parallel()
 	resolver := &decisions{}
-	worker := New(&queue{due: candidates(t, 3)}, resolver, frozen{}, quiet(), tick)
+	worker := New(&queue{due: candidates(t, 3)}, resolver, frozen{}, quiet(), series(), tick)
 	stopped := make(chan error, 1)
 	resolver.hold = func(ctx context.Context) {
 		// The stop takes the values of the turn without its cancellation, because
@@ -211,7 +216,7 @@ func TestStop_endsTheRunAndWaitsForTheTurnInFlight(t *testing.T) {
 // a graph that failed before the start still shut down.
 func TestStop_answersNilForAWorkerThatNeverStarted(t *testing.T) {
 	t.Parallel()
-	worker := New(&queue{}, &decisions{}, frozen{}, quiet(), tick)
+	worker := New(&queue{}, &decisions{}, frozen{}, quiet(), series(), tick)
 	if err := worker.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop of a worker that never started = %v, want nil", err)
 	}
@@ -227,7 +232,7 @@ func TestStop_answersTheFailureWhenTheShutdownDeadlineComesFirst(t *testing.T) {
 		close(held)
 		<-release
 	}}
-	worker := New(&queue{due: candidates(t, 1)}, resolver, frozen{}, quiet(), tick)
+	worker := New(&queue{due: candidates(t, 1)}, resolver, frozen{}, quiet(), series(), tick)
 	if err := worker.Start(context.Background()); err != nil {
 		t.Fatalf("Start before the deadline = %v, want nil", err)
 	}
@@ -247,7 +252,7 @@ func TestNew_answersAWorkerThatHasNotStarted(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{due: candidates(t, 1)}
 	resolver := &decisions{}
-	worker := New(scanner, resolver, frozen{}, quiet(), tick)
+	worker := New(scanner, resolver, frozen{}, quiet(), series(), tick)
 	if err := worker.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop of a worker that was only assembled = %v, want nil", err)
 	}
@@ -262,7 +267,7 @@ func TestNew_answersAWorkerThatHasNotStarted(t *testing.T) {
 func TestRun_leavesOnADoneContextWithoutTakingATurn(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{due: candidates(t, 1)}
-	worker := New(scanner, &decisions{}, frozen{}, quiet(), time.Hour)
+	worker := New(scanner, &decisions{}, frozen{}, quiet(), series(), time.Hour)
 	worker.done = make(chan struct{})
 	stopped, stop := context.WithCancel(context.Background())
 	stop()
@@ -283,6 +288,17 @@ type queue struct {
 	// scanned reports each scan to the case about the worker coming up over a
 	// queue with nothing in it.
 	scanned chan struct{}
+	// age is what the queue answers for its oldest wait, and ageErr a read of
+	// it that fails.
+	age    time.Duration
+	ageErr error
+}
+
+func (q *queue) OldestWait(context.Context, time.Time) (time.Duration, error) {
+	if q.ageErr != nil {
+		return 0, q.ageErr
+	}
+	return q.age, nil
 }
 
 func (q *queue) DueWaits(_ context.Context, _ time.Time, limit int) ([]storage.WaitCandidate, error) {
@@ -304,9 +320,10 @@ func (q *queue) DueWaits(_ context.Context, _ time.Time, limit int) ([]storage.W
 // answers, and a hold that runs on the first decision so a case can act while a
 // turn is open.
 type decisions struct {
-	seen []storage.WaitCandidate
-	err  error
-	hold func(context.Context)
+	seen    []storage.WaitCandidate
+	err     error
+	outcome resolvereference.Outcome
+	hold    func(context.Context)
 }
 
 func (d *decisions) Resolve(ctx context.Context, candidate storage.WaitCandidate) (resolvereference.Outcome, error) {
@@ -315,7 +332,146 @@ func (d *decisions) Resolve(ctx context.Context, candidate storage.WaitCandidate
 		d.hold = nil
 		hold(ctx)
 	}
-	return resolvereference.Outcome{}, d.err
+	return d.outcome, d.err
+}
+
+func series() *metrics.Settlement {
+	return metrics.New(prometheus.NewRegistry())
+}
+
+// closedWait is the outcome of an attempt that ended the wait in that status,
+// with the token of the refusal when it was refused.
+func closedWait(t *testing.T, status wager.Status, code wager.FailureCode) resolvereference.Outcome {
+	t.Helper()
+	candidate := candidates(t, 1)[0]
+	return resolvereference.Outcome{
+		TransactionID: candidate.TransactionID,
+		WalletID:      candidate.WalletID,
+		Kind:          wager.KindWin,
+		Status:        status,
+		FailureCode:   code,
+	}
+}
+
+// The wait the attempt carried out leaves one line, in the shape the borders
+// give the same outcome: the identifiers, the kind and the status, and neither
+// an amount nor a balance.
+func TestDecide_logsAndCountsTheWaitTheAttemptCarriedOut(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	resolver := &decisions{outcome: closedWait(t, wager.Processed, 0)}
+	moved := series()
+	worker := New(&queue{}, resolver, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	worker.decide(context.Background(), candidates(t, 1)[0])
+	line := written.String()
+	for _, want := range []string{"reference wait closed", transactionIDs[0], `"kind":"WIN"`, `"status":"PROCESSED"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("log = %q, want %q in it", line, want)
+		}
+	}
+	for _, banned := range []string{"failureCode", "amount", "balance", "50.00"} {
+		if strings.Contains(line, banned) {
+			t.Fatalf("log = %q, want it without %q", line, banned)
+		}
+	}
+	if got := testutil.ToFloat64(moved.Settlements.WithLabelValues("reference", "WIN", "PROCESSED")); got != 1 {
+		t.Fatalf("settlements{reference,WIN,PROCESSED} = %v, want 1", got)
+	}
+}
+
+// A wait the clock or a rule closed is a rejection: it logs its token and
+// counts under it, because every rejection does.
+func TestDecide_logsTheTokenOfTheWaitTheAttemptRefused(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	resolver := &decisions{outcome: closedWait(t, wager.Rejected, wager.ReferenceNotFound)}
+	moved := series()
+	worker := New(&queue{}, resolver, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	worker.decide(context.Background(), candidates(t, 1)[0])
+	if line := written.String(); !strings.Contains(line, `"failureCode":"REFERENCE_NOT_FOUND"`) || !strings.Contains(line, `"status":"REJECTED"`) {
+		t.Fatalf("log = %q, want the token and the status of the refusal", line)
+	}
+	if got := testutil.ToFloat64(moved.Rejections.WithLabelValues("reference", "REFERENCE_NOT_FOUND")); got != 1 {
+		t.Fatalf("rejections{reference,REFERENCE_NOT_FOUND} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(moved.Settlements.WithLabelValues("reference", "WIN", "REJECTED")); got != 1 {
+		t.Fatalf("settlements{reference,WIN,REJECTED} = %v, want 1", got)
+	}
+}
+
+// A wait scheduled again is counted and not logged: one line per backoff would
+// drown the log of a long wait.
+func TestDecide_countsARescheduledWaitWithoutALine(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	rescheduled := closedWait(t, wager.PendingReference, 0)
+	rescheduled.Rescheduled = true
+	moved := series()
+	worker := New(&queue{}, &decisions{outcome: rescheduled}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	worker.decide(context.Background(), candidates(t, 1)[0])
+	if written.Len() != 0 {
+		t.Fatalf("log of a rescheduled wait = %q, want nothing", written.String())
+	}
+	if got := testutil.ToFloat64(moved.Retries.WithLabelValues("reference", "reference_pending")); got != 1 {
+		t.Fatalf("retries{reference,reference_pending} = %v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(moved.Settlements) + testutil.CollectAndCount(moved.Rejections); got != 0 {
+		t.Fatalf("series moved by a rescheduled wait = %d, want only the retry", got)
+	}
+}
+
+// A candidate the claim did not hand over decided nothing, and nothing is
+// reported for it: no line, no series.
+func TestDecide_reportsNothingForAWaitThatWasNotDecided(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	moved := series()
+	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	worker.decide(context.Background(), candidates(t, 1)[0])
+	if written.Len() != 0 {
+		t.Fatalf("log of a wait nobody decided = %q, want nothing", written.String())
+	}
+	moved.Settlements.Reset()
+	if got := testutil.CollectAndCount(moved.Settlements) + testutil.CollectAndCount(moved.Rejections) + testutil.CollectAndCount(moved.Retries); got != 0 {
+		t.Fatalf("series moved by a wait nobody decided = %d, want none", got)
+	}
+}
+
+// The age of the oldest wait is read once per turn, after the candidates were
+// decided, and zero is what an empty queue answers.
+func TestTurn_readsTheAgeOfTheOldestWaitIntoTheGauge(t *testing.T) {
+	t.Parallel()
+	scanner := &queue{age: 90 * time.Second}
+	moved := series()
+	worker := New(scanner, &decisions{}, frozen{}, quiet(), moved, tick)
+	worker.turn(context.Background())
+	if got := testutil.ToFloat64(moved.ReferenceWaitOldestAge); got != 90 {
+		t.Fatalf("oldest wait age = %v, want 90", got)
+	}
+	scanner.age = 0
+	worker.turn(context.Background())
+	if got := testutil.ToFloat64(moved.ReferenceWaitOldestAge); got != 0 {
+		t.Fatalf("oldest wait age with nothing waiting = %v, want 0", got)
+	}
+}
+
+// A read that fails leaves the last value: a gauge that fell to zero because
+// the database was out would read as a queue that emptied.
+func TestTurn_keepsTheLastAgeWhenTheReadFails(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	scanner := &queue{age: 90 * time.Second}
+	moved := series()
+	worker := New(scanner, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	worker.turn(context.Background())
+	scanner.age, scanner.ageErr = 0, errors.New("postgres: connection reset by peer")
+	worker.turn(context.Background())
+	if got := testutil.ToFloat64(moved.ReferenceWaitOldestAge); got != 90 {
+		t.Fatalf("oldest wait age after a read that failed = %v, want the 90 of the last read", got)
+	}
+	if !strings.Contains(written.String(), "read the oldest reference wait") {
+		t.Fatalf("log = %q, want the failure of the read in it", written.String())
+	}
 }
 
 // frozen is the clock of a case that is not about an instant: the scan reads it

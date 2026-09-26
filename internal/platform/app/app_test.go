@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/referenceworker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
@@ -485,7 +487,7 @@ func TestNewReferenceWorker_answersAWorkerTheLifecycleStarts(t *testing.T) {
 	// The stop of a worker that never started is the whole assertion: it reaches
 	// the assembled worker, so a constructor that answered nothing would not get
 	// this far.
-	worker := newReferenceWorker(cfg, emptyReads{}, resolvereference.New(nil, nil, nil, nil), pipe)
+	worker := newReferenceWorker(cfg, emptyReads{}, resolvereference.New(nil, nil, nil, nil), pipe, metrics.New(prometheus.NewRegistry()))
 	if err := worker.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop of a worker the lifecycle never started = %v, want nil", err)
 	}

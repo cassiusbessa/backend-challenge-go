@@ -310,4 +310,9 @@ type Reads interface {
 	// scan never stands between a submission and the wallet it moves. What the
 	// decision uses is the row re-read under the lock, not this one.
 	DueWaits(ctx context.Context, now time.Time, limit int) ([]WaitCandidate, error)
+
+	// OldestWait answers how long the oldest transaction still waiting for the
+	// operation it cites has been waiting at that instant, measured from its
+	// entry into the wait, and zero when nothing is waiting.
+	OldestWait(ctx context.Context, now time.Time) (time.Duration, error)
 }

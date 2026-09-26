@@ -16,7 +16,9 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
@@ -25,9 +27,14 @@ import (
 // several turns instead of in one long transaction run.
 const batch = 50
 
-// Scanner chooses the waits whose scheduled instant has come.
+// Scanner chooses the waits whose scheduled instant has come, and measures
+// the queue they wait in.
 type Scanner interface {
 	DueWaits(ctx context.Context, now time.Time, limit int) ([]storage.WaitCandidate, error)
+
+	// OldestWait answers how long the oldest wait has been waiting at that
+	// instant, and zero when nothing is waiting.
+	OldestWait(ctx context.Context, now time.Time) (time.Duration, error)
 }
 
 // Resolver decides one wait and answers what it did to it.
@@ -50,6 +57,7 @@ type Worker struct {
 	resolver Resolver
 	clock    Clock
 	log      *slog.Logger
+	metrics  *metrics.Settlement
 	interval time.Duration
 
 	// stop ends the run. It is nil before Start, which is the only state in
@@ -60,8 +68,8 @@ type Worker struct {
 	done chan struct{}
 }
 
-func New(scanner Scanner, resolver Resolver, clock Clock, log *slog.Logger, interval time.Duration) *Worker {
-	return &Worker{scanner: scanner, resolver: resolver, clock: clock, log: log, interval: interval}
+func New(scanner Scanner, resolver Resolver, clock Clock, log *slog.Logger, series *metrics.Settlement, interval time.Duration) *Worker {
+	return &Worker{scanner: scanner, resolver: resolver, clock: clock, log: log, metrics: series, interval: interval}
 }
 
 // Start puts the worker on its ticker and answers at once: a queue with nothing
@@ -119,7 +127,8 @@ func (w *Worker) run(ctx context.Context) {
 // again on the next tick, and a database that is out comes back without the
 // process being restarted.
 func (w *Worker) turn(ctx context.Context) {
-	due, err := w.scanner.DueWaits(ctx, w.clock.Now(), batch)
+	now := w.clock.Now()
+	due, err := w.scanner.DueWaits(ctx, now, batch)
 	if err != nil {
 		w.failed(ctx, "scan the reference wait queue", err)
 		return
@@ -132,22 +141,76 @@ func (w *Worker) turn(ctx context.Context) {
 		}
 		w.decide(ctx, candidate)
 	}
+	w.measure(ctx, now)
 }
 
-// decide hands one candidate to the use case and is the one place a failure of
-// it is logged: whoever decides the outcome logs it, and logs it once.
+// measure reads the age of the oldest wait into its gauge, after the turn has
+// decided its candidates, so a wait this turn closed is not what it reads. A
+// read that fails leaves the last value: a gauge that fell to zero because the
+// database was out would read as a queue that emptied.
+func (w *Worker) measure(ctx context.Context, now time.Time) {
+	age, err := w.scanner.OldestWait(ctx, now)
+	if err != nil {
+		w.failed(ctx, "read the oldest reference wait", err)
+		return
+	}
+	w.metrics.ReferenceWaitOldestAge.Set(age.Seconds())
+}
+
+// decide hands one candidate to the use case and reports what came of it:
+// whoever decides the outcome reports it, and reports it once, and the worker
+// is the border of this use case.
 //
 // The turn has no request behind it, so what correlates its lines and the events
 // its commit writes is the wait it decides — the same choice go-observability
 // makes for a message with no correlation of its own.
 func (w *Worker) decide(ctx context.Context, candidate storage.WaitCandidate) {
 	ctx = telemetry.WithCorrelation(ctx, candidate.TransactionID.String())
-	if _, err := w.resolver.Resolve(ctx, candidate); err != nil {
+	outcome, err := w.resolver.Resolve(ctx, candidate)
+	if err != nil {
 		w.failed(ctx, "resolve a pending reference", err,
 			slog.String("transactionId", candidate.TransactionID.String()),
 			slog.String("walletId", candidate.WalletID.String()),
 		)
+		return
 	}
+	w.report(ctx, outcome)
+}
+
+// report moves the series of one attempt, and logs the wait it closed.
+//
+// A wait the attempt only scheduled again is counted and not logged: one line
+// per backoff would drown the log of a long wait, and the series of retries is
+// the count of attempts the row keeps, in motion. A candidate the claim did not
+// hand over decided nothing, and nothing is reported for it.
+func (w *Worker) report(ctx context.Context, outcome resolvereference.Outcome) {
+	switch {
+	case outcome.Rescheduled:
+		w.metrics.Retry(metrics.ComponentReference, metrics.RetryReferencePending)
+	case outcome.Closed():
+		w.closed(ctx, outcome)
+	}
+}
+
+// closed is the line of a wait the attempt ended, in the shape the borders give
+// the same outcome: the identifiers, the kind, the status, and the token when a
+// rule or the clock refused it. No amount, no balance.
+func (w *Worker) closed(ctx context.Context, outcome resolvereference.Outcome) {
+	w.metrics.Settled(metrics.OriginReference, outcome.Kind, outcome.Status)
+	attrs := []slog.Attr{
+		slog.String("transactionId", outcome.TransactionID.String()),
+		slog.String("walletId", outcome.WalletID.String()),
+		slog.String("kind", outcome.Kind.String()),
+		slog.String("status", outcome.Status.String()),
+	}
+	level := slog.LevelInfo
+	if outcome.Status == wager.Rejected {
+		// go-observability asks every rejection to log its token, and to count.
+		w.metrics.Rejected(metrics.OriginReference, outcome.FailureCode)
+		attrs = append(attrs, slog.String("failureCode", outcome.FailureCode.String()))
+		level = slog.LevelWarn
+	}
+	w.log.LogAttrs(ctx, level, "reference wait closed", attrs...)
 }
 
 // failed records the failure: the chain that names where it came from, and the

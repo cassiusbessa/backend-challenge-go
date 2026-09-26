@@ -799,6 +799,10 @@ func (b *book) DueWaits(context.Context, time.Time, int) ([]storage.WaitCandidat
 	return nil, nil
 }
 
+func (b *book) OldestWait(context.Context, time.Time) (time.Duration, error) {
+	return 0, nil
+}
+
 func (b *book) TransactionByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {
 	b.outsideReads++
 	if b.outside == nil {
