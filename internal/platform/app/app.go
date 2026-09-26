@@ -221,7 +221,10 @@ func newQueueReporter(pipe *telemetry.Pipeline, series *metrics.Settlement) *wag
 
 // newSettlementMetrics registers every business series on the registry of the
 // process, which is the one /metrics serves beside the latency and the runtime.
-func newSettlementMetrics(reg *prometheus.Registry) *metrics.Settlement {
+// The saturation of the pool is registered beside them: it is read at scrape
+// time off the pool the process shares, and needs no turn to move it.
+func newSettlementMetrics(reg *prometheus.Registry, pool *postgres.Pool) *metrics.Settlement {
+	reg.MustRegister(postgres.NewPoolStats(pool))
 	return metrics.New(reg)
 }
 
