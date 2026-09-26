@@ -226,6 +226,10 @@ func (r *rows) Transaction(context.Context, identity.TransactionID, identity.Pro
 	return storage.TransactionView{}, storage.ErrTransactionNotFound
 }
 
+func (r *rows) TransactionByExternal(context.Context, identity.ProviderID, identity.ExternalTransactionID) (storage.TransactionView, error) {
+	return storage.TransactionView{}, storage.ErrTransactionNotFound
+}
+
 func (r *rows) TransactionByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {
 	return wager.State{}, storage.ErrTransactionNotFound
 }

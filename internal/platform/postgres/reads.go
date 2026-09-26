@@ -91,6 +91,21 @@ func (r *Reads) Transaction(ctx context.Context, id identity.TransactionID, prov
 	return row.view()
 }
 
+// TransactionByExternal answers the recorded outcome of the operation that
+// provider sent under that external identifier. An identifier of another
+// provider answers ErrTransactionNotFound, the same as one nobody sent.
+func (r *Reads) TransactionByExternal(ctx context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (storage.TransactionView, error) {
+	pool, err := r.source.Querier()
+	if err != nil {
+		return storage.TransactionView{}, wrap("acquire pool", err)
+	}
+	row, err := scanTransaction(ctx, pool, selectTransactionByExternalID, provider.String(), external.String())
+	if err != nil {
+		return storage.TransactionView{}, missingTransaction("read transaction by external identifier", err)
+	}
+	return row.view()
+}
+
 // TransactionByKey answers the transaction of that provider and key from outside
 // any transaction, which is what the loser of the unique constraint needs: the
 // violation aborts its SQL transaction, so the winning row is only readable after

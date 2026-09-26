@@ -297,6 +297,12 @@ type Reads interface {
 	// the same path.
 	Transaction(ctx context.Context, id identity.TransactionID, provider identity.ProviderID) (TransactionView, error)
 
+	// TransactionByExternal answers the recorded outcome of the operation that
+	// provider sent under that external identifier, the same view and the same
+	// absence as Transaction. The provider is part of the query for the same
+	// reason, and an opening, which carries no provider, never matches.
+	TransactionByExternal(ctx context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (TransactionView, error)
+
 	// TransactionByKey answers the transaction of that provider and key from
 	// outside a transaction, which is what the loser of the unique constraint
 	// needs: the violation aborts its SQL transaction, so the winning row can

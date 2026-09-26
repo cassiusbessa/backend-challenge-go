@@ -91,6 +91,15 @@ func TestTransaction_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
 	}
 }
 
+func TestTransactionByExternal_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
+	t.Parallel()
+	reads := NewReads(NewPool(config.Config{DatabaseURL: unreachable}))
+	_, err := reads.TransactionByExternal(context.Background(), providerIdentity(t), externalIdentity(t))
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("TransactionByExternal = %v, want %v", err, ErrPoolClosed)
+	}
+}
+
 func TestTransactionByKey_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
 	t.Parallel()
 	reads := NewReads(NewPool(config.Config{DatabaseURL: unreachable}))

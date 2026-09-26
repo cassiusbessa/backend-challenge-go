@@ -59,6 +59,10 @@ func (r *rows) Transaction(context.Context, identity.TransactionID, identity.Pro
 	return storage.TransactionView{}, storage.ErrTransactionNotFound
 }
 
+func (r *rows) TransactionByExternal(context.Context, identity.ProviderID, identity.ExternalTransactionID) (storage.TransactionView, error) {
+	return storage.TransactionView{}, storage.ErrTransactionNotFound
+}
+
 // The queue of the waits is part of the same port and is never reached from a
 // read of one wallet.
 func (r *rows) DueWaits(context.Context, time.Time, int) ([]storage.WaitCandidate, error) {

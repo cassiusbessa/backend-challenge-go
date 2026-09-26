@@ -89,6 +89,10 @@ func (r *rows) Transaction(_ context.Context, id identity.TransactionID, provide
 	return r.view, nil
 }
 
+func (r *rows) TransactionByExternal(context.Context, identity.ProviderID, identity.ExternalTransactionID) (storage.TransactionView, error) {
+	return storage.TransactionView{}, storage.ErrTransactionNotFound
+}
+
 func (r *rows) Wallet(context.Context, identity.WalletID) (storage.WalletView, error) {
 	return storage.WalletView{}, storage.ErrWalletNotFound
 }

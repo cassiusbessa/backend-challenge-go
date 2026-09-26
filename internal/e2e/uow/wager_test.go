@@ -160,6 +160,50 @@ func TestTransaction_answersTheSameAbsenceForAnotherProviderAndForNothing(t *tes
 	}
 }
 
+// The identifier the provider chose and the identity this context minted reach
+// the same row, so both reads answer the same view of it.
+func TestTransactionByExternal_answersTheSameViewAsTheReadByIdentity(t *testing.T) {
+	ctx, pool, unit := open(t)
+	opened := stored(ctx, t, unit)
+	external := "external-" + suiteenv.NewID()
+	recorded := rejection(t, opened.wallet, "key-"+suiteenv.NewID(), external)
+	insert(ctx, t, unit, recorded)
+	reads := postgres.NewReads(pool)
+	byIdentity, err := reads.Transaction(ctx, recorded.ID(), recorded.ProviderID())
+	if err != nil {
+		t.Fatalf("Transaction by identity = %v, want nil", err)
+	}
+	byExternal, err := reads.TransactionByExternal(ctx, recorded.ProviderID(), externalOf(t, external))
+	if err != nil {
+		t.Fatalf("TransactionByExternal of the owner = %v, want nil", err)
+	}
+	if byExternal != byIdentity {
+		t.Fatalf("read by external identifier = %+v, want the read by identity %+v", byExternal, byIdentity)
+	}
+}
+
+// The identifier of another provider and one nobody sent leave the query by the
+// same path. The opening carries neither a provider nor an external identifier,
+// so the empty pair does not reach it either.
+func TestTransactionByExternal_answersTheSameAbsenceForAnotherProviderNothingAndTheOpening(t *testing.T) {
+	ctx, pool, unit := open(t)
+	opened := stored(ctx, t, unit)
+	external := "external-" + suiteenv.NewID()
+	insert(ctx, t, unit, rejection(t, opened.wallet, "key-"+suiteenv.NewID(), external))
+	reads := postgres.NewReads(pool)
+	_, alien := reads.TransactionByExternal(ctx, providerOf(t, "provider-b"), externalOf(t, external))
+	_, absent := reads.TransactionByExternal(ctx, providerOf(t, "provider-a"), externalOf(t, "external-"+suiteenv.NewID()))
+	_, opening := reads.TransactionByExternal(ctx, identity.ProviderID{}, identity.ExternalTransactionID{})
+	for asked, err := range map[string]error{"another provider": alien, "nobody sent": absent, "the opening": opening} {
+		if !errors.Is(err, storage.ErrTransactionNotFound) {
+			t.Fatalf("TransactionByExternal of %s = %v, want %v", asked, err, storage.ErrTransactionNotFound)
+		}
+	}
+	if alien.Error() != absent.Error() {
+		t.Fatalf("another provider = %q and nobody sent = %q, want the same answer for both", alien, absent)
+	}
+}
+
 func TestTransactionByKey_readsTheWinningRowOutsideAnyTransaction(t *testing.T) {
 	ctx, pool, unit := open(t)
 	opened := stored(ctx, t, unit)
