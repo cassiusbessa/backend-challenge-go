@@ -25,6 +25,26 @@ import (
 // The cases about one turn call that turn and never start a ticker at all.
 const tick = time.Millisecond
 
+// driveWait bounds how long a case waits for the watcher to reach the point the
+// case drives it to. No case waits for the ticker, so the bound only keeps a
+// watcher that never gets there from hanging the whole package: a broken turn
+// fails the case by name instead of running into the deadline of go test.
+const driveWait = 5 * time.Second
+
+// await answers what the channel delivers, and fails the case when nothing
+// comes within the bound.
+func await[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case got := <-ch:
+		return got
+	case <-time.After(driveWait):
+		t.Fatalf("%s did not happen within %s", what, driveWait)
+		var none T
+		return none
+	}
+}
+
 // One turn is one page from the cursor, walked in order, and the cursor moves
 // past it. A page shorter than the batch is the end of the sweep, and the turn
 // after starts over from the first wallet.
@@ -127,7 +147,7 @@ func TestStart_comesUpOverAnEmptyTableAndSweepsOnTheTicker(t *testing.T) {
 	if err := worker.Start(context.Background()); err != nil {
 		t.Fatalf("Start over an empty table = %v, want nil", err)
 	}
-	<-table.paged
+	await(t, table.paged, "the first page read over an empty table")
 	if err := worker.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop after an empty table = %v, want nil", err)
 	}
@@ -148,7 +168,7 @@ func TestStop_endsTheRunAndWaitsForTheTurnInFlight(t *testing.T) {
 	if err := worker.Start(context.Background()); err != nil {
 		t.Fatalf("Start before the signal = %v, want nil", err)
 	}
-	if err := <-stopped; err != nil {
+	if err := await(t, stopped, "the stop of the turn in flight"); err != nil {
 		t.Fatalf("Stop while a turn was in flight = %v, want nil", err)
 	}
 	if len(verdicts.seen) != 1 {
@@ -180,7 +200,7 @@ func TestRun_leavesOnADoneContextWithoutTakingATurn(t *testing.T) {
 	stopped, stop := context.WithCancel(context.Background())
 	stop()
 	worker.run(stopped)
-	<-worker.done
+	await(t, worker.done, "the close of what the stop waits on")
 	if table.pagesRead != 0 {
 		t.Fatalf("pages read = %d, want none on a run that was already done", table.pagesRead)
 	}
@@ -243,7 +263,7 @@ func TestStop_answersTheFailureWhenTheShutdownDeadlineComesFirst(t *testing.T) {
 	if err := worker.Start(context.Background()); err != nil {
 		t.Fatalf("Start before the deadline = %v, want nil", err)
 	}
-	<-held
+	await(t, held, "the verdict held open for the deadline")
 	expired, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := worker.Stop(expired)
