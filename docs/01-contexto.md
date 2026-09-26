@@ -43,7 +43,7 @@ Duas identidades entram pelo HTTP, e a diferença entre elas é papel, não cred
 | **OTel Collector** | OTLP/gRPC | destino de traces e logs | o buffer descarta; o processo não para |
 | **Prometheus** | scrape de `/metrics` | — | a série tem buraco |
 
-Localmente, SQS e SNS são o **LocalStack**, e o Keycloak é um realm de teste em `deploy/keycloak/`. O Terraform em `deploy/terraform/localstack/` descreve as filas, o tópico e o papel IAM do remetente; o `apply` de desenvolvimento aponta para o LocalStack.
+Localmente, SQS e SNS são o **LocalStack**, e o Keycloak é um realm de teste em `deploy/keycloak/`. O Terraform em `deploy/terraform/localstack/` descreve as filas, o tópico e o papel IAM do remetente; o `apply` de desenvolvimento aponta para o LocalStack e roda como o serviço `provision` do Compose, antes de qualquer réplica ([ADR 0032](adr/0032-apply-do-broker-como-servico-do-compose.md)).
 
 ## Nível 2 — o que há dentro do binário
 
@@ -62,6 +62,7 @@ flowchart TB
         pool["Pool pgx<br/>SET ROLE wager_app"]
     end
     migrate["migrate<br/>Job que roda uma vez antes das réplicas"]
+    provision["provision<br/>apply do Terraform, uma vez antes das réplicas"]
     pg[("PostgreSQL")]
     sqs["SQS"]
     sns["SNS"]
@@ -76,6 +77,8 @@ flowchart TB
     uc --> pool
     pool --> pg
     migrate --> pg
+    provision -- "cria filas e tópico" --> sqs
+    provision --> sns
     cons -- "Receive · Delete" --> sqs
     relay -- "Publish" --> sns
     api -. "JWKS" .-> kc
@@ -85,7 +88,7 @@ Os quatro componentes de fundo são tipos separados, não quatro usos de um runn
 
 O observador de divergência é o único dos quatro que não escreve. Ele varre todas as carteiras em páginas, a partir de um cursor em memória, e entrega cada uma ao mesmo `reconcilewallet` que a rota chama: a divergência que ele existe para achar é a que nenhuma escrita da aplicação produziu, e por isso nenhum filtro por atualização a encontraria ([ADR 0024](adr/0024-observador-de-divergencia-por-cursor-em-memoria.md)).
 
-O binário não carrega migration. O SQL versionado é aplicado por um serviço do Compose que termina, ou por um Job do Kubernetes, antes das réplicas.
+O binário não carrega migration nem provisionamento. O SQL versionado é aplicado por um serviço do Compose que termina, ou por um Job do Kubernetes, antes das réplicas; o broker local é provisionado por outro serviço que termina, e o processo não sobe se um dos dois falhar.
 
 ## As três camadas, e a direção que nunca inverte
 
@@ -169,4 +172,37 @@ Os três prazos da fila não são três números: `QUEUE_VISIBILITY` tem de cobr
 
 ## Implantação
 
-`docker compose up --build` sobe o ambiente inteiro: `postgres`, `localstack`, `keycloak`, `otel-collector`, `tempo`, `loki`, `prometheus`, `grafana`, o `migrate` que termina, o `tools` do Terraform e `wager`, uma réplica do processo. Os cenários de concorrência sobem três instâncias independentes do processo dentro do binário de teste ([ADR 0027](adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)); as três como processos separados ficam para Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas, e os manifestos e o guia ainda não existem — [06 · Riscos e limitações](06-riscos-e-limitacoes.md) os lista como pendentes.
+`docker compose up --build` sobe o ambiente inteiro: `postgres`, `localstack`, `keycloak`, `otel-collector`, `tempo`, `loki`, `prometheus`, `grafana`, o `tools` que entrega o busybox às sondas, o `migrate` e o `provision`, que terminam, as réplicas do `wager` — três por padrão, `WAGER_REPLICAS` muda o número — e o `balancer` na frente delas.
+
+```mermaid
+flowchart LR
+    host(["host<br/>localhost:8090"])
+    subgraph compose["Compose · rede junglegaming"]
+        direction LR
+        balancer["balancer<br/>HAProxy · sonda /health/ready"]
+        subgraph replicas["wager × WAGER_REPLICAS"]
+            direction TB
+            w1["wager-1"]
+            w2["wager-2"]
+            w3["wager-3"]
+        end
+        subgraph once["Rodam uma vez, antes das réplicas"]
+            direction TB
+            migrate["migrate"]
+            provision["provision"]
+        end
+        pg[("postgres<br/>max_connections 300")]
+        ls["localstack"]
+        prom["prometheus"]
+    end
+
+    host --> balancer
+    balancer --> w1 & w2 & w3
+    w1 & w2 & w3 --> pg
+    w1 & w2 & w3 --> ls
+    migrate --> pg
+    provision --> ls
+    prom -. "scrape de cada réplica, por DNS" .-> w1 & w2 & w3
+```
+
+As réplicas não publicam porta: o balanceador as descobre pelo DNS do Docker, encaminha só para a que responde ready e tenta outra quando a conexão é recusada, e o Prometheus as raspa uma a uma pelo mesmo DNS ([ADR 0033](adr/0033-replicas-do-compose-atras-de-um-haproxy.md)). Os cenários de concorrência sobem três instâncias independentes do processo dentro do binário de teste ([ADR 0027](adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)). As réplicas em Kubernetes ficam para Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas, e os manifestos e o guia ainda não existem — [06 · Riscos e limitações](06-riscos-e-limitacoes.md) os lista como pendentes.

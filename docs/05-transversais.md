@@ -140,6 +140,8 @@ No `SIGTERM`:
 | Observador de divergência | não começa turno novo; a leitura em curso é cancelada | não deixa nada pela metade: nada do que ele faz é gravável |
 | Telemetria | descarrega o buffer **depois** do ciclo de vida, com 3 s próprios; uma subida que falhou também descarrega | não falha o processo se não conseguir |
 
+Atrás do balanceador do Compose, a parada de uma réplica não aparece para quem chama. A conexão que o servidor recusa depois do `SIGTERM` é o sinal que o balanceador reenvia a outra réplica, e a sonda de `/health/ready`, a cada segundo e com duas falhas, a tira da rotação em até dois segundos. O pedido que já chegou à réplica termina nela, na fatia do servidor, e nunca é reenviado: um `POST /wallets` repetido em outra réplica responderia 409 a quem pediu uma carteira só. Medido sob carga contínua, `docker stop` não fez pedido falhar, e `docker kill` fez falhar só os que estavam em curso na réplica ([ADR 0033](adr/0033-replicas-do-compose-atras-de-um-haproxy.md)).
+
 ## Dinheiro
 
 `Money` é `int64` de centavos com a moeda no tipo, escala fixa de duas casas, sem `float` em caminho nenhum. Entra e sai como string decimal. Soma, subtração, negação e parse verificam overflow; comparar ou operar exige a mesma moeda. Vazio, `NaN`, `Infinity`, notação científica, mais de duas casas e negativo são recusados na entrada, não arredondados. O zero value não tem moeda e é inválido, e é essa ausência que o sistema inteiro usa para distinguir *ausente* de *zero* — na coluna, no corpo e no evento. O modelo está em [02-dominio](02-dominio.md).

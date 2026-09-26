@@ -1,13 +1,12 @@
 # Ambiente local
 
-Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak, o cano de telemetria e o processo `wager`.
+Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak, o cano de telemetria e as réplicas do processo `wager`, atrás de um balanceador.
 
 A arquitetura está em [ARCHITECTURE.md](ARCHITECTURE.md): a visão de cima — estilo, padrões, estrutura de pastas, invariantes — com links para a estrutura detalhada em `docs/` e para cada decisão de desenho, com a alternativa que rejeitou, em `docs/adr/`.
 
 ## Pré-requisitos
 
-- Docker com Compose v2
-- Terraform 1.5 ou mais novo
+- Docker com Compose v2 — o Terraform que provisiona o broker vem numa imagem, e não do host
 - As portas `5432`, `4566`, `8080`, `8090`, `4317`, `4318` e `3000` livres no host
 - `make` e Go 1.27.1, para o runner e o verificador
 
@@ -17,8 +16,8 @@ Cada ritual deste documento tem um alvo no `Makefile`, e cada alvo é o comando
 que está publicado aqui — o atalho não esconde nada. `make help` lista todos.
 
 ```bash
-make up          # docker compose up -d --build --wait
-make provision   # o apply do Terraform contra o LocalStack
+make up          # docker compose up -d --build --wait, com três réplicas; make up REPLICAS=5 pede outro número
+make provision   # docker compose run --rm provision: o apply do broker de novo
 make migrate     # o schema nos dois bancos, cada um nomeado no comando
 make test        # a suíte de unidade
 make test-journey  # a suíte de jornada, em série e no banco dela
@@ -70,7 +69,7 @@ docker compose up --build
 
 Os defaults do Compose são os valores de `.env.example`. São senhas locais do desafio, não credencial de produção.
 
-A subida aplica o schema antes de o processo escutar: o serviço `migrate` roda uma vez, com o `wager` esperando `service_completed_successfully`. O binário da aplicação não carrega código de migration.
+A subida prepara o banco e o broker antes de o processo escutar. Dois serviços rodam uma vez e terminam: o `migrate` aplica o schema, e o `provision` roda o apply do Terraform contra o LocalStack — filas, DLQ, tópico e remetente, descritos na seção [Broker](#broker). O `wager` espera `service_completed_successfully` dos dois, e se um deles falha o comando sai diferente de zero nomeando o serviço, com o processo parado. O binário da aplicação não carrega código de migration nem de provisionamento. Terminado o `up`, `GET /health/ready` responde 200 em `localhost:8090`.
 
 | Serviço | Endereço |
 | --- | --- |
@@ -79,9 +78,24 @@ A subida aplica o schema antes de o processo escutar: o serviço `migrate` roda 
 | Keycloak | `localhost:8080` |
 | Coletor OTLP | `localhost:4317` (gRPC) e `localhost:4318` (HTTP) |
 | Grafana | `localhost:3000`, usuário e senha `admin` |
-| Processo `wager` | `localhost:8090` |
+| Balanceador, na frente das réplicas do `wager` | `localhost:8090` |
 
 Consulta dos backends, a partir do host: Tempo em `localhost:3200`, Loki em `localhost:3100`, Prometheus em `localhost:9095`.
+
+### Réplicas
+
+O Compose sobe três réplicas do processo, cada uma com o próprio processo, memória e pool, sobre o mesmo banco, o mesmo broker e o mesmo IdP. Nenhuma réplica publica porta no host: `localhost:8090` é o `balancer`, um HAProxy que descobre as réplicas pelo DNS do Docker, manda tráfego só para a que responde `GET /health/ready` com 200 e, quando a conexão com uma delas é recusada, tenta outra. Um pedido que já chegou a uma réplica não é reenviado a outra. Sem nenhuma réplica pronta — o banco fora, por exemplo —, o balanceador responde 503 sem encaminhar, inclusive em `/health/live`; a liveness de cada réplica é o healthcheck dela, que `docker compose ps` mostra ([ADR 0033](docs/adr/0033-replicas-do-compose-atras-de-um-haproxy.md)).
+
+```bash
+WAGER_REPLICAS=5 docker compose up -d --build --wait  # o número vem de WAGER_REPLICAS, também lido do .env
+make up REPLICAS=5                                    # o mesmo, recusando antes um número que não seja inteiro ≥ 1
+docker compose logs -f wager                          # todas, intercaladas, cada linha com o nome da réplica
+docker compose logs -f --index 2 wager                # só a segunda
+```
+
+O balanceador enxerga até dez réplicas; acima disso, as excedentes sobem e não recebem tráfego. O teto é o `1-10` do `server-template` em `deploy/haproxy/haproxy.cfg`. O Prometheus raspa cada réplica em separado, pelo mesmo DNS, com o IP e a porta no rótulo `instance`.
+
+Parar uma réplica com `docker stop` a tira da rotação sem que um pedido falhe: no `SIGTERM` ela deixa de aceitar conexão, e o balanceador manda o pedido a outra enquanto a sonda não a marca fora, o que leva até dois segundos. Com `docker kill` falha só o que estava em curso nela. `docker compose up -d --wait` a devolve.
 
 ## Schema
 
@@ -266,14 +280,13 @@ As duas respondem 200 com a mesma representação: `transactionId`, estado, prov
 
 ## Broker
 
-Com o LocalStack saudável:
+O `docker compose up` provisiona o broker sozinho: o serviço `provision` roda `terraform init` e `apply` com a imagem `hashicorp/terraform`, na versão fixada no `compose.yaml`, contra o LocalStack pela rede do Compose, antes de qualquer réplica ([ADR 0032](docs/adr/0032-apply-do-broker-como-servico-do-compose.md)). O host não precisa de Terraform. Para rodar o apply de novo:
 
 ```bash
-terraform -chdir=deploy/terraform/localstack init
-terraform -chdir=deploy/terraform/localstack apply
+docker compose run --rm provision   # ou make provision
 ```
 
-O estado fica em `deploy/terraform/localstack/terraform.tfstate`. Não há Terraform Cloud.
+O estado fica em `deploy/terraform/localstack/terraform.tfstate`. Não há Terraform Cloud. O contêiner roda como root, e o último passo devolve o estado, o backup, a chave e o lock ao dono do diretório, que os lê e apaga sem `sudo`. O cache do provider, perto de 700 MB, fica no volume `terraform` do Compose, e o primeiro `up` o baixa. Um `.terraform/` que um apply do host tenha deixado nesse diretório não é mais usado e pode ser apagado.
 
 O apply cria:
 
@@ -288,9 +301,11 @@ O mapa admite mais de uma entrada, ainda que o apply crie um remetente só. É a
 
 No LocalStack community o IAM é parcial: a chave do `wager-sender` consegue `SendMessage`, mas a política pode não ser aplicada como na AWS. O principal continua criado.
 
-O LocalStack community não persiste: qualquer reinício do container esvazia filas e tópico, com ou sem `docker compose down -v`. O `terraform.tfstate` no disco continua afirmando que eles existem, e é o refresh do próximo `terraform apply` que percebe a diferença e recria tudo. Depois de reiniciar o LocalStack, rode o apply de novo. A access key do `wager-sender` muda nessa recriação, e `wager-sender.keys` é reescrito.
+O LocalStack community não persiste: qualquer reinício do container esvazia filas e tópico, com ou sem `docker compose down -v`. O `terraform.tfstate` no disco continua afirmando que eles existem, e é o refresh do apply seguinte que percebe a diferença e recria tudo; a access key do `wager-sender` muda nessa recriação, e `wager-sender.keys` é reescrito. Toda subida roda esse apply, e `docker compose restart localstack` também: o `provision` depende do broker com `restart: true`, e o Compose o roda de novo quando é ele quem reinicia o broker. Um reinício por fora do Compose — `docker restart`, o daemon do Docker voltando — não dispara nada, e aí é preciso `make provision`.
 
-O ready do processo só fica verde depois desse apply: a fila `wager-transactions.fifo` precisa existir, e sem ela `GET /health/ready` responde 503 enquanto `GET /health/live` continua 200. O tópico não entra no ready, mas precisa existir para o relay publicar: sem ele a linha da outbox fica na fila e o log do processo mostra a recusa. O `pprof` escuta em `127.0.0.1:6060` dentro do container e o Compose não publica essa porta.
+O ready de cada réplica só fica verde com a fila `wager-transactions.fifo` existindo: sem ela, `GET /health/ready` responde 503 enquanto a liveness continua 200, e o balanceador para de encaminhar. O tópico não entra no ready, e é por ele que o broker vazio perde eventos. O que já estava na outbox, e o que o worker de referência concluir nesse meio-tempo, vai a um tópico que não existe; o broker responde que ele não existe, e o relay trata isso como recusa permanente, de propósito, porque na AWS é erro de configuração. Na décima recusa, cerca de quatro minutos depois pelo backoff, a linha é marcada morta e fica morta: depois do apply os eventos seguintes saem, e aqueles não saem nunca. As linhas mortas contam em `wager_outbox_dead_events_total` e aparecem no painel. O caminho de volta é rodar `make provision` antes de as dez recusas acabarem; `make verify` nomeia a fila ou o tópico que falta.
+
+O `pprof` escuta em `127.0.0.1:6060` dentro de cada réplica, e o Compose não publica essa porta.
 
 No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` os quatro componentes de fundo param de reivindicar, buscar ou ler. O worker de referência conclui ou desfaz a espera que já reivindicou dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica. O relay conclui o envio em curso dentro do lease que já segura — o sinal corta a varredura, não o envio que já tem reivindicação, e quem corta o envio é o prazo do processo. O que ele não confirmar continua publicável, com o mesmo `eventId`, e outra réplica reivindica depois do prazo. O consumidor da fila para de buscar mensagem nova e conclui a que tem em mãos dentro do prazo; cortada por ele, a mensagem volta à fila com visibilidade zero, para ser entregue de novo sem esperar a invisibilidade que ninguém mais vai servir. O observador de divergência não começa turno novo, e a leitura em curso é cancelada: nada do que ele faz é gravável, então não há o que concluir.
 
@@ -425,7 +440,7 @@ Não há Alertmanager: o alerta aparece no Prometheus e no Grafana, e não há p
 make rules-test
 ```
 
-O processo manda trace e log por OTLP. A série de processo não vai por esse caminho: ela sai pelo `/metrics`, que o Prometheus raspa em `wager:8090`, para heap e goroutines terem uma fonte só. O outro alvo, `otel-collector:8889`, publica o que chegar ao coletor por OTLP.
+O processo manda trace e log por OTLP. A série de processo não vai por esse caminho: ela sai pelo `/metrics` de cada réplica, que o Prometheus descobre pelo DNS do Docker e raspa em separado, para heap e goroutines terem uma fonte só. O outro alvo, `otel-collector:8889`, publica o que chegar ao coletor por OTLP.
 
 A latência HTTP sai em OpenMetrics com exemplar de `trace_id`. O Prometheus sobe com `--enable-feature=exemplar-storage` e o datasource liga esse exemplar ao Tempo, então o ponto do gráfico abre o trace.
 
@@ -445,7 +460,7 @@ A suíte de jornada vive em `internal/e2e/`, atrás da tag `integration`, e pede
 
 ```bash
 docker compose up -d --wait postgres localstack keycloak otel-collector
-terraform -chdir=deploy/terraform/localstack apply -auto-approve
+docker compose run --rm provision
 
 # o banco da suíte, uma vez e idempotente: CREATE DATABASE não aceita IF NOT EXISTS
 docker compose exec -T postgres psql -U junglegaming -d junglegaming -tAc \

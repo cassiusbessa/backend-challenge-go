@@ -151,7 +151,8 @@ internal/suiteenv/         o que toda suíte de jornada precisa para alcançar o
 
 deploy/
   migrations/              o SQL versionado, aplicado uma vez antes das réplicas
-  terraform/localstack/    filas, tópico e papel IAM do remetente
+  terraform/localstack/    filas, tópico e papel IAM do remetente; o Compose roda o apply antes das réplicas
+  haproxy/                 o balanceador das réplicas no Compose, em localhost:8090
   keycloak/                o realm de desenvolvimento
   local/                   os mapas versionados: clientes e remetentes
   otel/ tempo/ loki/ prometheus/ grafana/   a stack de observabilidade do Compose, com o painel
