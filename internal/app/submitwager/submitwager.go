@@ -71,6 +71,15 @@ type defect struct{ error }
 // Defect reports that the failure is ours and not the caller's.
 func (defect) Defect() bool { return true }
 
+// The border reads these behaviours through interfaces of its own, which this
+// package cannot name without importing it: the anonymous ones are what break
+// the build when a method is renamed here (ADR 0008).
+var (
+	_ interface{ RetryShortly() bool }     = transient{}
+	_ interface{ Defect() bool }           = defect{}
+	_ interface{ IdempotentReplay() bool } = Replayed{}
+)
+
 // Clock reads the instant the operation is stamped with.
 type Clock interface {
 	Now() time.Time

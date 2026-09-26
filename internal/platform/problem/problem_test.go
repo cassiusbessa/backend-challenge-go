@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 )
@@ -462,5 +464,49 @@ func TestIsReplay_answersOnlyForAMarkedOutcome(t *testing.T) {
 	t.Parallel()
 	if got := isReplay(errors.New("submit wager: first arrival")); got {
 		t.Fatalf("isReplay of an unmarked failure = %t, want false", got)
+	}
+}
+
+// The border reads the failures of the use cases by behaviour, and the use cases
+// satisfy it by shape without importing this package. The other cases of this
+// file use local fakes, so only this one ties the border to the names the use
+// cases export: a rename on either side would turn the 503 with Retry-After into
+// a 500 in silence (ADR 0008).
+func TestFrom_classifiesTheFailuresTheUseCasesExport(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		err        error
+		class      Class
+		retryAfter string
+	}{
+		{name: "an outcome still in flight", err: submitwager.ErrOutcomeInFlight, class: Retryable, retryAfter: retryAfter},
+		{name: "a race whose winner rolled back", err: submitwager.ErrRaceUnresolved, class: Retryable, retryAfter: retryAfter},
+		{name: "a kind the settlement has no arm for", err: submitwager.ErrKindNotAccepted, class: Internal},
+		{name: "a kind that cannot wait for a reference", err: resolvereference.ErrKindNotWaited, class: Internal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			details := From(fmt.Errorf("submit wager: %w", tc.err))
+			if details.Class != tc.class {
+				t.Fatalf("class of %s = %d, want %d", tc.name, details.Class, tc.class)
+			}
+			written := httptest.NewRecorder()
+			Write(written, requestTo("/wagering/transactions"), details)
+			if got := written.Header().Get("Retry-After"); got != tc.retryAfter {
+				t.Fatalf("Retry-After written for %s = %q, want %q", tc.name, got, tc.retryAfter)
+			}
+		})
+	}
+}
+
+// The recorded refusal of the settlement is marked by its type, and the marker
+// is a behaviour of the type and not of the rejection it wraps, which only the
+// use case can fill. The zero value is what ties the name this border looks for
+// to the one the use case exports.
+func TestIsReplay_readsTheMarkerTheSettlementExports(t *testing.T) {
+	t.Parallel()
+	if got := isReplay(submitwager.Replayed{}); !got {
+		t.Fatalf("isReplay of submitwager.Replayed = %t, want true", got)
 	}
 }

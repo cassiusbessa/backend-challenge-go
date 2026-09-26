@@ -37,6 +37,10 @@ type defect struct{ error }
 // Defect reports that the failure is ours and not a caller's.
 func (defect) Defect() bool { return true }
 
+// The border reads the behaviour through an interface of its own, which this
+// package cannot name: the anonymous one breaks the build on a rename here.
+var _ interface{ Defect() bool } = defect{}
+
 // Clock reads the instant the decision is stamped with and the one the deadline
 // is measured against.
 type Clock interface {
