@@ -69,7 +69,7 @@ O mesmo princípio vale para erros: a borda HTTP declara as interfaces de compor
 - **Zero value inválido**: `Money{}`, `Wallet{}`, `Transaction{}` não são valores de negócio. Construção só por construtor; reidratação é função separada que não reaplica movimento nem emite evento.
 - **Uma função de domínio por tipo de operação** — `Bet`, `Win`, `Loss`, `Refund`, `Rollback` — em vez de um *domain service*. Nenhuma calcula saldo: quem calcula é `Wallet.move`, único escritor do saldo. O caso de uso escolhe a função pelo `kind` e não faz mais nada com ele.
 - **Um caso de uso por pacote**: `openwallet`, `submitwager`, `resolvereference`, `relayoutbox`, `receivewager`, e as leituras.
-- **Leituras fora do agregado**: `readwallet`, `readwager`, `listledger` e `reconcilewallet` devolvem modelos de leitura direto do SQL, sem reidratar nem chamar `Debit`. Um `GET` não move dinheiro e não paga por um agregado. A reconciliação lê os dois saldos numa sentença só e decide o veredito no caso de uso ([ADR 0022](docs/adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md)); o extrato continua de um cursor opaco amarrado à carteira ([ADR 0023](docs/adr/0023-cursor-opaco-amarrado-a-carteira.md)).
+- **Leituras fora do agregado**: `readwallet`, `readwager`, `listledger` e `reconcilewallet` devolvem modelos de leitura direto do SQL, sem reidratar nem chamar `Debit`. Uma leitura não move dinheiro e não paga por um agregado — nem a reconciliação, que o enunciado pede em `POST` ([ADR 0029](docs/adr/0029-contrato-http-segue-o-enunciado.md)). A reconciliação lê os dois saldos numa sentença só e decide o veredito no caso de uso ([ADR 0022](docs/adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md)); o extrato continua de um cursor opaco amarrado à carteira ([ADR 0023](docs/adr/0023-cursor-opaco-amarrado-a-carteira.md)).
 
 ### DDD tático — o que não usamos, de propósito
 
@@ -90,7 +90,7 @@ Os cenários obrigatórios do enunciado provam isso com várias instâncias inde
 
 ### Um commit
 
-A memória da mensagem (inbox), o saldo, a linha da transação, o lançamento e os eventos (outbox) entram na mesma transação SQL, em `READ COMMITTED`. Uma rejeição de negócio **commita** a própria linha `REJECTED` e ainda assim sai como `422` — a recusa viaja ao lado do resultado, não como erro da unit of work ([ADR 0004](docs/adr/0004-rejeicao-duravel-ao-lado-do-resultado.md)). Falha transitória desfaz tudo e tenta de novo. Nada é publicado antes do commit: o relay lê a outbox depois, reivindica por lease e publica fora de qualquer transação ([ADR 0013](docs/adr/0013-publicar-fora-da-transacao-sob-lease.md)).
+A memória da mensagem (inbox), o saldo, a linha da transação, o lançamento e os eventos (outbox) entram na mesma transação SQL, em `READ COMMITTED`. Uma rejeição de negócio **commita** a própria linha `REJECTED` e ainda assim sai como `422` — a recusa viaja ao lado do resultado, não como erro da unit of work ([ADR 0004](docs/adr/0004-rejeicao-duravel-ao-lado-do-resultado.md)). O corpo, em problem details, leva a identidade dessa linha na extensão `transactionId`, e é a única divergência deliberada do contrato do enunciado ([ADR 0029](docs/adr/0029-contrato-http-segue-o-enunciado.md)). Falha transitória desfaz tudo e tenta de novo. Nada é publicado antes do commit: o relay lê a outbox depois, reivindica por lease e publica fora de qualquer transação ([ADR 0013](docs/adr/0013-publicar-fora-da-transacao-sob-lease.md)).
 
 ### Duas classes de erro
 
@@ -180,5 +180,5 @@ Uma linha cada, com o lugar onde está garantida:
 - **Cada operação aceita uma reversão** — decidido pela consulta sob o lock; o índice parcial é a invariante ([ADR 0003](docs/adr/0003-already-reversed-decidido-sob-o-lock.md)).
 - **`failureCode` só sai do catálogo** — `NewRejection` recusa o que não está nele ([ADR 0007](docs/adr/0007-catalogo-fechado-de-failure-code.md)).
 - **Nada é publicado antes do commit** — o relay lê a outbox depois ([ADR 0013](docs/adr/0013-publicar-fora-da-transacao-sob-lease.md)).
-- **O `providerId` do corpo não autoriza** — vale o cliente do token, cruzado com o mapa ([05](docs/05-transversais.md)).
+- **O `providerId` do corpo ou da URL não autoriza** — vale o cliente do token, cruzado com o mapa ([05](docs/05-transversais.md)).
 - **Nenhum `float` toca dinheiro, e nenhum valor financeiro toca o log** — `Money` é `int64`; o handler de log descarta atributo fora da lista branca ([05](docs/05-transversais.md)).
