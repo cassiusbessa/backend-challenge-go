@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // ingressConsumer is the consumer of the queue, as the row names it.
@@ -103,7 +104,7 @@ func message(t *testing.T) storage.Message {
 	t.Helper()
 	return storage.Message{
 		Consumer:  ingressConsumer,
-		MessageID: newID(),
+		MessageID: suiteenv.NewID(),
 		BodyHash:  "hash-of-the-body",
 		At:        time.Date(2026, time.September, 25, 12, 0, 0, 0, time.UTC),
 	}

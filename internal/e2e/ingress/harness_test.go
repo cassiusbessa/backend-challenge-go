@@ -37,6 +37,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/app"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // The secrets of the local realm. They are the documented example values of the
@@ -168,14 +169,14 @@ func boot(ctx context.Context, t *testing.T, overrides map[string]string) string
 func suiteEnv() map[string]string {
 	return map[string]string{
 		"HTTP_ADDR":                   "127.0.0.1:0",
-		"DATABASE_URL":                databaseURL(),
-		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
-		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
-		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
-		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		"DATABASE_URL":                suiteenv.DatabaseURL(),
+		"SQS_ENDPOINT":                suiteenv.Or("SQS_ENDPOINT", "http://localhost:4566"),
+		"SNS_ENDPOINT":                suiteenv.Or("SNS_ENDPOINT", "http://localhost:4566"),
+		"SNS_TOPIC_ARN":               suiteenv.Or("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
+		"OTEL_EXPORTER_OTLP_ENDPOINT": suiteenv.Or("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  issuer(),
-		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
-		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
+		"CLIENTS_PATH":                suiteenv.Or("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
+		"PPROF_ADDR":                  suiteenv.Or("PPROF_ADDR", "127.0.0.1:0"),
 		// The three windows of the consumer, shortened so a case does not wait out
 		// the defaults of production, and kept in the order the invariant asks: the
 		// invisibility covers the wait of the poll plus the decision.
@@ -264,7 +265,7 @@ func clientWith(ctx context.Context, t *testing.T, key, secret string) *sqs.Clie
 		t.Fatalf("load the aws configuration = %v, want nil", err)
 	}
 	return sqs.NewFromConfig(awsCfg, func(o *sqs.Options) {
-		o.BaseEndpoint = aws.String(envOr("SQS_ENDPOINT", "http://localhost:4566"))
+		o.BaseEndpoint = aws.String(suiteenv.Or("SQS_ENDPOINT", "http://localhost:4566"))
 	})
 }
 
@@ -285,7 +286,7 @@ func (q *queues) send(ctx context.Context, t *testing.T, sender, group, body str
 		QueueUrl:               aws.String(q.ingress),
 		MessageBody:            aws.String(body),
 		MessageGroupId:         aws.String(strings.ToLower(group)),
-		MessageDeduplicationId: aws.String(newID()),
+		MessageDeduplicationId: aws.String(suiteenv.NewID()),
 	})
 	if err != nil {
 		t.Fatalf("send as %s = %v, want nil", sender, err)
@@ -367,9 +368,9 @@ const (
 func message(identity string, data map[string]any, top map[string]any) string {
 	body := map[string]any{
 		"providerId":            mappedProvider,
-		"externalTransactionId": "external-" + newID(),
-		"idempotencyKey":        "key-" + newID(),
-		"roundId":               "round-" + newID(),
+		"externalTransactionId": "external-" + suiteenv.NewID(),
+		"idempotencyKey":        "key-" + suiteenv.NewID(),
+		"roundId":               "round-" + suiteenv.NewID(),
 		"gameId":                "game-1",
 		"kind":                  "BET",
 		"money":                 map[string]string{"amount": "25.00", "currency": "BRL"},
@@ -406,7 +407,7 @@ const openingBalance = "1000.00"
 
 func openWallet(ctx context.Context, t *testing.T, at suite) owner {
 	t.Helper()
-	player := newID()
+	player := suiteenv.NewID()
 	payload, err := json.Marshal(map[string]any{
 		"playerId":       player,
 		"initialBalance": map[string]string{"amount": openingBalance, "currency": "BRL"},
@@ -487,37 +488,16 @@ func tokenFor(ctx context.Context, t *testing.T, clientID, secret string) string
 }
 
 func issuer() string {
-	return envOr("IDP_ISSUER", envOr("KEYCLOAK_BASE_URL", "http://localhost:8080")+"/realms/junglegaming")
+	return suiteenv.Or("IDP_ISSUER", suiteenv.Or("KEYCLOAK_BASE_URL", "http://localhost:8080")+"/realms/junglegaming")
 }
 
 func connect(ctx context.Context, t *testing.T) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(ctx, databaseURL())
+	conn, err := pgx.Connect(ctx, suiteenv.DatabaseURL())
 	if err != nil {
 		t.Fatalf("connect = %v, want nil: the suite needs the migration applied", err)
 	}
 	closing := context.WithoutCancel(ctx)
 	t.Cleanup(func() { _ = conn.Close(closing) })
 	return conn
-}
-
-// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
-// never the database the running application uses: the outbox relay of that
-// process scans the whole table every second and publishes the row a case here
-// expects to see dead.
-const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
-
-func databaseURL() string {
-	return envOr("DATABASE_URL", suiteDatabaseURL)
-}
-
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func newID() string {
-	return uuid.NewV7().String()
 }

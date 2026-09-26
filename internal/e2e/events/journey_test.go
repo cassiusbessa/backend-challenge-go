@@ -13,6 +13,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // The whole path of one settled bet: the two rows of its commit, the relay
@@ -193,7 +194,7 @@ func TestSubmit_leavesNoEventBehindWhenTheCommitWasUndone(t *testing.T) {
 	// unique index refuses, and it aborts the transaction halfway: the balance
 	// write, the row and the events of it are undone together.
 	twin := first
-	twin.IdempotencyKey = tokenOf(t, identity.ParseIdempotencyKey, "key-"+newID())
+	twin.IdempotencyKey = tokenOf(t, identity.ParseIdempotencyKey, "key-"+suiteenv.NewID())
 	_, refusal := stack.wagers.Submit(ctx, twin)
 	var rejection wager.Rejection
 	if !errors.As(refusal, &rejection) || rejection.Code() != wager.DuplicateExternalTransaction {

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // The consumer of the ingress queue, as the row names it. Two names are used
@@ -18,7 +20,7 @@ const (
 
 func TestInboxMessages_acceptTheSameConsumerAndMessageOnlyOnce(t *testing.T) {
 	ctx, conn := connect(t)
-	message := newID()
+	message := suiteenv.NewID()
 	if err := insertInbox(ctx, conn, inbox{consumer: ingressConsumer, message: message, hash: "hash-1"}); err != nil {
 		t.Fatalf("first inbox row = %v, want nil", err)
 	}
@@ -31,7 +33,7 @@ func TestInboxMessages_acceptTheSameConsumerAndMessageOnlyOnce(t *testing.T) {
 
 func TestInboxMessages_acceptTheSameMessageFromTwoConsumers(t *testing.T) {
 	ctx, conn := connect(t)
-	message := newID()
+	message := suiteenv.NewID()
 	if err := insertInbox(ctx, conn, inbox{consumer: ingressConsumer, message: message, hash: "hash-1"}); err != nil {
 		t.Fatalf("row of the first consumer = %v, want nil", err)
 	}
@@ -45,7 +47,7 @@ func TestInboxMessages_acceptTheSameMessageFromTwoConsumers(t *testing.T) {
 // the second into the first.
 func TestInboxMessages_refuseAnUpdateOverTheRecordedHash(t *testing.T) {
 	ctx, conn := connect(t)
-	message := newID()
+	message := suiteenv.NewID()
 	if err := insertInbox(ctx, conn, inbox{consumer: ingressConsumer, message: message, hash: "hash-1"}); err != nil {
 		t.Fatalf("inbox row = %v, want nil", err)
 	}
@@ -63,7 +65,7 @@ func TestInboxMessages_refuseAnUpdateOverTheRecordedHash(t *testing.T) {
 // privilege.
 func TestApplicationRole_holdsOnlySelectAndInsertOnTheInbox(t *testing.T) {
 	ctx, conn := connect(t)
-	message := newID()
+	message := suiteenv.NewID()
 	if err := insertInbox(ctx, conn, inbox{consumer: ingressConsumer, message: message, hash: "hash-1"}); err != nil {
 		t.Fatalf("inbox row of the role case = %v, want nil", err)
 	}

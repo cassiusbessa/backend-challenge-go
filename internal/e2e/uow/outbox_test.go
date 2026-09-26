@@ -14,6 +14,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/event"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 func TestInsert_keepsTheEventOfACommitThatWentThrough(t *testing.T) {
@@ -71,7 +72,7 @@ func processedEvent(t *testing.T, opened set) event.Envelope {
 func processedEventAt(t *testing.T, opened set, at time.Time) event.Envelope {
 	t.Helper()
 	built, err := event.NewProcessed(event.Spec{
-		ID:          eventOf(t, newID()),
+		ID:          eventOf(t, suiteenv.NewID()),
 		AggregateID: opened.wallet.ID(),
 		At:          at,
 	}, opened.transaction)

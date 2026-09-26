@@ -19,6 +19,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // TestMain falls back to LocalStack when the database and the endpoint do not
@@ -111,28 +112,19 @@ func TestWagerRoutesAreServedAndReconciliationIsNot(t *testing.T) {
 
 func startProcess(t *testing.T, queueURL string) string {
 	t.Helper()
-	return startProcessWith(t, queueURL, databaseURL())
+	return startProcessWith(t, queueURL, suiteenv.DatabaseURL())
 }
-
-// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
-// never the database the running application uses: the outbox relay of that
-// process scans the whole table every second and publishes the row a case here
-// expects to see dead.
-const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
 
 // unreachableDatabaseURL names a port nothing listens on, so that readiness is
 // asked about a database it cannot reach rather than one that is merely empty.
 const unreachableDatabaseURL = "postgres://junglegaming:junglegaming@127.0.0.1:1/junglegaming_test?sslmode=disable"
 
-func databaseURL() string {
-	return envOr("DATABASE_URL", suiteDatabaseURL)
-}
-
 func startProcessWith(t *testing.T, queueURL, databaseURL string) string {
 	t.Helper()
+	// The map is built once, outside the lookup: config.Load asks for one key at a
+	// time, and building it inside re-read the whole environment for every key.
+	env := integrationEnv(queueURL, databaseURL)
 	cfg, err := config.Load(func(key string) string {
-		env := integrationEnv(queueURL)
-		env["DATABASE_URL"] = databaseURL
 		return env[key]
 	})
 	if err != nil {
@@ -157,7 +149,7 @@ func startProcessWith(t *testing.T, queueURL, databaseURL string) string {
 
 func createQueue(ctx context.Context, t *testing.T) string {
 	t.Helper()
-	client, err := probe.NewClient(ctx, envOr("SQS_ENDPOINT", "http://localhost:4566"))
+	client, err := probe.NewClient(ctx, suiteenv.Or("SQS_ENDPOINT", "http://localhost:4566"))
 	if err != nil {
 		t.Fatalf("sqs: %v", err)
 	}
@@ -179,31 +171,24 @@ func createQueue(ctx context.Context, t *testing.T) string {
 }
 
 func unknownQueue() string {
-	return strings.TrimRight(envOr("SQS_ENDPOINT", "http://localhost:4566"), "/") + "/000000000000/missing-wager.fifo"
+	return strings.TrimRight(suiteenv.Or("SQS_ENDPOINT", "http://localhost:4566"), "/") + "/000000000000/missing-wager.fifo"
 }
 
-func integrationEnv(queueURL string) map[string]string {
+func integrationEnv(queueURL, databaseURL string) map[string]string {
 	return map[string]string{
 		"HTTP_ADDR":                   "127.0.0.1:0",
-		"DATABASE_URL":                databaseURL(),
-		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
-		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
-		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
+		"DATABASE_URL":                databaseURL,
+		"SQS_ENDPOINT":                suiteenv.Or("SQS_ENDPOINT", "http://localhost:4566"),
+		"SNS_ENDPOINT":                suiteenv.Or("SNS_ENDPOINT", "http://localhost:4566"),
+		"SNS_TOPIC_ARN":               suiteenv.Or("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
 		"SQS_QUEUE_URL":               queueURL,
 		"SQS_DLQ_URL":                 queueURL,
-		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
-		"IDP_ISSUER":                  envOr("IDP_ISSUER", "http://localhost:8080/realms/junglegaming"),
-		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
-		"QUEUE_SENDERS_PATH":          envOr("QUEUE_SENDERS_PATH", "../../../deploy/local/queue-senders.yaml"),
-		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
+		"OTEL_EXPORTER_OTLP_ENDPOINT": suiteenv.Or("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		"IDP_ISSUER":                  suiteenv.Or("IDP_ISSUER", "http://localhost:8080/realms/junglegaming"),
+		"CLIENTS_PATH":                suiteenv.Or("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
+		"QUEUE_SENDERS_PATH":          suiteenv.Or("QUEUE_SENDERS_PATH", "../../../deploy/local/queue-senders.yaml"),
+		"PPROF_ADDR":                  suiteenv.Or("PPROF_ADDR", "127.0.0.1:0"),
 	}
-}
-
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func statusCode(ctx context.Context, t *testing.T, rawURL string) int {

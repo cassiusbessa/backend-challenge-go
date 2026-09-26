@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // openingEvents is what the birth of the wallet leaves in the outbox: the outcome
@@ -20,7 +22,7 @@ func TestIngress_settlesABetThatArrivedOnTheQueue(t *testing.T) {
 	ctx, at := start(t)
 	conn := connect(ctx, t)
 	holder := openWallet(ctx, t, at)
-	identity := newID()
+	identity := suiteenv.NewID()
 	at.queues.send(ctx, t, mappedSender, holder.id, holder.bet(identity, "25.00", nil))
 
 	at.queues.awaitEmpty(ctx, t)
@@ -66,7 +68,7 @@ func TestIngress_changesNothingWhenTheSameMessageIsRedelivered(t *testing.T) {
 	ctx, at := start(t)
 	conn := connect(ctx, t)
 	holder := openWallet(ctx, t, at)
-	identity := newID()
+	identity := suiteenv.NewID()
 	body := holder.bet(identity, "25.00", nil)
 	at.queues.send(ctx, t, mappedSender, holder.id, body)
 	at.queues.awaitEmpty(ctx, t)
@@ -103,7 +105,7 @@ func TestIngress_abandonsAMessageWhoseBodyDeclaresAnotherProvider(t *testing.T) 
 	ctx, at := start(t)
 	conn := connect(ctx, t)
 	holder := openWallet(ctx, t, at)
-	identity := newID()
+	identity := suiteenv.NewID()
 	body := holder.bet(identity, "25.00", map[string]any{"providerId": unmappedProvider})
 	at.queues.send(ctx, t, mappedSender, holder.id, body)
 
@@ -118,7 +120,7 @@ func TestIngress_abandonsAMessageFromASenderTheMapDoesNotName(t *testing.T) {
 	ctx, at := start(t)
 	conn := connect(ctx, t)
 	holder := openWallet(ctx, t, at)
-	identity := newID()
+	identity := suiteenv.NewID()
 	at.queues.send(ctx, t, unmappedSender, holder.id, holder.bet(identity, "25.00", nil))
 
 	at.queues.awaitDeadLetter(ctx, t)
@@ -130,7 +132,7 @@ func TestIngress_abandonsABodyItCouldNotRead(t *testing.T) {
 	ctx, at := start(t)
 	conn := connect(ctx, t)
 	holder := openWallet(ctx, t, at)
-	identity := newID()
+	identity := suiteenv.NewID()
 	broken := holder.bet(identity, "25.001", nil)
 	at.queues.send(ctx, t, mappedSender, holder.id, broken)
 
@@ -145,7 +147,7 @@ func TestIngress_abandonsARecordedIdentifierThatArrivesWithAnotherBody(t *testin
 	ctx, at := start(t)
 	conn := connect(ctx, t)
 	holder := openWallet(ctx, t, at)
-	identity := newID()
+	identity := suiteenv.NewID()
 	at.queues.send(ctx, t, mappedSender, holder.id, holder.bet(identity, "25.00", nil))
 	at.queues.awaitEmpty(ctx, t)
 	awaitEvents(ctx, t, conn, holder.id, openingEvents+2)
@@ -175,10 +177,10 @@ func TestIngress_recordsTheWaitAndLeavesTheDeferredCommitWithNoCause(t *testing.
 	ctx, at := startWith(t, map[string]string{"REFERENCE_TTL": "2s"})
 	conn := connect(ctx, t)
 	holder := openWallet(ctx, t, at)
-	identity := newID()
+	identity := suiteenv.NewID()
 	waiting := holder.bet(identity, "25.00", map[string]any{
 		"kind":                           "REFUND",
-		"referenceExternalTransactionId": "external-" + newID(),
+		"referenceExternalTransactionId": "external-" + suiteenv.NewID(),
 	})
 	at.queues.send(ctx, t, mappedSender, holder.id, waiting)
 

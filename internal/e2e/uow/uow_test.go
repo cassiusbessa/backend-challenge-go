@@ -8,10 +8,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"testing"
 	"time"
-	"uuid"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,6 +22,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 func TestWithin_writesWalletTransactionAndEntryInTheSameCommit(t *testing.T) {
@@ -120,7 +119,7 @@ func record(ctx context.Context, unit *postgres.UnitOfWork, opened set) error {
 
 func opening(t *testing.T) set {
 	t.Helper()
-	return openingFor(t, playerOf(t, newID()))
+	return openingFor(t, playerOf(t, suiteenv.NewID()))
 }
 
 func openingFor(t *testing.T, player identity.PlayerID) set {
@@ -131,11 +130,11 @@ func openingFor(t *testing.T, player identity.PlayerID) set {
 	}
 	at := time.Date(2026, time.September, 24, 12, 0, 0, 0, time.UTC)
 	opened, movement, err := wallet.Open(wallet.OpenSpec{
-		ID:             walletOf(t, newID()),
+		ID:             walletOf(t, suiteenv.NewID()),
 		PlayerID:       player,
 		InitialBalance: balance,
-		EntryID:        entryOf(t, newID()),
-		TransactionID:  transactionOf(t, newID()),
+		EntryID:        entryOf(t, suiteenv.NewID()),
+		TransactionID:  transactionOf(t, suiteenv.NewID()),
 		At:             at,
 	})
 	if err != nil {
@@ -170,7 +169,7 @@ func open(t *testing.T) (context.Context, *postgres.Pool, *postgres.UnitOfWork) 
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
-	pool := postgres.NewPool(config.Config{DatabaseURL: databaseURL()})
+	pool := postgres.NewPool(config.Config{DatabaseURL: suiteenv.DatabaseURL()})
 	if err := pool.Open(ctx); err != nil {
 		t.Fatalf("open pool = %v, want nil", err)
 	}
@@ -199,7 +198,7 @@ func assertCount(ctx context.Context, t *testing.T, conn *pgx.Conn, table, query
 
 func connect(ctx context.Context, t *testing.T) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(ctx, databaseURL())
+	conn, err := pgx.Connect(ctx, suiteenv.DatabaseURL())
 	if err != nil {
 		t.Fatalf("connect = %v, want nil: the suite needs the migration applied", err)
 	}
@@ -208,23 +207,6 @@ func connect(ctx context.Context, t *testing.T) *pgx.Conn {
 	closing := context.WithoutCancel(ctx)
 	t.Cleanup(func() { _ = conn.Close(closing) })
 	return conn
-}
-
-// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
-// never the database the running application uses: the outbox relay of that
-// process scans the whole table every second and publishes the row a case here
-// expects to see dead.
-const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
-
-func databaseURL() string {
-	if value := os.Getenv("DATABASE_URL"); value != "" {
-		return value
-	}
-	return suiteDatabaseURL
-}
-
-func newID() string {
-	return uuid.NewV7().String()
 }
 
 func walletOf(t *testing.T, text string) identity.WalletID {

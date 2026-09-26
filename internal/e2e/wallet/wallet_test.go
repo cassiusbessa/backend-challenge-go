@@ -14,7 +14,6 @@ import (
 	"os"
 	"testing"
 	"time"
-	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"go.uber.org/fx"
@@ -23,6 +22,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // TestMain falls back to the LocalStack credential when it does not come from
@@ -47,7 +47,7 @@ var localAWS = map[string]string{
 func TestOpenWallet_recordsWalletOpeningAndEntryInOneCommit(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	player := newID()
+	player := suiteenv.NewID()
 	answered, status := open(ctx, t, base, bearer, body(player, "1000.00", "BRL"))
 	if status != http.StatusCreated {
 		t.Fatalf("status of the opening with a balance = %d, want 201", status)
@@ -68,7 +68,7 @@ func TestOpenWallet_recordsWalletOpeningAndEntryInOneCommit(t *testing.T) {
 func TestOpenWallet_atZeroRecordsNeitherTransactionNorEntry(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	answered, status := open(ctx, t, base, bearer, body(newID(), "0.00", "BRL"))
+	answered, status := open(ctx, t, base, bearer, body(suiteenv.NewID(), "0.00", "BRL"))
 	if status != http.StatusCreated {
 		t.Fatalf("status of the opening at zero = %d, want 201", status)
 	}
@@ -87,7 +87,7 @@ func TestOpenWallet_atZeroRecordsNeitherTransactionNorEntry(t *testing.T) {
 func TestOpenWallet_refusesTheSecondWalletOfThePlayerInTheSameCurrency(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	player := newID()
+	player := suiteenv.NewID()
 	first, status := open(ctx, t, base, bearer, body(player, "1000.00", "BRL"))
 	if status != http.StatusCreated {
 		t.Fatalf("first opening = %d, want 201", status)
@@ -105,7 +105,7 @@ func TestOpenWallet_refusesTheSecondWalletOfThePlayerInTheSameCurrency(t *testin
 func TestOpenWallet_acceptsTheSamePlayerInAnotherCurrency(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	player := newID()
+	player := suiteenv.NewID()
 	if _, status := open(ctx, t, base, bearer, body(player, "1000.00", "BRL")); status != http.StatusCreated {
 		t.Fatalf("BRL opening = %d, want 201", status)
 	}
@@ -123,7 +123,7 @@ func TestOpenWallet_refusesEveryAmountOutsideTheContractWithoutWriting(t *testin
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
 	for _, amount := range []string{"", "NaN", "Infinity", "2.5e1", "-25.00", "25.005"} {
 		t.Run("amount "+amount+" is refused", func(t *testing.T) {
-			player := newID()
+			player := suiteenv.NewID()
 			refusal, status := openRefusal(ctx, t, base, bearer, body(player, amount, "BRL"))
 			if status != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", status)
@@ -139,7 +139,7 @@ func TestOpenWallet_refusesEveryAmountOutsideTheContractWithoutWriting(t *testin
 func TestOpenWallet_refusesAProviderByPermissionWithoutCreatingAWallet(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, providerClient, providerSecret)
-	player := newID()
+	player := suiteenv.NewID()
 	_, status := openRefusal(ctx, t, base, bearer, body(player, "1000.00", "BRL"))
 	if status != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", status)
@@ -149,7 +149,7 @@ func TestOpenWallet_refusesAProviderByPermissionWithoutCreatingAWallet(t *testin
 
 func TestOpenWallet_refusesAnAbsentCredential(t *testing.T) {
 	ctx, base := start(t)
-	player := newID()
+	player := suiteenv.NewID()
 	_, status := openRefusal(ctx, t, base, "", body(player, "1000.00", "BRL"))
 	if status != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", status)
@@ -175,7 +175,7 @@ func waitUntilRefused(ctx context.Context, t *testing.T, base, bearer string) {
 	attempts := 0
 	for time.Now().Before(deadline) {
 		attempts++
-		_, status := openRefusal(ctx, t, base, bearer, body(newID(), "1.00", "BRL"))
+		_, status := openRefusal(ctx, t, base, bearer, body(suiteenv.NewID(), "1.00", "BRL"))
 		if status == http.StatusUnauthorized {
 			return
 		}
@@ -190,7 +190,7 @@ func waitUntilRefused(ctx context.Context, t *testing.T, base, bearer string) {
 func TestReadWallet_answersTheStoredBalanceAndVersion(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	opened, status := open(ctx, t, base, bearer, body(newID(), "1000.00", "BRL"))
+	opened, status := open(ctx, t, base, bearer, body(suiteenv.NewID(), "1000.00", "BRL"))
 	if status != http.StatusCreated {
 		t.Fatalf("opening before the read = %d, want 201", status)
 	}
@@ -210,7 +210,7 @@ func TestReadWallet_answersTheStoredBalanceAndVersion(t *testing.T) {
 func TestReadWallet_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 	ctx, base := start(t)
 	bearer := tokenFor(ctx, t, internalClient, internalSecret)
-	asked := newID()
+	asked := suiteenv.NewID()
 	status, mediaType := readRefusal(ctx, t, base, bearer, asked)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", status)
@@ -226,7 +226,7 @@ func TestReadWallet_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 func TestReadWallet_refusesAProviderByPermission(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
-	opened, status := open(ctx, t, base, internal, body(newID(), "1000.00", "BRL"))
+	opened, status := open(ctx, t, base, internal, body(suiteenv.NewID(), "1000.00", "BRL"))
 	if status != http.StatusCreated {
 		t.Fatalf("opening before the provider is refused = %d, want 201", status)
 	}
@@ -372,17 +372,17 @@ func start(t *testing.T) (context.Context, string) {
 func suiteEnv() map[string]string {
 	return map[string]string{
 		"HTTP_ADDR":                   "127.0.0.1:0",
-		"DATABASE_URL":                databaseURL(),
-		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
-		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
-		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
-		"SQS_QUEUE_URL":               envOr("SQS_QUEUE_URL", "http://localhost:4566/000000000000/wager-transactions.fifo"),
-		"SQS_DLQ_URL":                 envOr("SQS_DLQ_URL", "http://localhost:4566/000000000000/wager-transactions-dlq.fifo"),
-		"OTEL_EXPORTER_OTLP_ENDPOINT": envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		"DATABASE_URL":                suiteenv.DatabaseURL(),
+		"SQS_ENDPOINT":                suiteenv.Or("SQS_ENDPOINT", "http://localhost:4566"),
+		"SNS_ENDPOINT":                suiteenv.Or("SNS_ENDPOINT", "http://localhost:4566"),
+		"SNS_TOPIC_ARN":               suiteenv.Or("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),
+		"SQS_QUEUE_URL":               suiteenv.Or("SQS_QUEUE_URL", "http://localhost:4566/000000000000/wager-transactions.fifo"),
+		"SQS_DLQ_URL":                 suiteenv.Or("SQS_DLQ_URL", "http://localhost:4566/000000000000/wager-transactions-dlq.fifo"),
+		"OTEL_EXPORTER_OTLP_ENDPOINT": suiteenv.Or("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 		"IDP_ISSUER":                  issuer(),
-		"CLIENTS_PATH":                envOr("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
-		"QUEUE_SENDERS_PATH":          envOr("QUEUE_SENDERS_PATH", "../../../deploy/local/queue-senders.yaml"),
-		"PPROF_ADDR":                  envOr("PPROF_ADDR", "127.0.0.1:0"),
+		"CLIENTS_PATH":                suiteenv.Or("CLIENTS_PATH", "../../../deploy/local/clients.yaml"),
+		"QUEUE_SENDERS_PATH":          suiteenv.Or("QUEUE_SENDERS_PATH", "../../../deploy/local/queue-senders.yaml"),
+		"PPROF_ADDR":                  suiteenv.Or("PPROF_ADDR", "127.0.0.1:0"),
 	}
 }
 
@@ -463,7 +463,7 @@ func count(ctx context.Context, t *testing.T, query string, args ...any) int64 {
 
 func connect(ctx context.Context, t *testing.T) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(ctx, databaseURL())
+	conn, err := pgx.Connect(ctx, suiteenv.DatabaseURL())
 	if err != nil {
 		t.Fatalf("connect = %v, want nil: the suite needs the migration applied", err)
 	}
@@ -472,25 +472,4 @@ func connect(ctx context.Context, t *testing.T) *pgx.Conn {
 	closing := context.WithoutCancel(ctx)
 	t.Cleanup(func() { _ = conn.Close(closing) })
 	return conn
-}
-
-// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
-// never the database the running application uses: the outbox relay of that
-// process scans the whole table every second and publishes the row a case here
-// expects to see dead.
-const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
-
-func databaseURL() string {
-	return envOr("DATABASE_URL", suiteDatabaseURL)
-}
-
-func newID() string {
-	return uuid.NewV7().String()
-}
-
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }

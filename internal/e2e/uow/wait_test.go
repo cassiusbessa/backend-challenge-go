@@ -18,13 +18,14 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wallet"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 func TestByExternalID_answersTheOperationThatProviderRecorded(t *testing.T) {
 	ctx, _, unit := open(t)
 	opened := stored(ctx, t, unit)
-	external := "external-" + newID()
-	recorded := rejection(t, opened.wallet, "key-"+newID(), external)
+	external := "external-" + suiteenv.NewID()
+	recorded := rejection(t, opened.wallet, "key-"+suiteenv.NewID(), external)
 	insert(ctx, t, unit, recorded)
 	state := citedOf(ctx, t, unit, recorded.ProviderID(), externalOf(t, external))
 	if state.ID != recorded.ID() || state.Status != wager.Rejected {
@@ -38,10 +39,10 @@ func TestByExternalID_answersTheOperationThatProviderRecorded(t *testing.T) {
 func TestByExternalID_answersTheSameAbsenceForAnotherProviderAndForNothing(t *testing.T) {
 	ctx, _, unit := open(t)
 	opened := stored(ctx, t, unit)
-	external := "external-" + newID()
-	insert(ctx, t, unit, rejection(t, opened.wallet, "key-"+newID(), external))
+	external := "external-" + suiteenv.NewID()
+	insert(ctx, t, unit, rejection(t, opened.wallet, "key-"+suiteenv.NewID(), external))
 	alien := citedError(ctx, t, unit, providerOf(t, "provider-b"), externalOf(t, external))
-	absent := citedError(ctx, t, unit, providerOf(t, "provider-a"), externalOf(t, "external-"+newID()))
+	absent := citedError(ctx, t, unit, providerOf(t, "provider-a"), externalOf(t, "external-"+suiteenv.NewID()))
 	if !errors.Is(alien, storage.ErrTransactionNotFound) || !errors.Is(absent, storage.ErrTransactionNotFound) {
 		t.Fatalf("alien = %v and absent = %v, want both %v", alien, absent, storage.ErrTransactionNotFound)
 	}
@@ -55,7 +56,7 @@ func TestByExternalID_answersTheSameAbsenceForAnotherProviderAndForNothing(t *te
 func TestHasProcessedReversal_countsOnlyTheReversalThatWentThrough(t *testing.T) {
 	ctx, _, unit := open(t)
 	opened := stored(ctx, t, unit)
-	cited := externalOf(t, "external-"+newID())
+	cited := externalOf(t, "external-"+suiteenv.NewID())
 	provider := providerOf(t, "provider-a")
 	if got := reversed(ctx, t, unit, provider, cited); got {
 		t.Fatalf("reversal of an operation nobody reversed = %t, want false", got)
@@ -349,7 +350,7 @@ func storedWait(ctx context.Context, t *testing.T, unit *postgres.UnitOfWork, ow
 
 func storedWaitAt(ctx context.Context, t *testing.T, unit *postgres.UnitOfWork, owner *wallet.Wallet, next time.Time) *wager.Transaction {
 	t.Helper()
-	op := citing(t, owner, wager.KindWin, "25.00", externalOf(t, "external-"+newID()))
+	op := citing(t, owner, wager.KindWin, "25.00", externalOf(t, "external-"+suiteenv.NewID()))
 	if err := op.WaitForReference(next, waitDeadline(), stamp()); err != nil {
 		t.Fatalf("WaitForReference = %v, want nil", err)
 	}
@@ -365,11 +366,11 @@ func citing(t *testing.T, owner *wallet.Wallet, kind wager.Kind, amount string, 
 	if err != nil {
 		t.Fatalf("money.Parse = %v, want nil", err)
 	}
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	op, err := wager.NewExternal(wager.ExternalSpec{
-		ID:                  transactionOf(t, newID()),
+		ID:                  transactionOf(t, suiteenv.NewID()),
 		ProviderID:          providerOf(t, "provider-a"),
-		ExternalID:          externalOf(t, "external-"+newID()),
+		ExternalID:          externalOf(t, "external-"+suiteenv.NewID()),
 		IdempotencyKey:      keyOf(t, key),
 		BodyHash:            "hash-" + key,
 		PlayerID:            owner.PlayerID(),

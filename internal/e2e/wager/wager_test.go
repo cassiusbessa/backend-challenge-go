@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 func TestSubmit_settlesTheRoundAndAnswersEachTransaction(t *testing.T) {
@@ -84,7 +85,7 @@ func TestSubmit_replaysTheSameKeyAndTheSameBody(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
 	payload := wallet.bet("25.00", nil)
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 
 	first := submit(ctx, t, at, at.provider, key, payload)
 	if first.status != http.StatusCreated {
@@ -114,7 +115,7 @@ func TestSubmit_replaysTheSameKeyAndTheSameBody(t *testing.T) {
 func TestSubmit_keepsTheRejectedRowAndMovesNothing(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	payload := wallet.bet("2000.00", nil)
 	assertRefusedByBalance(ctx, t, at, key, payload)
 	assertWallet(ctx, t, wallet.id, 100000, 1)
@@ -157,8 +158,8 @@ func assertRefusalReplayed(ctx context.Context, t *testing.T, at suite, key, pay
 // could not exist, because its foreign key would name a wallet that is not there.
 func TestSubmit_refusesAWalletThatDoesNotExistWithoutARow(t *testing.T) {
 	ctx, at := start(t)
-	absent := owner{id: newID(), player: newID()}
-	key := "key-" + newID()
+	absent := owner{id: suiteenv.NewID(), player: suiteenv.NewID()}
+	key := "key-" + suiteenv.NewID()
 	refused := submit(ctx, t, at, at.provider, key, absent.bet("25.00", nil))
 	if refused.status != http.StatusUnprocessableEntity {
 		t.Fatalf("bet on an absent wallet = %d, want 422: %s", refused.status, refused.body)
@@ -186,7 +187,7 @@ func TestSubmit_refusesTheOperationsThatCanCarryNoRow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			key := "key-" + newID()
+			key := "key-" + suiteenv.NewID()
 			refused := submit(ctx, t, at, at.provider, key, tc.payload)
 			if refused.status != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d, want 422: %s", refused.status, refused.body)
@@ -205,7 +206,7 @@ func TestSubmit_refusesTheOperationsThatCanCarryNoRow(t *testing.T) {
 func TestSubmit_refusesACitedOperationOutOfFormatWithoutARow(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	refused := submit(ctx, t, at, at.provider, key, wallet.win("25.00", map[string]any{"referenceExternalTransactionId": "  "}))
 	if refused.status != http.StatusBadRequest {
 		t.Fatalf("a cited operation out of format = %d, want 400: %s", refused.status, refused.body)
@@ -264,8 +265,8 @@ func TestSubmit_chainsTheEntriesOfTwoBetsThatBothFit(t *testing.T) {
 func TestSubmit_refusesTheSameKeyWithAnotherBody(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	key := "key-" + newID()
-	external := map[string]any{"externalTransactionId": "external-" + newID()}
+	key := "key-" + suiteenv.NewID()
+	external := map[string]any{"externalTransactionId": "external-" + suiteenv.NewID()}
 	if first := submit(ctx, t, at, at.provider, key, wallet.bet("25.00", external)); first.status != http.StatusCreated {
 		t.Fatalf("first arrival before another body = %d, want 201: %s", first.status, first.body)
 	}
@@ -283,12 +284,12 @@ func TestSubmit_refusesTheSameKeyWithAnotherBody(t *testing.T) {
 func TestSubmit_refusesTheSameExternalTransactionWithAnotherKey(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	external := "external-" + newID()
+	external := "external-" + suiteenv.NewID()
 	payload := wallet.bet("25.00", map[string]any{"externalTransactionId": external})
-	if first := submit(ctx, t, at, at.provider, "key-"+newID(), payload); first.status != http.StatusCreated {
+	if first := submit(ctx, t, at, at.provider, "key-"+suiteenv.NewID(), payload); first.status != http.StatusCreated {
 		t.Fatalf("first arrival before another key = %d, want 201: %s", first.status, first.body)
 	}
-	refused := submit(ctx, t, at, at.provider, "key-"+newID(), payload)
+	refused := submit(ctx, t, at, at.provider, "key-"+suiteenv.NewID(), payload)
 	if refused.status != http.StatusUnprocessableEntity {
 		t.Fatalf("another key for the same external transaction = %d, want 422: %s", refused.status, refused.body)
 	}
@@ -304,7 +305,7 @@ func TestSubmit_refusesTheSameExternalTransactionWithAnotherKey(t *testing.T) {
 func TestSubmit_refusesABodyThatNamesAnotherProvider(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	refused := submit(ctx, t, at, at.provider, key, wallet.bet("25.00", map[string]any{"providerId": otherClient}))
 	if refused.status != http.StatusForbidden {
 		t.Fatalf("body of another provider = %d, want 403: %s", refused.status, refused.body)
@@ -330,7 +331,7 @@ func TestRead_answersTheSameAbsenceForAnotherProviderAndForNothing(t *testing.T)
 		t.Fatalf("read of another provider = %d, want 404: %s", alien.status, alien.body)
 	}
 	assertRevealsNothing(t, alien)
-	absent := read(ctx, t, at, at.other, newID())
+	absent := read(ctx, t, at, at.other, suiteenv.NewID())
 	if absent.status != alien.status || refusalType(t, absent) != refusalType(t, alien) {
 		t.Fatalf("absent = %d and alien = %d, want the same refusal for both", absent.status, alien.status)
 	}
@@ -350,7 +351,7 @@ func assertRevealsNothing(t *testing.T, answered answer) {
 func TestSubmit_keepsTheKeyScopedToTheProvider(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	mine := submit(ctx, t, at, at.provider, key, wallet.bet("25.00", nil))
 	if mine.status != http.StatusCreated {
 		t.Fatalf("first arrival = %d, want 201: %s", mine.status, mine.body)
@@ -369,7 +370,7 @@ func TestSubmit_keepsTheKeyScopedToTheProvider(t *testing.T) {
 func TestRoutes_keepTheTwoRolesApart(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	internal := submit(ctx, t, at, at.internal, key, wallet.bet("25.00", nil))
 	if internal.status != http.StatusForbidden {
 		t.Fatalf("internal client on the wager route = %d, want 403", internal.status)
@@ -391,7 +392,7 @@ func bet(ctx context.Context, t *testing.T, at suite, wallet owner, amount strin
 
 func submitBody(ctx context.Context, t *testing.T, at suite, payload string) answer {
 	t.Helper()
-	return submit(ctx, t, at, at.provider, "key-"+newID(), payload)
+	return submit(ctx, t, at, at.provider, "key-"+suiteenv.NewID(), payload)
 }
 
 // together fires the submissions at the same time, each with its own key, which is
@@ -404,7 +405,7 @@ func together(ctx context.Context, t *testing.T, at suite, payloads ...string) [
 		waiting.Add(1)
 		go func() {
 			defer waiting.Done()
-			answers[index] = submit(ctx, t, at, at.provider, "key-"+newID(), payload)
+			answers[index] = submit(ctx, t, at, at.provider, "key-"+suiteenv.NewID(), payload)
 		}()
 	}
 	waiting.Wait()

@@ -26,6 +26,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/probe"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // TestMain falls back to the LocalStack credential when it does not come from
@@ -193,7 +194,7 @@ func open(t *testing.T) (context.Context, *postgres.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
-	pool := postgres.NewPool(config.Config{DatabaseURL: databaseURL()})
+	pool := postgres.NewPool(config.Config{DatabaseURL: suiteenv.DatabaseURL()})
 	if err := pool.Open(ctx); err != nil {
 		t.Fatalf("open pool = %v, want nil", err)
 	}
@@ -201,33 +202,12 @@ func open(t *testing.T) (context.Context, *postgres.Pool) {
 	return ctx, pool
 }
 
-// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
-// never the database the running application uses: the outbox relay of that
-// process scans the whole table every second and publishes the row a case here
-// expects to see dead.
-const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
-
-func databaseURL() string {
-	return envOr("DATABASE_URL", suiteDatabaseURL)
-}
-
 func endpoint() string {
-	return envOr("SNS_ENDPOINT", "http://localhost:4566")
+	return suiteenv.Or("SNS_ENDPOINT", "http://localhost:4566")
 }
 
 func topicARN() string {
-	return envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo")
-}
-
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func newID() string {
-	return uuid.NewV7().String()
+	return suiteenv.Or("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo")
 }
 
 // noSpan is the report of a send nothing is watching. The link between the send

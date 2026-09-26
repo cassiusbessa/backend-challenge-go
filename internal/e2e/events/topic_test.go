@@ -10,6 +10,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/relayoutbox"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/broker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 func TestPublish_reachesTheTopicWithTheWalletAsGroupAndTheEventAsDeduplication(t *testing.T) {
@@ -19,7 +20,7 @@ func TestPublish_reachesTheTopicWithTheWalletAsGroupAndTheEventAsDeduplication(t
 	if err := topic.Open(ctx); err != nil {
 		t.Fatalf("Open the topic = %v, want nil", err)
 	}
-	wallet, event := newID(), newID()
+	wallet, event := suiteenv.NewID(), suiteenv.NewID()
 	sent := relayoutbox.Message{
 		Body:            `{"eventId":"` + event + `","eventType":"WalletBalanceChanged"}`,
 		GroupID:         wallet,

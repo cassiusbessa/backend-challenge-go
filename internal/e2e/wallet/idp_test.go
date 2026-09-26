@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // The secrets of the local realm. They are the documented example values of the
@@ -79,8 +81,8 @@ func adminToken(ctx context.Context, t *testing.T) string {
 	form := url.Values{
 		"grant_type": {"password"},
 		"client_id":  {"admin-cli"},
-		"username":   {envOr("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")},
-		"password":   {envOr("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin")},
+		"username":   {suiteenv.Or("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")},
+		"password":   {suiteenv.Or("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin")},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, keycloakBase()+"/realms/master/protocol/openid-connect/token", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -156,9 +158,9 @@ func call(t *testing.T, req *http.Request, into any) int {
 }
 
 func issuer() string {
-	return envOr("IDP_ISSUER", keycloakBase()+"/realms/junglegaming")
+	return suiteenv.Or("IDP_ISSUER", keycloakBase()+"/realms/junglegaming")
 }
 
 func keycloakBase() string {
-	return envOr("KEYCLOAK_BASE_URL", "http://localhost:8080")
+	return suiteenv.Or("KEYCLOAK_BASE_URL", "http://localhost:8080")
 }

@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // A WIN citing a bet that has not arrived is accepted and waits. The bet
@@ -21,8 +23,8 @@ import (
 func TestSubmit_waitsForTheCitedBetAndTheWorkerCreditsTheWin(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	cited := "external-" + newID()
-	round := "round-" + newID()
+	cited := "external-" + suiteenv.NewID()
+	round := "round-" + suiteenv.NewID()
 
 	waiting := assertWaits(ctx, t, at, wallet.win("50.00", citing(cited, round)))
 	assertWallet(ctx, t, wallet.id, 100000, 1)
@@ -49,10 +51,10 @@ func TestWorker_closesTheWaitAtTheDeadlineWithTheTokenOfWhatWasMissing(t *testin
 	_, lasting := startWith(t, map[string]string{"REFERENCE_TTL": "15m", "REFERENCE_INTERVAL": "1h"})
 	wallet := openWallet(ctx, t, closing)
 
-	round := "round-" + newID()
-	cited := "external-" + newID()
-	awaited := assertWaits(ctx, t, lasting, wallet.win("10.00", both(named(cited, round), citing("external-"+newID(), round))))
-	absent := assertWaits(ctx, t, closing, wallet.win("50.00", citing("external-"+newID(), "round-"+newID())))
+	round := "round-" + suiteenv.NewID()
+	cited := "external-" + suiteenv.NewID()
+	awaited := assertWaits(ctx, t, lasting, wallet.win("10.00", both(named(cited, round), citing("external-"+suiteenv.NewID(), round))))
+	absent := assertWaits(ctx, t, closing, wallet.win("50.00", citing("external-"+suiteenv.NewID(), "round-"+suiteenv.NewID())))
 	running := assertWaits(ctx, t, closing, wallet.refund("10.00", citing(cited, round)))
 
 	awaitRejection(ctx, t, closing, absent, "REFERENCE_NOT_FOUND")
@@ -80,9 +82,9 @@ func assertStillWaiting(ctx context.Context, t *testing.T, at suite, id string) 
 func TestSubmit_settlesTheReversalOfAnOperationThatAlreadyConcluded(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	round := "round-" + newID()
-	placed := "external-" + newID()
-	won := "external-" + newID()
+	round := "round-" + suiteenv.NewID()
+	placed := "external-" + suiteenv.NewID()
+	won := "external-" + suiteenv.NewID()
 
 	placeBet(ctx, t, at, wallet, "25.00", named(placed, round))
 	assertWallet(ctx, t, wallet.id, 97500, 2)
@@ -101,11 +103,11 @@ func TestSubmit_settlesTheReversalOfAnOperationThatAlreadyConcluded(t *testing.T
 func TestSubmit_refusesAReversalThatIsNotTheWholeOfTheCitedOperation(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	round := "round-" + newID()
-	placed := "external-" + newID()
+	round := "round-" + suiteenv.NewID()
+	placed := "external-" + suiteenv.NewID()
 	placeBet(ctx, t, at, wallet, "25.00", named(placed, round))
 
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	refused := submit(ctx, t, at, at.provider, key, wallet.refund("10.00", citing(placed, round)))
 	if refused.status != http.StatusUnprocessableEntity {
 		t.Fatalf("a partial reversal = %d, want 422: %s", refused.status, refused.body)
@@ -123,12 +125,12 @@ func TestSubmit_refusesAReversalThatIsNotTheWholeOfTheCitedOperation(t *testing.
 func TestSubmit_refusesTheSecondReversalAndLeavesTheFirstIntact(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
-	round := "round-" + newID()
-	placed := "external-" + newID()
+	round := "round-" + suiteenv.NewID()
+	placed := "external-" + suiteenv.NewID()
 	placeBet(ctx, t, at, wallet, "25.00", named(placed, round))
 	first := assertProcessed(ctx, t, at, wallet.refund("25.00", citing(placed, round)), "1000.00")
 
-	key := "key-" + newID()
+	key := "key-" + suiteenv.NewID()
 	refused := submit(ctx, t, at, at.provider, key, wallet.rollback("25.00", citing(placed, round)))
 	if refused.status != http.StatusUnprocessableEntity {
 		t.Fatalf("the second reversal = %d, want 422: %s", refused.status, refused.body)
@@ -152,9 +154,9 @@ func TestWorker_decidesEachWaitOnceAcrossTwoReplicas(t *testing.T) {
 	// workers contend for the same rows.
 	boot(ctx, t, map[string]string{"REFERENCE_INTERVAL": "10ms"})
 
-	round := "round-" + newID()
-	first := "external-" + newID()
-	second := "external-" + newID()
+	round := "round-" + suiteenv.NewID()
+	first := "external-" + suiteenv.NewID()
+	second := "external-" + suiteenv.NewID()
 	waits := []string{
 		assertWaits(ctx, t, at, wallet.win("50.00", citing(first, round))),
 		assertWaits(ctx, t, at, wallet.win("30.00", citing(second, round))),
@@ -183,8 +185,8 @@ func TestSubmit_replaysTheWaitAndThenTheOutcomeItEndedWith(t *testing.T) {
 	// middle of it would be the one moving it.
 	ctx, at := startWith(t, map[string]string{"REFERENCE_TTL": "1s", "REFERENCE_INTERVAL": "1h"})
 	wallet := openWallet(ctx, t, at)
-	key := "key-" + newID()
-	payload := wallet.win("50.00", citing("external-"+newID(), "round-"+newID()))
+	key := "key-" + suiteenv.NewID()
+	payload := wallet.win("50.00", citing("external-"+suiteenv.NewID(), "round-"+suiteenv.NewID()))
 
 	accepted := submit(ctx, t, at, at.provider, key, payload)
 	if accepted.status != http.StatusAccepted {

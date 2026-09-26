@@ -36,12 +36,14 @@ linters:
       - linters:
           - revive
         text: "^(exported|package-comments):"
-      # A credencial do Compose aparece literal na fixture de teste. Ela é
-      # local, já está versionada no docker-compose.yml e não é segredo.
+      # A credencial do Compose aparece literal na fixture de teste e no pacote de
+      # apoio da suíte de jornada, que é onde o DSN default dela mora agora para
+      # os sete pacotes não repetirem o literal. Ela é local, já está versionada
+      # no compose.yaml e não é segredo.
       - linters:
           - gosec
         text: "^G101:"
-        path: _test\.go
+        path: (_test\.go|internal/suiteenv/)
 
 formatters:
   enable:

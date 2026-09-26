@@ -21,6 +21,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wallet"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 func TestGetForUpdate_answersTheLockedStateOfTheWallet(t *testing.T) {
@@ -46,7 +47,7 @@ func TestGetForUpdate_answersTheLockedStateOfTheWallet(t *testing.T) {
 func TestGetForUpdate_answersTheAbsenceOfTheWallet(t *testing.T) {
 	ctx, _, unit := open(t)
 	err := unit.Within(ctx, func(tx storage.Tx) error {
-		_, err := tx.Wallets().GetForUpdate(ctx, walletOf(t, newID()))
+		_, err := tx.Wallets().GetForUpdate(ctx, walletOf(t, suiteenv.NewID()))
 		return err
 	})
 	if !errors.Is(err, storage.ErrWalletNotFound) {
@@ -88,7 +89,7 @@ func TestUpdateBalance_refusesAStaleVersionAsATransientFailure(t *testing.T) {
 func TestByKey_answersTheTransactionOfThatProviderAndKey(t *testing.T) {
 	ctx, _, unit := open(t)
 	opened := stored(ctx, t, unit)
-	recorded := rejection(t, opened.wallet, "key-"+newID(), "external-"+newID())
+	recorded := rejection(t, opened.wallet, "key-"+suiteenv.NewID(), "external-"+suiteenv.NewID())
 	insert(ctx, t, unit, recorded)
 	state := byKey(ctx, t, unit, recorded.ProviderID(), recorded.IdempotencyKey())
 	if state.ID != recorded.ID() || state.BodyHash != recorded.BodyHash() {
@@ -104,8 +105,8 @@ func TestByKey_answersTheTransactionOfThatProviderAndKey(t *testing.T) {
 func TestByKey_answersTheAbsenceForAnotherProvider(t *testing.T) {
 	ctx, _, unit := open(t)
 	opened := stored(ctx, t, unit)
-	key := "key-" + newID()
-	insert(ctx, t, unit, rejection(t, opened.wallet, key, "external-"+newID()))
+	key := "key-" + suiteenv.NewID()
+	insert(ctx, t, unit, rejection(t, opened.wallet, key, "external-"+suiteenv.NewID()))
 	err := unit.Within(ctx, func(tx storage.Tx) error {
 		_, err := tx.Transactions().ByKey(ctx, providerOf(t, "provider-b"), keyOf(t, key))
 		return err
@@ -118,9 +119,9 @@ func TestByKey_answersTheAbsenceForAnotherProvider(t *testing.T) {
 func TestInsert_refusesASecondTransactionUnderTheSameKey(t *testing.T) {
 	ctx, _, unit := open(t)
 	opened := stored(ctx, t, unit)
-	key := "key-" + newID()
-	insert(ctx, t, unit, rejection(t, opened.wallet, key, "external-"+newID()))
-	second := rejection(t, opened.wallet, key, "external-"+newID())
+	key := "key-" + suiteenv.NewID()
+	insert(ctx, t, unit, rejection(t, opened.wallet, key, "external-"+suiteenv.NewID()))
+	second := rejection(t, opened.wallet, key, "external-"+suiteenv.NewID())
 	err := unit.Within(ctx, func(tx storage.Tx) error { return tx.Transactions().Insert(ctx, second) })
 	assertRejected(t, err, wager.IdempotencyConflict)
 	assertCountOf(ctx, t, "SELECT count(*) FROM wager_transactions WHERE idempotency_key = $1", key, 1)
@@ -129,9 +130,9 @@ func TestInsert_refusesASecondTransactionUnderTheSameKey(t *testing.T) {
 func TestInsert_refusesTheSameExternalTransactionUnderAnotherKey(t *testing.T) {
 	ctx, _, unit := open(t)
 	opened := stored(ctx, t, unit)
-	external := "external-" + newID()
-	insert(ctx, t, unit, rejection(t, opened.wallet, "key-"+newID(), external))
-	second := rejection(t, opened.wallet, "key-"+newID(), external)
+	external := "external-" + suiteenv.NewID()
+	insert(ctx, t, unit, rejection(t, opened.wallet, "key-"+suiteenv.NewID(), external))
+	second := rejection(t, opened.wallet, "key-"+suiteenv.NewID(), external)
 	err := unit.Within(ctx, func(tx storage.Tx) error { return tx.Transactions().Insert(ctx, second) })
 	assertRejected(t, err, wager.DuplicateExternalTransaction)
 	assertCountOf(ctx, t, "SELECT count(*) FROM wager_transactions WHERE external_id = $1", external, 1)
@@ -142,7 +143,7 @@ func TestInsert_refusesTheSameExternalTransactionUnderAnotherKey(t *testing.T) {
 func TestTransaction_answersTheSameAbsenceForAnotherProviderAndForNothing(t *testing.T) {
 	ctx, pool, unit := open(t)
 	opened := stored(ctx, t, unit)
-	recorded := rejection(t, opened.wallet, "key-"+newID(), "external-"+newID())
+	recorded := rejection(t, opened.wallet, "key-"+suiteenv.NewID(), "external-"+suiteenv.NewID())
 	insert(ctx, t, unit, recorded)
 	reads := postgres.NewReads(pool)
 	found, err := reads.Transaction(ctx, recorded.ID(), recorded.ProviderID())
@@ -153,7 +154,7 @@ func TestTransaction_answersTheSameAbsenceForAnotherProviderAndForNothing(t *tes
 		t.Fatalf("read = %s with %s, want REJECTED with INSUFFICIENT_FUNDS", found.Status, found.FailureCode)
 	}
 	_, alien := reads.Transaction(ctx, recorded.ID(), providerOf(t, "provider-b"))
-	_, absent := reads.Transaction(ctx, transactionOf(t, newID()), recorded.ProviderID())
+	_, absent := reads.Transaction(ctx, transactionOf(t, suiteenv.NewID()), recorded.ProviderID())
 	if !errors.Is(alien, storage.ErrTransactionNotFound) || !errors.Is(absent, storage.ErrTransactionNotFound) {
 		t.Fatalf("alien = %v and absent = %v, want both %v", alien, absent, storage.ErrTransactionNotFound)
 	}
@@ -162,8 +163,8 @@ func TestTransaction_answersTheSameAbsenceForAnotherProviderAndForNothing(t *tes
 func TestTransactionByKey_readsTheWinningRowOutsideAnyTransaction(t *testing.T) {
 	ctx, pool, unit := open(t)
 	opened := stored(ctx, t, unit)
-	key := "key-" + newID()
-	recorded := rejection(t, opened.wallet, key, "external-"+newID())
+	key := "key-" + suiteenv.NewID()
+	recorded := rejection(t, opened.wallet, key, "external-"+suiteenv.NewID())
 	insert(ctx, t, unit, recorded)
 	state, err := postgres.NewReads(pool).TransactionByKey(ctx, recorded.ProviderID(), keyOf(t, key))
 	if err != nil {
@@ -224,8 +225,8 @@ func bet(t *testing.T, state wallet.State, amount string) (*wallet.Wallet, *wage
 	if err != nil {
 		t.Fatalf("wallet.Rehydrate = %v, want nil", err)
 	}
-	op := operation(t, rehydrated, "key-"+newID(), "external-"+newID(), amount)
-	decision, err := wager.Bet(rehydrated, op, wager.Movement{EntryID: entryOf(t, newID()), At: stamp()})
+	op := operation(t, rehydrated, "key-"+suiteenv.NewID(), "external-"+suiteenv.NewID(), amount)
+	decision, err := wager.Bet(rehydrated, op, wager.Movement{EntryID: entryOf(t, suiteenv.NewID()), At: stamp()})
 	if err != nil {
 		t.Fatalf("wager.Bet = %v, want nil", err)
 	}
@@ -247,7 +248,7 @@ func operation(t *testing.T, owner *wallet.Wallet, key, external, amount string)
 		t.Fatalf("money.Parse = %v, want nil", err)
 	}
 	op, err := wager.NewExternal(wager.ExternalSpec{
-		ID:             transactionOf(t, newID()),
+		ID:             transactionOf(t, suiteenv.NewID()),
 		ProviderID:     providerOf(t, "provider-a"),
 		ExternalID:     externalOf(t, external),
 		IdempotencyKey: keyOf(t, key),

@@ -8,35 +8,35 @@ package schema
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
-	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 func TestWallets_refuseABalanceBelowZero(t *testing.T) {
 	ctx, conn := connect(t)
-	err := insertWallet(ctx, conn, wallet{id: newID(), player: newID(), currency: "BRL", cents: -1, version: 1})
+	err := insertWallet(ctx, conn, wallet{id: suiteenv.NewID(), player: suiteenv.NewID(), currency: "BRL", cents: -1, version: 1})
 	assertRefused(t, err, "wallets_balance_is_not_negative")
 }
 
 func TestWallets_refuseAVersionBelowOne(t *testing.T) {
 	ctx, conn := connect(t)
-	err := insertWallet(ctx, conn, wallet{id: newID(), player: newID(), currency: "BRL", cents: 0, version: 0})
+	err := insertWallet(ctx, conn, wallet{id: suiteenv.NewID(), player: suiteenv.NewID(), currency: "BRL", cents: 0, version: 0})
 	assertRefused(t, err, "wallets_version_starts_at_one")
 }
 
 func TestWallets_refuseTheSamePlayerAndCurrencyTwiceAndKeepTheFirstIntact(t *testing.T) {
 	ctx, conn := connect(t)
-	player := newID()
-	first := wallet{id: newID(), player: player, currency: "BRL", cents: 0, version: 1}
+	player := suiteenv.NewID()
+	first := wallet{id: suiteenv.NewID(), player: player, currency: "BRL", cents: 0, version: 1}
 	if err := insertWallet(ctx, conn, first); err != nil {
 		t.Fatalf("first wallet = %v, want nil", err)
 	}
-	err := insertWallet(ctx, conn, wallet{id: newID(), player: player, currency: "BRL", cents: 0, version: 1})
+	err := insertWallet(ctx, conn, wallet{id: suiteenv.NewID(), player: player, currency: "BRL", cents: 0, version: 1})
 	assertRefused(t, err, "wallets_one_per_player_and_currency")
 	if got := storedBalance(ctx, t, conn, first.id); got != 0 {
 		t.Fatalf("balance of the first wallet = %d, want 0", got)
@@ -45,11 +45,11 @@ func TestWallets_refuseTheSamePlayerAndCurrencyTwiceAndKeepTheFirstIntact(t *tes
 
 func TestWallets_acceptTheSamePlayerInAnotherCurrency(t *testing.T) {
 	ctx, conn := connect(t)
-	player := newID()
-	if err := insertWallet(ctx, conn, wallet{id: newID(), player: player, currency: "BRL", cents: 0, version: 1}); err != nil {
+	player := suiteenv.NewID()
+	if err := insertWallet(ctx, conn, wallet{id: suiteenv.NewID(), player: player, currency: "BRL", cents: 0, version: 1}); err != nil {
 		t.Fatalf("BRL wallet = %v, want nil", err)
 	}
-	if err := insertWallet(ctx, conn, wallet{id: newID(), player: player, currency: "USD", cents: 0, version: 1}); err != nil {
+	if err := insertWallet(ctx, conn, wallet{id: suiteenv.NewID(), player: player, currency: "USD", cents: 0, version: 1}); err != nil {
 		t.Fatalf("USD wallet = %v, want nil", err)
 	}
 }
@@ -400,9 +400,9 @@ func (r entry) withSequence(number int64) entry {
 func opening(walletID string, cents int64) transaction {
 	observed := cents
 	return transaction{
-		id:       newID(),
+		id:       suiteenv.NewID(),
 		kind:     "OPENING",
-		player:   newID(),
+		player:   suiteenv.NewID(),
 		walletID: walletID,
 		cents:    cents,
 		currency: "BRL",
@@ -413,11 +413,11 @@ func opening(walletID string, cents int64) transaction {
 
 func external(walletID, kind string, cents int64) transaction {
 	observed := cents
-	id := newID()
+	id := suiteenv.NewID()
 	return transaction{
 		id:       id,
 		kind:     kind,
-		player:   newID(),
+		player:   suiteenv.NewID(),
 		walletID: walletID,
 		cents:    cents,
 		currency: "BRL",
@@ -434,7 +434,7 @@ func external(walletID, kind string, cents int64) transaction {
 
 func credit(walletID, transactionID string, cents, before int64) entry {
 	return entry{
-		id:          newID(),
+		id:          suiteenv.NewID(),
 		walletID:    walletID,
 		transaction: transactionID,
 		direction:   "CREDIT",
@@ -489,7 +489,7 @@ func insertEntry(ctx context.Context, conn querier, row entry) error {
 // emptyWallet is the host of a case that only needs a wallet to point at.
 func emptyWallet(ctx context.Context, t *testing.T, conn querier) string {
 	t.Helper()
-	row := wallet{id: newID(), player: newID(), currency: "BRL", cents: 0, version: 1}
+	row := wallet{id: suiteenv.NewID(), player: suiteenv.NewID(), currency: "BRL", cents: 0, version: 1}
 	if err := insertWallet(ctx, conn, row); err != nil {
 		t.Fatalf("host wallet = %v, want nil", err)
 	}
@@ -500,7 +500,7 @@ func emptyWallet(ctx context.Context, t *testing.T, conn querier) string {
 // the balance and the entry in agreement.
 func creditedWallet(ctx context.Context, t *testing.T, conn *pgx.Conn, cents int64) (string, entry) {
 	t.Helper()
-	host := wallet{id: newID(), player: newID(), currency: "BRL", cents: cents, version: 1}
+	host := wallet{id: suiteenv.NewID(), player: suiteenv.NewID(), currency: "BRL", cents: cents, version: 1}
 	recorded := opening(host.id, cents)
 	recorded.player = host.player
 	movement := credit(host.id, recorded.id, cents, 0)
@@ -577,29 +577,12 @@ func connect(t *testing.T) (context.Context, *pgx.Conn) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
-	conn, err := pgx.Connect(ctx, databaseURL())
+	conn, err := pgx.Connect(ctx, suiteenv.DatabaseURL())
 	if err != nil {
 		t.Fatalf("connect = %v, want nil: the suite needs the migration applied", err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 	return ctx, conn
-}
-
-// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
-// never the database the running application uses: the outbox relay of that
-// process scans the whole table every second and publishes the row a case here
-// expects to see dead.
-const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
-
-func databaseURL() string {
-	if value := os.Getenv("DATABASE_URL"); value != "" {
-		return value
-	}
-	return suiteDatabaseURL
-}
-
-func newID() string {
-	return uuid.NewV7().String()
 }
 
 func text(value string) *string {

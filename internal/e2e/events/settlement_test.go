@@ -23,6 +23,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/clock"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/mint"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
+	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
 
 // lease is the one every case of this suite claims under. It is short so that a
@@ -65,7 +66,7 @@ func stack(t *testing.T) (context.Context, *settlement) {
 // follows writes two more behind them.
 func (s *settlement) openWallet(ctx context.Context, t *testing.T) openwallet.Result {
 	t.Helper()
-	player, err := identity.ParsePlayerID(newID())
+	player, err := identity.ParsePlayerID(suiteenv.NewID())
 	if err != nil {
 		t.Fatalf("ParsePlayerID = %v, want nil", err)
 	}
@@ -87,7 +88,7 @@ func (s *settlement) bet(ctx context.Context, t *testing.T, owner openwallet.Res
 
 func command(t *testing.T, owner openwallet.Result, kind wager.Kind, amount string) submitwager.Command {
 	t.Helper()
-	external := newID()
+	external := suiteenv.NewID()
 	return submitwager.Command{
 		ProviderID:     tokenOf(t, identity.ParseProviderID, "provider-a"),
 		ExternalID:     tokenOf(t, identity.ParseExternalTransactionID, external),
