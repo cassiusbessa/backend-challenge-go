@@ -14,6 +14,7 @@ volumes:
   tempo: {}
   loki: {}
   prometheus: {}
+  terraform: {}
 
 services:
   postgres:
@@ -181,6 +182,45 @@ services:
       postgres:
         condition: service_healthy
 
+  # O apply do broker, uma vez por subida e antes de qualquer réplica. O LocalStack
+  # não persiste, então cada subida o provisiona de novo; sobre um broker já
+  # provisionado o apply termina sem mudança. Um processo de pé diante de um broker
+  # sem tópico grava eventos que o relay mata na décima recusa, e por isso um apply
+  # que falha deixa o `wager` parado. A versão é a do CI, e as duas mudam juntas.
+  #
+  # O estado e a chave ficam no diretório montado, onde o README os aponta. O
+  # contêiner roda como root, e o último passo devolve ao dono do diretório os
+  # arquivos que o apply escreveu, para ele ler a chave e apagá-los sem `sudo`. O
+  # cache do provider, perto de 700 MB, fica no volume, fora da árvore.
+  provision:
+    image: hashicorp/terraform:1.13.3
+    working_dir: /workspace
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        terraform init -input=false
+        terraform apply -auto-approve -input=false -lock-timeout=60s
+        owner=$$(stat -c %u:%g .)
+        for file in terraform.tfstate terraform.tfstate.backup wager-sender.keys .terraform.lock.hcl; do
+          if [ -e "$$file" ]; then chown "$$owner" "$$file"; fi
+        done
+    environment:
+      TF_DATA_DIR: /terraform-data
+      TF_IN_AUTOMATION: "1"
+      TF_VAR_localstack_endpoint: http://localstack:4566
+    volumes:
+      - ./deploy/terraform/localstack:/workspace
+      - terraform:/terraform-data
+    networks:
+      - junglegaming
+    depends_on:
+      # `restart: true` faz o Compose rodar o apply de novo quando ele mesmo
+      # reinicia o broker, como em `docker compose restart localstack`.
+      localstack:
+        condition: service_healthy
+        restart: true
+
   prometheus:
     image: prom/prometheus:v3.13.3-busybox
     command:
@@ -285,6 +325,8 @@ services:
         condition: service_completed_successfully
       localstack:
         condition: service_healthy
+      provision:
+        condition: service_completed_successfully
       otel-collector:
         condition: service_healthy
       # Sem o IdP, o processo sobe e recusa todo token: o JWKS não responde, e a
