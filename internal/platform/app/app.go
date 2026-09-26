@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -43,15 +45,19 @@ func LoadAndRun(getenv func(string) string, signals <-chan os.Signal, run func(c
 }
 
 func Boot(cfg config.Config, signals <-chan os.Signal) error {
-	return Run(New(cfg), signals, cfg.ShutdownTimeout)
+	// The pipeline is taken out of the graph here because Run flushes it after the
+	// lifecycle, not as a stop of it. fx.Populate fills it while the app is built,
+	// so it is in hand before anything starts.
+	var pipe *telemetry.Pipeline
+	return Run(New(cfg, fx.Populate(&pipe)), pipe, signals, cfg.ShutdownTimeout)
 }
 
-func Run(application *fx.App, signals <-chan os.Signal, timeout time.Duration) error {
+func Run(application *fx.App, pipe *telemetry.Pipeline, signals <-chan os.Signal, timeout time.Duration) error {
 	if err := start(application, timeout); err != nil {
 		return err
 	}
 	<-signals
-	return stop(application, timeout)
+	return stop(application, pipe, timeout)
 }
 
 func start(application *fx.App, timeout time.Duration) error {
@@ -60,16 +66,41 @@ func start(application *fx.App, timeout time.Duration) error {
 	return application.Start(ctx)
 }
 
-func stop(application *fx.App, timeout time.Duration) error {
+// flushBudget is what the telemetry flush has after the lifecycle is done with it,
+// and it is outside the shutdown budget on purpose.
+//
+// go-observability asks the buffer to be flushed on SIGTERM, and a hook cannot
+// promise that: the Fx lifecycle returns the moment the shared deadline expires and
+// skips every stop it had not reached, so a flush registered as a hook is the first
+// thing lost in exactly the shutdown that had something to say. Bounding
+// Pipeline.Shutdown from the inside would not help — the hook is never called.
+const flushBudget = 3 * time.Second
+
+// stop stops the lifecycle and then flushes the telemetry, in that order and on
+// separate budgets. The flush comes last because what it has to carry is the
+// shutdown itself, including the stop that overran.
+func stop(application *fx.App, pipe *telemetry.Pipeline, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return application.Stop(ctx)
+	stopped := application.Stop(ctx)
+	if pipe == nil {
+		// The graph never built one, so there is no buffer to carry anything out.
+		return stopped
+	}
+	flushing, done := context.WithTimeout(context.Background(), flushBudget)
+	defer done()
+	return errors.Join(stopped, pipe.Shutdown(flushing))
 }
 
 func New(cfg config.Config, opts ...fx.Option) *fx.App {
 	options := []fx.Option{
 		fx.NopLogger,
 		fx.Supply(cfg),
+		// These two are inert as the process runs today: fx reads them only inside
+		// App.Run, and Run here drives Start and Stop with deadlines of its own.
+		// They stay as the contract for the day the lifecycle is handed to fx,
+		// because without them that day would silently take the default of the
+		// library instead of the budget of this process.
 		fx.StartTimeout(cfg.ShutdownTimeout),
 		fx.StopTimeout(cfg.ShutdownTimeout),
 		fx.Provide(telemetry.NewPipeline),
@@ -238,10 +269,63 @@ type wiring struct {
 	Consumer      *wagerqueue.Consumer
 }
 
+// The share each stop of the lifecycle has of the shutdown budget.
+//
+// Fx has no per-hook deadline. Its lifecycle hands every hook the one context of
+// the Stop and returns the moment that context expires, skipping every hook it had
+// not reached yet — so a stop that waits out the whole budget does not merely run
+// late, it takes the stops behind it with it. A share per hook is that missing
+// deadline, and it lives here rather than inside each component because the
+// arithmetic belongs to the lifecycle: no component knows the total or how many
+// stops come after it.
+//
+// The server is the one that holds a request in flight. The three background
+// components only stop claiming or fetching, which is a channel close and the turn
+// in hand. The consumer is the exception and it is not a number written here: it
+// answers its own budget, so the share cannot drift from the two values that decide
+// it.
+const (
+	serverShare   = 4 * time.Second
+	claimantShare = time.Second
+	// claimants is how many stops take the claimant share: the pool, the reference
+	// worker and the outbox relay. A fourth one added below has to be counted here,
+	// and the sum is what the budget is checked against.
+	claimants = 3
+)
+
+// shutdownBudget refuses a budget that cannot pay every share.
+//
+// Without this the shares are arithmetic nobody checks: the budget is configuration
+// and the shares are code, they are moved in different commits, and a budget under
+// their sum fails the way it failed before — the last stops are skipped, in
+// silence, in exactly the shutdown that had something to report.
+func shutdownBudget(total, consumer time.Duration) error {
+	if want := serverShare + consumer + claimants*claimantShare; total < want {
+		return fmt.Errorf("shutdown budget of %s: want at least %s, the sum of the shares of the lifecycle", total, want)
+	}
+	return nil
+}
+
+// within gives one stop a deadline of its own inside the budget of the shutdown.
+func within(share time.Duration, stop func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		bounded, done := context.WithTimeout(ctx, share)
+		defer done()
+		return stop(bounded)
+	}
+}
+
 func register(lc fx.Lifecycle, parts wiring) {
 	lc.Append(fx.Hook{OnStart: func(context.Context) error { return parts.Config.Validate() }})
-	lc.Append(fx.Hook{OnStart: parts.Pipeline.Start, OnStop: parts.Pipeline.Shutdown})
-	lc.Append(fx.Hook{OnStart: parts.Postgres.Open, OnStop: parts.Postgres.Close})
+	lc.Append(fx.Hook{OnStart: func(context.Context) error {
+		return shutdownBudget(parts.Config.ShutdownTimeout, parts.Consumer.StopBudget())
+	}})
+	// The telemetry pipeline starts here and is not stopped here. Its flush is the
+	// one thing that must survive a shutdown that overran, and a hook cannot: the
+	// lifecycle would have returned before reaching it. Run flushes it after the
+	// lifecycle is done, on a budget of its own.
+	lc.Append(fx.Hook{OnStart: parts.Pipeline.Start})
+	lc.Append(fx.Hook{OnStart: parts.Postgres.Open, OnStop: within(claimantShare, parts.Postgres.Close)})
 	lc.Append(fx.Hook{OnStart: parts.Queue.Open})
 	lc.Append(fx.Hook{OnStart: parts.Topic.Open})
 	lc.Append(fx.Hook{OnStart: parts.Ingress.Open})
@@ -252,15 +336,18 @@ func register(lc fx.Lifecycle, parts wiring) {
 	//
 	// None of the three holds the startup back over an empty queue: a process that
 	// has nothing to do yet still has to answer the port.
-	lc.Append(fx.Hook{OnStart: parts.Reference.Start, OnStop: parts.Reference.Stop})
-	lc.Append(fx.Hook{OnStart: parts.Outbox.Start, OnStop: parts.Outbox.Stop})
-	lc.Append(fx.Hook{OnStart: parts.Consumer.Start, OnStop: parts.Consumer.Stop})
+	lc.Append(fx.Hook{OnStart: parts.Reference.Start, OnStop: within(claimantShare, parts.Reference.Stop)})
+	lc.Append(fx.Hook{OnStart: parts.Outbox.Start, OnStop: within(claimantShare, parts.Outbox.Stop)})
+	lc.Append(fx.Hook{
+		OnStart: parts.Consumer.Start,
+		OnStop:  within(parts.Consumer.StopBudget(), parts.Consumer.Stop),
+	})
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			parts.Server.Use(routes(parts))
 			return parts.Server.Start(ctx)
 		},
-		OnStop: parts.Server.Shutdown,
+		OnStop: within(serverShare, parts.Server.Shutdown),
 	})
 }
 

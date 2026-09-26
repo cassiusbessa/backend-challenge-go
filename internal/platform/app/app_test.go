@@ -185,16 +185,18 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	cfg := loaded(t)
 	gate := &hold{entered: make(chan struct{}), release: make(chan struct{})}
 	gotSrv := make(chan *httpapi.Server, 1)
-	gotPipe := make(chan *telemetry.Pipeline, 1)
+	// The pipeline comes out of the graph at build time, the way Boot takes it: Run
+	// flushes it after the lifecycle and needs it in hand before anything starts.
+	var pipe *telemetry.Pipeline
 	application := New(cfg,
 		fx.Replace(fx.Annotate(gate, fx.As(new(httpapi.PostgresChecker)))),
 		fx.Replace(fx.Annotate(okCheck{}, fx.As(new(httpapi.QueueChecker)))),
 		fx.Invoke(func(srv *httpapi.Server) { gotSrv <- srv }),
-		fx.Invoke(func(pipe *telemetry.Pipeline) { gotPipe <- pipe }),
+		fx.Populate(&pipe),
 	)
 	sigs := make(chan os.Signal, 1)
 	errCh := make(chan error, 1)
-	go func() { errCh <- Run(application, sigs, cfg.ShutdownTimeout) }()
+	go func() { errCh <- Run(application, pipe, sigs, cfg.ShutdownTimeout) }()
 	srv := recvServer(t, gotSrv)
 	waitCh(t, srv.Listening())
 	base := "http://" + srv.Addr()
@@ -210,7 +212,6 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	}
 	sigs <- syscall.SIGTERM
 	waitRefused(t, base+"/health/live")
-	pipe := recvPipeline(t, gotPipe)
 	assertNotFlushed(t, pipe)
 	close(gate.release)
 	if err := waitExit(t, errCh); err != nil {
@@ -221,16 +222,63 @@ func TestSIGTERMStopsNewConnectionsAndExitsSuccessfully(t *testing.T) {
 	waitCh(t, pipe.Stopped())
 }
 
-func recvPipeline(t *testing.T, ch <-chan *telemetry.Pipeline) *telemetry.Pipeline {
-	t.Helper()
-	select {
-	case pipe := <-ch:
-		return pipe
-	case <-time.After(stepWait):
-		t.Fatalf("the telemetry pipeline was not built within %s", stepWait)
+// The Fx lifecycle returns the moment the shared budget expires and skips every
+// stop it had not reached yet, so a flush registered as one of them is lost in
+// exactly the shutdown that had something to report. It is not one of them.
+func TestStop_flushesTheTelemetryWhenTheLifecycleOverranItsBudget(t *testing.T) {
+	cfg := loaded(t)
+	var pipe *telemetry.Pipeline
+	application := New(cfg,
+		fx.Replace(fx.Annotate(okCheck{}, fx.As(new(httpapi.PostgresChecker)))),
+		fx.Replace(fx.Annotate(okCheck{}, fx.As(new(httpapi.QueueChecker)))),
+		fx.Populate(&pipe),
+		// Appended after the lifecycle of the process, so on the way out it is the
+		// first stop taken and it spends the whole budget.
+		fx.Invoke(func(lc fx.Lifecycle) {
+			lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+				<-ctx.Done()
+				return ctx.Err()
+			}})
+		}),
+	)
+	starting, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	if err := application.Start(starting); err != nil {
+		t.Fatalf("Start of the overrun case = %v, want nil", err)
 	}
-	return nil
+	// The stops the overrun skipped are still started. Taking them down afterwards
+	// keeps this case from leaving a listener and two workers behind for the rest of
+	// the binary; the lifecycle carries on from where the budget cut it.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+		defer cancel()
+		_ = application.Stop(ctx)
+	})
+	if err := stop(application, pipe, overrunBudget); err == nil {
+		t.Fatalf("stop over a lifecycle that overran = nil, want the deadline of the budget")
+	}
+	waitCh(t, pipe.Stopped())
 }
+
+// A budget under the sum of the shares is refused at startup, before the port
+// opens: the alternative is discovering it at the one shutdown that had something
+// to report, when the last stops are skipped in silence.
+func TestShutdownBudget_refusesABudgetThatCannotPayEveryShare(t *testing.T) {
+	t.Parallel()
+	consumer := 10 * time.Second
+	want := serverShare + consumer + claimants*claimantShare
+	if err := shutdownBudget(want-time.Millisecond, consumer); err == nil {
+		t.Fatalf("shutdownBudget just under the sum of the shares = nil, want a refusal")
+	}
+	if err := shutdownBudget(want, consumer); err != nil {
+		t.Fatalf("shutdownBudget on the sum of the shares = %v, want nil", err)
+	}
+}
+
+// overrunBudget is short enough that the blocking stop spends it at once. The
+// budget the process comes up with is validated against the shares; this one is
+// handed straight to stop, which is the seam the case is about.
+const overrunBudget = 50 * time.Millisecond
 
 func assertNotFlushed(t *testing.T, pipe *telemetry.Pipeline) {
 	t.Helper()
@@ -336,8 +384,11 @@ func testEnv(key string) string {
 		"IDP_ISSUER":                  "http://127.0.0.1:1/realms/junglegaming",
 		"CLIENTS_PATH":                clientsPath,
 		"QUEUE_SENDERS_PATH":          sendersPath,
-		"SHUTDOWN_TIMEOUT":            "8s",
-		"PPROF_ADDR":                  "127.0.0.1:0",
+		// The budget is a ceiling and not a wait: it has to pay every share of the
+		// lifecycle, and the shutdown of a case still finishes the moment the last
+		// stop returns.
+		"SHUTDOWN_TIMEOUT": "20s",
+		"PPROF_ADDR":       "127.0.0.1:0",
 	}
 	return values[key]
 }

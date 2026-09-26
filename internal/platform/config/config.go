@@ -327,9 +327,16 @@ const (
 	defaultQueueTimeout    = 8 * time.Second
 )
 
-// defaultShutdownTimeout is the deadline the process has to finish the request
-// in flight, flush telemetry and stop the background work.
-const defaultShutdownTimeout = 10 * time.Second
+// defaultShutdownTimeout is the deadline the process has to finish the request in
+// flight and stop the background work.
+//
+// It has to pay every share of the lifecycle, and the largest of them is the
+// consumer, which owes one message its own deadline plus the window its answer to
+// the broker has. The process refuses to come up on a budget under that sum rather
+// than discovering it at the one shutdown that had something to report. The flush
+// of the telemetry is not in here: it runs after the lifecycle, on a budget of its
+// own.
+const defaultShutdownTimeout = 20 * time.Second
 
 // parseDuration answers the default for a key nobody set, and refuses one that
 // is set to something that is not a positive duration. A value that cannot be

@@ -170,6 +170,16 @@ func (c *Consumer) Stop(ctx context.Context) error {
 	}
 }
 
+// StopBudget is how long a stop of this consumer can legitimately take: the
+// deadline of the message in hand plus the window its answer to the broker has.
+//
+// The lifecycle asks instead of restating it. A share written down over there would
+// be right only until someone moved one of the two numbers that decide it, and
+// nothing would fail when they did.
+func (c *Consumer) StopBudget() time.Duration {
+	return c.timing.Timeout + answerWindow
+}
+
 func (c *Consumer) run(polling, work context.Context) {
 	defer close(c.done)
 	for {

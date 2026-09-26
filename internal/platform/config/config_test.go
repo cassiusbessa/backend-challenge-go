@@ -81,8 +81,8 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.SampleRatio != 1 {
 		t.Fatalf("SampleRatio = %v, want 1", cfg.SampleRatio)
 	}
-	if cfg.ShutdownTimeout != 10*time.Second {
-		t.Fatalf("ShutdownTimeout = %s, want 10s", cfg.ShutdownTimeout)
+	if cfg.ShutdownTimeout != 20*time.Second {
+		t.Fatalf("ShutdownTimeout = %s, want 20s", cfg.ShutdownTimeout)
 	}
 	if cfg.PPROFAddr != "127.0.0.1:6060" {
 		t.Fatalf("PPROFAddr = %s, want 127.0.0.1:6060", cfg.PPROFAddr)
