@@ -325,6 +325,6 @@ Migration nova precisa ser aplicada nos dois bancos. Aplicada só num, a suíte 
 
 A suíte pede IdP real: ela obtém token dos três clientes e, no caso do token expirado, encurta o `accessTokenLifespan` do realm pela API de administração e o restaura no fim. Trocar o Keycloak por um emissor de teste não provaria a borda.
 
-A suíte cai nos valores do LocalStack — banco, endpoint, coletor e credencial — quando eles não vêm do ambiente, e `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_REGION` sobrescrevem isso para apontar em outro broker. Os três estão em `.env.example`. O código de produção não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
+A suíte cai nos próprios defaults — banco, endpoint, coletor e credencial — quando eles não vêm do ambiente. O default de `DATABASE_URL` é o banco da suíte, e não o da aplicação: o comando acima o exporta por clareza, e quem esquecer continua caindo no banco certo. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_REGION` sobrescrevem a credencial para apontar em outro broker. Os três estão em `.env.example`. O código de produção não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
 
 Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 90% em `money`, `wallet`, `wager`, `ledger` e `identity`, 80% em `internal/app` e 70% em `internal/platform` — e o `.golangci.yml`.

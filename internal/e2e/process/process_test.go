@@ -78,7 +78,7 @@ func TestReadyFallsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	queueURL := createQueue(ctx, t)
-	base := startProcessWith(t, queueURL, "postgres://junglegaming:junglegaming@127.0.0.1:1/junglegaming?sslmode=disable")
+	base := startProcessWith(t, queueURL, unreachableDatabaseURL)
 	live := statusCode(ctx, t, base+"/health/live")
 	if live != http.StatusOK {
 		t.Fatalf("live with an unreachable database = %d, want 200", live)
@@ -111,7 +111,21 @@ func TestWagerRoutesAreServedAndReconciliationIsNot(t *testing.T) {
 
 func startProcess(t *testing.T, queueURL string) string {
 	t.Helper()
-	return startProcessWith(t, queueURL, envOr("DATABASE_URL", "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable"))
+	return startProcessWith(t, queueURL, databaseURL())
+}
+
+// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
+// never the database the running application uses: the outbox relay of that
+// process scans the whole table every second and publishes the row a case here
+// expects to see dead.
+const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
+
+// unreachableDatabaseURL names a port nothing listens on, so that readiness is
+// asked about a database it cannot reach rather than one that is merely empty.
+const unreachableDatabaseURL = "postgres://junglegaming:junglegaming@127.0.0.1:1/junglegaming_test?sslmode=disable"
+
+func databaseURL() string {
+	return envOr("DATABASE_URL", suiteDatabaseURL)
 }
 
 func startProcessWith(t *testing.T, queueURL, databaseURL string) string {
@@ -171,7 +185,7 @@ func unknownQueue() string {
 func integrationEnv(queueURL string) map[string]string {
 	return map[string]string{
 		"HTTP_ADDR":                   "127.0.0.1:0",
-		"DATABASE_URL":                envOr("DATABASE_URL", "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable"),
+		"DATABASE_URL":                databaseURL(),
 		"SQS_ENDPOINT":                envOr("SQS_ENDPOINT", "http://localhost:4566"),
 		"SNS_ENDPOINT":                envOr("SNS_ENDPOINT", "http://localhost:4566"),
 		"SNS_TOPIC_ARN":               envOr("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:000000000000:wallet-events.fifo"),

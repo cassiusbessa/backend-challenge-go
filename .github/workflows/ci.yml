@@ -18,35 +18,39 @@ jobs:
         run: go run -C scripts/testgates . -root "$PWD"
 
       - name: lint
-        if: hashFiles('go.mod') != ''
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.14.0
 
       - name: unit tests
-        if: hashFiles('go.mod') != ''
         run: go test -race -count=1 -coverprofile=cover.out ./...
 
       - name: coverage floors
-        if: hashFiles('go.mod') != ''
         run: go run -C scripts/testgates . -root "$PWD" -cover "$PWD/cover.out"
 
       - name: Start postgres, localstack, keycloak, and otel-collector
-        if: hashFiles('go.mod') != ''
         run: docker compose up -d --wait --timeout 300 postgres localstack keycloak otel-collector
 
       - name: apply the financial schema
-        if: hashFiles('go.mod') != ''
         run: docker compose run --rm migrate
 
+      # The journey suite owns a database of its own in the same cluster, and the
+      # local path in the README creates it the same way. CREATE DATABASE takes no
+      # IF NOT EXISTS, so the existence is asked first.
+      - name: create and migrate the journey suite database
+        run: |
+          docker compose exec -T postgres psql -U junglegaming -d junglegaming -tAc \
+            "SELECT 1 FROM pg_database WHERE datname='junglegaming_test'" | grep -q 1 \
+            || docker compose exec -T postgres createdb -U junglegaming junglegaming_test
+          docker compose run --rm migrate -path=/migrations \
+            -database "postgres://junglegaming:junglegaming@postgres:5432/junglegaming_test?sslmode=disable" up
+
       - uses: hashicorp/setup-terraform@v3
-        if: hashFiles('go.mod') != ''
         with:
           terraform_version: "1.13.3"
           terraform_wrapper: false
 
       - name: provision the local broker
-        if: hashFiles('go.mod') != ''
         run: |
           terraform -chdir=deploy/terraform/localstack init -input=false
           terraform -chdir=deploy/terraform/localstack apply -auto-approve -input=false
@@ -57,8 +61,8 @@ jobs:
       # gets a 401. Postgres, LocalStack and Keycloak are shared, so the packages
       # run one at a time. Removing the flag brings the flake back.
       - name: integration tests
-        if: hashFiles('go.mod') != ''
         env:
+          DATABASE_URL: postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
           AWS_REGION: us-east-1

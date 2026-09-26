@@ -201,8 +201,14 @@ func open(t *testing.T) (context.Context, *postgres.Pool) {
 	return ctx, pool
 }
 
+// suiteDatabaseURL is where this suite lands when DATABASE_URL is unset. It is
+// never the database the running application uses: the outbox relay of that
+// process scans the whole table every second and publishes the row a case here
+// expects to see dead.
+const suiteDatabaseURL = "postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable"
+
 func databaseURL() string {
-	return envOr("DATABASE_URL", "postgres://junglegaming:junglegaming@localhost:5432/junglegaming?sslmode=disable")
+	return envOr("DATABASE_URL", suiteDatabaseURL)
 }
 
 func endpoint() string {
