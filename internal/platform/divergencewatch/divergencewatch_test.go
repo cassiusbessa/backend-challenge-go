@@ -51,32 +51,36 @@ func TestTurn_walksEachPageInOrderAndStartsOverAfterAShortOne(t *testing.T) {
 	}
 }
 
-// A verdict that could not be produced ends the turn and leaves the cursor
-// where it was: the next tick reads the same page, so a database that comes
-// back needs no restart and no wallet is skipped.
-func TestTurn_leavesTheCursorWhereItWasWhenAVerdictFails(t *testing.T) {
+// A verdict that could not be produced ends the turn with the cursor past its
+// wallet. A wallet whose verdict always fails is then read once per sweep and
+// logged each time, and the wallets after it are still reached: kept in place,
+// the cursor would read that page forever and check nothing beyond it.
+func TestTurn_movesPastTheWalletWhoseVerdictFails(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	table := &pages{wallets: wallets(t, 3)}
-	broken := errors.New("postgres: connection reset by peer")
+	broken := errors.New("postgres: bigint out of range")
 	verdicts := &verdicts{failing: map[identity.WalletID]error{table.wallets[1]: broken}}
 	worker := New(table, verdicts, NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), series()), tick, 2)
 	worker.turn(context.Background())
-	if !slices.Equal(verdicts.seen, table.wallets[0:2]) {
-		t.Fatalf("wallets checked before the failure = %v, want the first two and nothing after", verdicts.seen)
-	}
-	if !worker.cursor.IsZero() {
-		t.Fatalf("cursor after a failed verdict = %s, want it left at the start", worker.cursor)
+	if worker.cursor != table.wallets[1] {
+		t.Fatalf("cursor after a failed verdict = %s, want the wallet that failed %s", worker.cursor, table.wallets[1])
 	}
 	for _, want := range []string{"reconcile a wallet", table.wallets[1].String(), "stack", broken.Error()} {
 		if !strings.Contains(written.String(), want) {
 			t.Fatalf("log = %q, want %q in it", written.String(), want)
 		}
 	}
-	verdicts.seen, verdicts.failing = nil, nil
-	worker.turn(context.Background())
-	if !slices.Equal(verdicts.seen, table.wallets[0:2]) {
-		t.Fatalf("wallets checked on the turn after = %v, want the same page again", verdicts.seen)
+	expected := [][]identity.WalletID{
+		table.wallets[2:3],
+		table.wallets[0:2],
+	}
+	for turn, want := range expected {
+		verdicts.seen = nil
+		worker.turn(context.Background())
+		if !slices.Equal(verdicts.seen, want) {
+			t.Fatalf("turn %d after the failure checked %v, want %v", turn+1, verdicts.seen, want)
+		}
 	}
 }
 

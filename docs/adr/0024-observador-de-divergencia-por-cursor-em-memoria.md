@@ -1,6 +1,6 @@
 # 0024. Observador de divergência como quarto runner, varrendo por cursor em memória
 
-Status: aceita · 2026-09-26
+Status: aceita · 2026-09-26 · parcialmente substituída por [0026](0026-veredito-que-falha-avanca-o-cursor-do-observador.md) · 2026-09-26
 
 ## Contexto
 

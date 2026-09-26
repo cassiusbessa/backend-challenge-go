@@ -106,11 +106,12 @@ func (w *Worker) run(ctx context.Context) {
 
 // turn is one page from the cursor and the verdict over each wallet of it.
 //
-// A failure — of the page or of one verdict — ends the turn and leaves the
-// cursor where it was: the next tick reads the same page again, and a database
-// that was out comes back without the process being restarted. A page that
-// comes back short is the end of the sweep, and the cursor goes back to the
-// start.
+// A page that fails leaves the cursor where it was: the next tick reads the
+// same page again, and a database that was out comes back without the process
+// being restarted. A verdict that fails ends the turn with the cursor past its
+// wallet, which is read again on the next sweep instead of holding back every
+// wallet after it (ADR 0026). A page that comes back short is the end of the
+// sweep, and the cursor goes back to the start.
 func (w *Worker) turn(ctx context.Context) {
 	page, err := w.pager.WalletIDsAfter(ctx, w.cursor, w.batch)
 	if err != nil {
@@ -124,6 +125,7 @@ func (w *Worker) turn(ctx context.Context) {
 			return
 		}
 		if !w.check(ctx, id) {
+			w.cursor = id
 			return
 		}
 	}
