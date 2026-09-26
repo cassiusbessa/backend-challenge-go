@@ -7,9 +7,9 @@ provider "aws" {
   skip_requesting_account_id  = true
 
   endpoints {
-    iam = "http://localhost:4566"
-    sns = "http://localhost:4566"
-    sqs = "http://localhost:4566"
-    sts = "http://localhost:4566"
+    iam = var.localstack_endpoint
+    sns = var.localstack_endpoint
+    sqs = var.localstack_endpoint
+    sts = var.localstack_endpoint
   }
 }
