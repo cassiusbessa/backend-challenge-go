@@ -346,9 +346,21 @@ func send(ctx context.Context, t *testing.T, method, rawURL, bearer, payload str
 
 func start(t *testing.T) (context.Context, string) {
 	t.Helper()
+	return startWith(t, nil)
+}
+
+// startWith boots the process with the configuration of the suite, overridden
+// where a case needs it: the interval of the divergence watcher is shortened
+// so a case reads a verdict instead of waiting out the default.
+func startWith(t *testing.T, overrides map[string]string) (context.Context, string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
-	cfg, err := config.Load(func(key string) string { return suiteEnv()[key] })
+	env := suiteEnv()
+	for key, value := range overrides {
+		env[key] = value
+	}
+	cfg, err := config.Load(func(key string) string { return env[key] })
 	if err != nil {
 		t.Fatalf("config = %v, want nil", err)
 	}
