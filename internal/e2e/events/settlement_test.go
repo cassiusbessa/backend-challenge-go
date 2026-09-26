@@ -196,7 +196,7 @@ func of(rows []row, transaction string) []row {
 // relay builds one replica of the relay over a publisher of the case.
 func (s *settlement) relay(t *testing.T, sender relayoutbox.Publisher) *relayoutbox.Service {
 	t.Helper()
-	return relayoutbox.New(s.queue, sender, noSpan, clock.UTC{}, quiet(), lease)
+	return relayoutbox.New(s.queue, sender, noSpan, noCount, clock.UTC{}, quiet(), lease)
 }
 
 // drain works the queue until it has nothing left for this wallet, the way the

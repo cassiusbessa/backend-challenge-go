@@ -11,6 +11,7 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 )
 
 // A write of the turn that matched no row is the lease having moved on: the row
@@ -66,5 +67,14 @@ func TestRow_refusesAClaimedRowWhoseIdentifiersAreNotCanonical(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "read the claimed outbox row") {
 		t.Fatalf("failure = %v, want the operation that read it named in the chain", err)
+	}
+}
+
+func TestBacklog_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
+	t.Parallel()
+	queue := NewOutboxQueue(NewPool(config.Config{DatabaseURL: unreachable}))
+	_, err := queue.Backlog(context.Background())
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("Backlog = %v, want %v", err, ErrPoolClosed)
 	}
 }

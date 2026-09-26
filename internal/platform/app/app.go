@@ -198,14 +198,14 @@ func newReferenceWorker(cfg config.Config, reads storage.Reads, resolver *resolv
 // newRelay is the use case that moves one committed event out: it claims a row
 // under a lease, publishes outside any transaction, and confirms under the token
 // of that claim.
-func newRelay(cfg config.Config, queue storage.OutboxQueue, topic *broker.Topic, pipe *telemetry.Pipeline) *relayoutbox.Service {
-	return relayoutbox.New(queue, topic, outboxrelay.Sending(pipe.Tracer), clock.UTC{}, pipe.Logger, cfg.OutboxLease)
+func newRelay(cfg config.Config, queue storage.OutboxQueue, topic *broker.Topic, pipe *telemetry.Pipeline, series *metrics.Settlement) *relayoutbox.Service {
+	return relayoutbox.New(queue, topic, outboxrelay.Sending(pipe.Tracer), outboxrelay.Counting(series), clock.UTC{}, pipe.Logger, cfg.OutboxLease)
 }
 
 // newOutboxRelay is the second background component of the process. It scans the
 // publication queue and hands each candidate to the use case that relays it.
-func newOutboxRelay(cfg config.Config, queue storage.OutboxQueue, relay *relayoutbox.Service, pipe *telemetry.Pipeline) *outboxrelay.Relay {
-	return outboxrelay.New(queue, relay, pipe.Logger, cfg.OutboxInterval)
+func newOutboxRelay(cfg config.Config, queue storage.OutboxQueue, relay *relayoutbox.Service, pipe *telemetry.Pipeline, series *metrics.Settlement) *outboxrelay.Relay {
+	return outboxrelay.New(queue, relay, pipe.Logger, series, cfg.OutboxInterval)
 }
 
 // newReceiver is the use case of the ingress: it authorizes the message by the

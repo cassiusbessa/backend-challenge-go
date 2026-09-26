@@ -55,6 +55,17 @@ type OutboxRow struct {
 	LeaseToken string
 }
 
+// Backlog is the publication queue measured once: how many rows are neither
+// published nor dead, and how long the oldest of them has been waiting by the
+// clock of the database. Both are zero when nothing is pending.
+//
+// A row another replica holds under a lease is in it: the row has not reached
+// the topic, and the age is what whoever consumes the events feels.
+type Backlog struct {
+	Pending   int64
+	OldestAge time.Duration
+}
+
 // OutboxQueue is the publication queue as the relay works it.
 //
 // None of it belongs to a business transaction: the relay takes each of these
@@ -101,4 +112,9 @@ type OutboxQueue interface {
 	// go on. The row stays in the database, with the same event identity and the
 	// same payload, and is never published again without intervention.
 	Kill(ctx context.Context, id identity.EventID, token string, at time.Time) error
+
+	// Backlog measures the rows neither published nor dead, in one statement and
+	// by the clock of the database, which is the clock the leases are measured
+	// against too.
+	Backlog(ctx context.Context) (Backlog, error)
 }

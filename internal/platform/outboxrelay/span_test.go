@@ -5,9 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 const (
@@ -72,4 +76,28 @@ func send(t *testing.T, traceID, spanID string, outcome error) sdktrace.ReadOnly
 		t.Fatalf("spans recorded = %d, want the one of the send", len(ended))
 	}
 	return ended[0]
+}
+
+// The status the relay reports maps to the series: a row sent back is a retry
+// under the reason the broker gave, a row given up on is a dead event, and a
+// send that went through or a lease that moved on move nothing.
+func TestCounting_mapsEachStatusOfTheRelayToItsSeries(t *testing.T) {
+	t.Parallel()
+	moved := metrics.New(prometheus.NewRegistry())
+	count := Counting(moved)
+	for _, status := range []string{"published", "retried", "retried", "refused", "dead", "lost"} {
+		count(status)
+	}
+	if got := testutil.ToFloat64(moved.Retries.WithLabelValues("outbox", "transient")); got != 2 {
+		t.Fatalf("retries{outbox,transient} = %v, want the 2 rows sent back on the backoff", got)
+	}
+	if got := testutil.ToFloat64(moved.Retries.WithLabelValues("outbox", "refused")); got != 1 {
+		t.Fatalf("retries{outbox,refused} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(moved.OutboxDead); got != 1 {
+		t.Fatalf("dead events = %v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(moved.Retries); got != 2 {
+		t.Fatalf("retry series = %d, want only the two reasons: published and lost move nothing", got)
+	}
 }

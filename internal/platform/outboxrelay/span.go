@@ -7,7 +7,26 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/relayoutbox"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
+
+// Counting builds the count of the relay out of the series of the process: a
+// row sent back on the backoff is a retry, under the reason the broker gave,
+// and a row given up on is a dead event. A send that went through, and a lease
+// that moved on, move nothing here: the first is what the pending gauge falls
+// by, and the second is a row another replica will count.
+func Counting(series *metrics.Settlement) relayoutbox.Count {
+	return func(status string) {
+		switch status {
+		case "retried":
+			series.Retry(metrics.ComponentOutbox, metrics.RetryTransient)
+		case "refused":
+			series.Retry(metrics.ComponentOutbox, metrics.RetryRefused)
+		case "dead":
+			series.OutboxDead.Inc()
+		}
+	}
+}
 
 // Sending builds the span of one send out of the tracer of the process.
 //

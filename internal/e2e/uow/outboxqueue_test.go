@@ -179,6 +179,38 @@ func TestKill_leavesTheRowUnpublishedAndTheDatabaseRefusesBothAtOnce(t *testing.
 	assertRefused(t, err, "outbox_events_published_and_dead_do_not_coexist")
 }
 
+// The backlog is every row neither published nor dead, measured by the clock of
+// the database. The suite shares the database, so the case reads the count as
+// a difference over what was already pending, and the death of a row is what
+// takes it out.
+func TestBacklog_countsThePendingRowsAndLeavesTheDeadOnesOut(t *testing.T) {
+	ctx, pool, unit := open(t)
+	queue := postgres.NewOutboxQueue(pool)
+	before := backlogOf(ctx, t, queue)
+	host := walletWithEvents(ctx, t, unit, 2)
+	written := backlogOf(ctx, t, queue)
+	if written.Pending != before.Pending+2 {
+		t.Fatalf("pending rows = %d, want the %d already there plus the 2 written", written.Pending, before.Pending)
+	}
+	if written.OldestAge <= 0 {
+		t.Fatalf("age of the oldest pending row = %s, want it measured from an entry in the past", written.OldestAge)
+	}
+	kill(ctx, t, queue, host.events[0])
+	afterTheDeath := backlogOf(ctx, t, queue)
+	if afterTheDeath.Pending != written.Pending-1 {
+		t.Fatalf("pending rows after the death = %d, want the dead row out of the %d", afterTheDeath.Pending, written.Pending)
+	}
+}
+
+func backlogOf(ctx context.Context, t *testing.T, queue *postgres.OutboxQueue) storage.Backlog {
+	t.Helper()
+	measured, err := queue.Backlog(ctx)
+	if err != nil {
+		t.Fatalf("Backlog = %v, want nil", err)
+	}
+	return measured
+}
+
 // outboxHost is one wallet and the events written for it, oldest first.
 type outboxHost struct {
 	wallet identity.WalletID

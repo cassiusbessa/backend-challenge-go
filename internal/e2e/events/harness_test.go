@@ -217,6 +217,11 @@ func noSpan(ctx context.Context, _, _ string) (context.Context, func(error)) {
 	return ctx, func(error) {}
 }
 
+// noCount is the count of a send nothing is measuring. The series the relay
+// moves have cases of their own beside the runner; here they would only add a
+// registry to every case.
+func noCount(string) {}
+
 func quiet() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }

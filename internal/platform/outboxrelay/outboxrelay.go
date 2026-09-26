@@ -23,6 +23,7 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 // batch is how many rows one scan takes. It bounds the work of a single turn so
@@ -30,9 +31,14 @@ import (
 // several turns instead of in one long run.
 const batch = 50
 
-// Scanner chooses the rows ready to be published.
+// Scanner chooses the rows ready to be published, and measures the queue they
+// wait in.
 type Scanner interface {
 	Due(ctx context.Context, limit int) ([]storage.OutboxCandidate, error)
+
+	// Backlog answers how many rows are pending and how old the oldest is, and
+	// zero for both when nothing is pending.
+	Backlog(ctx context.Context) (storage.Backlog, error)
 }
 
 // Relayer moves one row out.
@@ -51,6 +57,7 @@ type Relay struct {
 	scanner  Scanner
 	relayer  Relayer
 	log      *slog.Logger
+	metrics  *metrics.Settlement
 	interval time.Duration
 
 	// claiming is closed by Stop and is the signal itself: the scan is cancelled
@@ -69,8 +76,8 @@ type Relay struct {
 	done chan struct{}
 }
 
-func New(scanner Scanner, relayer Relayer, log *slog.Logger, interval time.Duration) *Relay {
-	return &Relay{scanner: scanner, relayer: relayer, log: log, interval: interval}
+func New(scanner Scanner, relayer Relayer, log *slog.Logger, series *metrics.Settlement, interval time.Duration) *Relay {
+	return &Relay{scanner: scanner, relayer: relayer, log: log, metrics: series, interval: interval}
 }
 
 // Start puts the relay on its ticker and answers at once: an outbox with
@@ -157,6 +164,25 @@ func (r *Relay) turn(scanning, work context.Context) {
 		}
 		r.publish(work, candidate)
 	}
+	r.measure(scanning)
+}
+
+// measure reads the backlog into its two gauges, after the turn has published
+// its candidates, so a row this turn confirmed is not what it reads. A read
+// that fails leaves the last values: a gauge that fell to zero because the
+// database was out would read as a queue that emptied.
+//
+// The backlog counts the row a replica holds under a lease too: it has not
+// reached the topic, and its age is what whoever consumes the events feels.
+// The alert absorbs a legitimate lease with its own window, not this gauge.
+func (r *Relay) measure(scanning context.Context) {
+	backlog, err := r.scanner.Backlog(scanning)
+	if err != nil {
+		r.failed(scanning, "measure the outbox backlog", err)
+		return
+	}
+	r.metrics.OutboxPending.Set(float64(backlog.Pending))
+	r.metrics.OutboxOldestAge.Set(backlog.OldestAge.Seconds())
 }
 
 // stopping reports whether the signal has already come. It reads the signal

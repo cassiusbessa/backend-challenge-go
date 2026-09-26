@@ -63,6 +63,14 @@ type Publisher interface {
 // are the platform's, and are built where the span is.
 type Span func(ctx context.Context, traceID, spanID string) (context.Context, func(err error))
 
+// Count is told the status of every send this package reports, in the same
+// words the line carries, and moves whatever series the platform keeps for it.
+//
+// It is a function and not a registry for the same reason Span is: this
+// package decides the outcome of a row and names it, and which of those names
+// is a series, and under which label, is the platform's to say.
+type Count func(status string)
+
 // Clock reads the instant a write of the turn is stamped with.
 type Clock interface {
 	Now() time.Time
@@ -74,13 +82,14 @@ type Service struct {
 	queue     storage.OutboxQueue
 	publisher Publisher
 	span      Span
+	count     Count
 	clock     Clock
 	log       *slog.Logger
 	lease     time.Duration
 }
 
-func New(queue storage.OutboxQueue, publisher Publisher, span Span, clock Clock, log *slog.Logger, lease time.Duration) *Service {
-	return &Service{queue: queue, publisher: publisher, span: span, clock: clock, log: log, lease: lease}
+func New(queue storage.OutboxQueue, publisher Publisher, span Span, count Count, clock Clock, log *slog.Logger, lease time.Duration) *Service {
+	return &Service{queue: queue, publisher: publisher, span: span, count: count, clock: clock, log: log, lease: lease}
 }
 
 // Relay works the row the candidate names.
@@ -206,14 +215,16 @@ func (s *Service) lost(ctx context.Context, claimed storage.OutboxRow, op string
 	return nil
 }
 
-// report is the line of one send. It carries identifiers and the outcome only:
-// the payload, the amount and the balance never reach a log line, and the
-// handler of the pipeline refuses them even if one tried.
+// report is the line and the count of one send. The line carries identifiers
+// and the outcome only: the payload, the amount and the balance never reach a
+// log line, and the handler of the pipeline refuses them even if one tried.
 //
 // The trace is the one of the commit that wrote the row, which is what ties the
 // line back to the operation that produced the event. The span of the send is
-// linked to it.
+// linked to it. The count is told the same status the line carries, so the two
+// cannot disagree on what happened to the row.
 func (s *Service) report(ctx context.Context, claimed storage.OutboxRow, status string) {
+	s.count(status)
 	s.log.LogAttrs(ctx, slog.LevelInfo, "outbox event",
 		slog.String("eventId", claimed.EventID.String()),
 		slog.String("walletId", claimed.WalletID.String()),

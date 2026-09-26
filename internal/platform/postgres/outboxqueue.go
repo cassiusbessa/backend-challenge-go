@@ -93,6 +93,14 @@ UPDATE outbox_events
  WHERE event_id = $1 AND lease_token = $2 AND published_at IS NULL AND dead_at IS NULL`
 )
 
+// The backlog, measured in one statement over the predicate of the partial
+// index: the pending rows, and the clock of the database beside the entry of
+// the oldest, so the age is measured by the clock the leases are measured by.
+const selectOutboxBacklog = `
+SELECT count(*), now(), min(created_at)
+  FROM outbox_events
+ WHERE published_at IS NULL AND dead_at IS NULL`
+
 // OutboxQueue works the publication queue from the pool, in short transactions
 // of its own. The zero value is not used: NewOutboxQueue is the only
 // constructor.
@@ -197,6 +205,22 @@ func (r claimedOutboxRow) row() (storage.OutboxRow, error) {
 		Refusals:   r.refusals,
 		LeaseToken: r.leaseToken,
 	}, nil
+}
+
+// Backlog answers how many rows are pending and how old the oldest one is, by
+// the clock of the database, and zero for both when nothing is pending.
+func (q *OutboxQueue) Backlog(ctx context.Context) (storage.Backlog, error) {
+	pool, err := q.source.Querier()
+	if err != nil {
+		return storage.Backlog{}, wrap("acquire pool", err)
+	}
+	var pending int64
+	var now time.Time
+	var oldest *time.Time
+	if err := pool.QueryRow(ctx, selectOutboxBacklog).Scan(&pending, &now, &oldest); err != nil {
+		return storage.Backlog{}, wrap("measure the outbox backlog", err)
+	}
+	return storage.Backlog{Pending: pending, OldestAge: ageOf(now, oldest)}, nil
 }
 
 func (q *OutboxQueue) Confirm(ctx context.Context, id identity.EventID, token string, at time.Time) error {

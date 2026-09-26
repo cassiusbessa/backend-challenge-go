@@ -9,9 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 // tick is the interval the cases about the lifecycle run on. It is short because
@@ -22,7 +26,7 @@ func TestTurn_handsEveryCandidateOfAScanToTheUseCase(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{due: candidates(t, 3)}
 	relayer := &sends{}
-	New(scanner, relayer, quiet(), tick).turn(context.Background(), context.Background())
+	New(scanner, relayer, quiet(), series(), tick).turn(context.Background(), context.Background())
 	if len(relayer.seen) != 3 {
 		t.Fatalf("candidates relayed = %d, want the 3 the scan chose", len(relayer.seen))
 	}
@@ -36,7 +40,7 @@ func TestTurn_handsEveryCandidateOfAScanToTheUseCase(t *testing.T) {
 func TestTurn_claimsNoNewRowOnceTheContextIsDone(t *testing.T) {
 	t.Parallel()
 	relayer := &sends{}
-	relay := New(&queue{due: candidates(t, 3)}, relayer, quiet(), tick)
+	relay := New(&queue{due: candidates(t, 3)}, relayer, quiet(), series(), tick)
 	signalled, stop := context.WithCancel(context.Background())
 	relayer.hold = func(context.Context) { stop() }
 	relay.turn(signalled, context.Background())
@@ -51,7 +55,7 @@ func TestTurn_claimsNoNewRowOnceTheContextIsDone(t *testing.T) {
 func TestStop_claimsNoNewRowAfterTheSignal(t *testing.T) {
 	t.Parallel()
 	relayer := &sends{}
-	relay := New(&queue{due: candidates(t, 3)}, relayer, quiet(), tick)
+	relay := New(&queue{due: candidates(t, 3)}, relayer, quiet(), series(), tick)
 	stopped := make(chan error, 1)
 	relayer.hold = func(ctx context.Context) {
 		// The stop takes the values of the turn without its cancellation, because
@@ -83,7 +87,7 @@ func TestStop_claimsNoNewRowAfterTheSignal(t *testing.T) {
 func TestStop_cancelsTheScanAtTheSignal(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{blocks: true, scanned: make(chan struct{}, 1)}
-	relay := New(scanner, &sends{}, quiet(), tick)
+	relay := New(scanner, &sends{}, quiet(), series(), tick)
 	if err := relay.Start(context.Background()); err != nil {
 		t.Fatalf("Start before the scan that does not answer = %v, want nil", err)
 	}
@@ -100,7 +104,7 @@ func TestStop_cancelsTheScanAtTheSignal(t *testing.T) {
 func TestStart_comesUpOverAnEmptyOutboxAndScansOnTheTicker(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{scanned: make(chan struct{}, 4)}
-	relay := New(scanner, &sends{}, quiet(), tick)
+	relay := New(scanner, &sends{}, quiet(), series(), tick)
 	if err := relay.Start(context.Background()); err != nil {
 		t.Fatalf("Start over an empty outbox = %v, want nil", err)
 	}
@@ -112,7 +116,7 @@ func TestStart_comesUpOverAnEmptyOutboxAndScansOnTheTicker(t *testing.T) {
 
 func TestStop_answersNilForARelayThatNeverStarted(t *testing.T) {
 	t.Parallel()
-	if err := New(&queue{}, &sends{}, quiet(), tick).Stop(context.Background()); err != nil {
+	if err := New(&queue{}, &sends{}, quiet(), series(), tick).Stop(context.Background()); err != nil {
 		t.Fatalf("Stop of a relay that never started = %v, want nil", err)
 	}
 }
@@ -131,7 +135,7 @@ func TestStop_answersTheFailureWhenTheShutdownDeadlineComesFirst(t *testing.T) {
 		<-ctx.Done()
 		cut <- ctx.Err()
 	}}
-	relay := New(&queue{due: candidates(t, 1)}, relayer, quiet(), tick)
+	relay := New(&queue{due: candidates(t, 1)}, relayer, quiet(), series(), tick)
 	if err := relay.Start(context.Background()); err != nil {
 		t.Fatalf("Start before the deadline = %v, want nil", err)
 	}
@@ -153,7 +157,7 @@ func TestPublish_logsTheFailureWithTheIdentitiesOfTheRow(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	relayer := &sends{err: errors.New("postgres: connection reset by peer")}
-	relay := New(&queue{}, relayer, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	relay := New(&queue{}, relayer, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	candidate := candidates(t, 1)[0]
 	relay.publish(context.Background(), candidate)
 	for _, want := range []string{"relay an outbox event", candidate.EventID.String(), "stack"} {
@@ -168,7 +172,7 @@ func TestPublish_logsTheFailureWithTheIdentitiesOfTheRow(t *testing.T) {
 func TestPublish_logsNothingForARowThatWasRelayed(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	relay := New(&queue{}, &sends{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	relay := New(&queue{}, &sends{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	relay.publish(context.Background(), candidates(t, 1)[0])
 	if written.Len() != 0 {
 		t.Fatalf("log = %q, want nothing for a row that was relayed", written.String())
@@ -180,7 +184,7 @@ func TestPublish_logsNothingForARowThatWasRelayed(t *testing.T) {
 func TestFailed_recordsNothingForATurnTheShutdownCutShort(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	relay := New(&queue{}, &sends{}, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	relay := New(&queue{}, &sends{}, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	stopped, stop := context.WithCancel(context.Background())
 	stop()
 	relay.failed(stopped, "relay an outbox event", context.Canceled)
@@ -196,7 +200,7 @@ func TestTurn_relaysNothingWhenTheScanFailed(t *testing.T) {
 	var written strings.Builder
 	relayer := &sends{}
 	scanner := &queue{due: candidates(t, 2), failFirst: errors.New("postgres: connection reset by peer")}
-	relay := New(scanner, relayer, slog.New(slog.NewJSONHandler(&written, nil)), tick)
+	relay := New(scanner, relayer, slog.New(slog.NewJSONHandler(&written, nil)), series(), tick)
 	relay.turn(context.Background(), context.Background())
 	if len(relayer.seen) != 0 {
 		t.Fatalf("rows relayed after a scan that failed = %d, want 0", len(relayer.seen))
@@ -219,6 +223,64 @@ type queue struct {
 	failFirst error
 	scanned   chan struct{}
 	blocks    bool
+	// backlog is what the queue answers when measured, and backlogErr a read of
+	// it that fails.
+	backlog    storage.Backlog
+	backlogErr error
+}
+
+func (q *queue) Backlog(context.Context) (storage.Backlog, error) {
+	if q.backlogErr != nil {
+		return storage.Backlog{}, q.backlogErr
+	}
+	return q.backlog, nil
+}
+
+func series() *metrics.Settlement {
+	return metrics.New(prometheus.NewRegistry())
+}
+
+// The backlog is read once per turn, after the candidates were published, and
+// zero on both gauges is what an empty queue answers.
+func TestTurn_readsTheBacklogIntoTheTwoGauges(t *testing.T) {
+	t.Parallel()
+	scanner := &queue{backlog: storage.Backlog{Pending: 3, OldestAge: 45 * time.Second}}
+	moved := series()
+	relay := New(scanner, &sends{}, quiet(), moved, tick)
+	relay.turn(context.Background(), context.Background())
+	if got := testutil.ToFloat64(moved.OutboxPending); got != 3 {
+		t.Fatalf("pending events = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(moved.OutboxOldestAge); got != 45 {
+		t.Fatalf("oldest pending age = %v, want 45", got)
+	}
+	scanner.backlog = storage.Backlog{}
+	relay.turn(context.Background(), context.Background())
+	if got := testutil.ToFloat64(moved.OutboxPending) + testutil.ToFloat64(moved.OutboxOldestAge); got != 0 {
+		t.Fatalf("gauges with nothing pending = %v, want both 0", got)
+	}
+}
+
+// A read that fails leaves the last values: a gauge that fell to zero because
+// the database was out would read as a queue that emptied.
+func TestTurn_keepsTheLastBacklogWhenTheReadFails(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	scanner := &queue{backlog: storage.Backlog{Pending: 3, OldestAge: 45 * time.Second}}
+	moved := series()
+	relay := New(scanner, &sends{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	relay.turn(context.Background(), context.Background())
+	scanner.backlog, scanner.backlogErr = storage.Backlog{}, errors.New("postgres: connection reset by peer")
+	relay.turn(context.Background(), context.Background())
+	if got := testutil.ToFloat64(moved.OutboxPending); got != 3 {
+		t.Fatalf("pending events after a read that failed = %v, want the 3 of the last read", got)
+	}
+	if got := testutil.ToFloat64(moved.OutboxOldestAge); got != 45 {
+		t.Fatalf("oldest pending age after a read that failed = %v, want the 45 of the last read", got)
+	}
+	if !strings.Contains(written.String(), "measure the outbox backlog") {
+		t.Fatalf("log = %q, want the failure of the read in it", written.String())
+	}
 }
 
 func (q *queue) Due(ctx context.Context, limit int) ([]storage.OutboxCandidate, error) {
