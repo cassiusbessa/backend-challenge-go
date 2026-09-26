@@ -44,6 +44,28 @@ func TestAdd_refusesTheSumPastTheInt64Limit(t *testing.T) {
 	}
 }
 
+func TestAdd_takesTheNegativeInternalDifference(t *testing.T) {
+	t.Parallel()
+	sum, err := amountIn(t, 10000, "BRL").Add(amountIn(t, -2500, "BRL"))
+	if err != nil {
+		t.Fatalf("Add of a negative difference error = %v, want nil", err)
+	}
+	if sum.Cents() != 7500 {
+		t.Fatalf("sum with a negative operand = %d cents, want 7500", sum.Cents())
+	}
+}
+
+func TestAdd_refusesTheSumBelowTheInt64Limit(t *testing.T) {
+	t.Parallel()
+	sum, err := amountIn(t, math.MinInt64, "BRL").Add(amountIn(t, -1, "BRL"))
+	if !errors.Is(err, ErrOverflow) {
+		t.Fatalf("Add one cent below the limit error = %v, want ErrOverflow", err)
+	}
+	if sum.Cents() != 0 {
+		t.Fatalf("underflowing sum produced %d cents, want none", sum.Cents())
+	}
+}
+
 func TestAdd_refusesTwoDifferentCurrencies(t *testing.T) {
 	t.Parallel()
 	sum, err := amountIn(t, 10000, "BRL").Add(amountIn(t, 2500, "USD"))

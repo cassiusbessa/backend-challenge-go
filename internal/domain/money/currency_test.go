@@ -42,6 +42,28 @@ func TestParseCurrency_refusesWhatIsNotAnISOCode(t *testing.T) {
 	}
 }
 
+func TestParseCurrency_acceptsBothEndsOfTheLetterRange(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+	}{
+		{name: "the first letter of the range", text: "AUD"},
+		{name: "the last letter of the range", text: "NZD"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			currency, err := ParseCurrency(testCase.text)
+			if err != nil {
+				t.Fatalf("ParseCurrency(%q) at the range boundary error = %v, want nil", testCase.text, err)
+			}
+			if currency.Code() != testCase.text {
+				t.Fatalf("boundary code = %q, want %q", currency.Code(), testCase.text)
+			}
+		})
+	}
+}
+
 func TestIsZero_answersForTheUnsetCurrency(t *testing.T) {
 	t.Parallel()
 	var unset Currency

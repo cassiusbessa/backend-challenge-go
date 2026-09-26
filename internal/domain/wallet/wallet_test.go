@@ -243,6 +243,24 @@ func TestRehydrate_keepsTheStoredVersionAndProducesNoEntry(t *testing.T) {
 	}
 }
 
+func TestRehydrate_acceptsTheVersionTheWalletIsBornAt(t *testing.T) {
+	t.Parallel()
+	restored, err := Rehydrate(State{
+		ID:        walletOf(t),
+		PlayerID:  playerOf(t),
+		Balance:   brl(t, 25000),
+		Version:   firstVersion,
+		CreatedAt: at(t),
+		UpdatedAt: at(t),
+	})
+	if err != nil {
+		t.Fatalf("Rehydrate at the first version error = %v, want nil", err)
+	}
+	if restored.Version() != firstVersion {
+		t.Fatalf("version after rehydrating the newborn = %d, want %d", restored.Version(), firstVersion)
+	}
+}
+
 func TestRehydrate_refusesTheIncompleteState(t *testing.T) {
 	t.Parallel()
 	complete := State{

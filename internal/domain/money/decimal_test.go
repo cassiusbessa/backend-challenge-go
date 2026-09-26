@@ -99,6 +99,7 @@ func TestFormatCents_alwaysWritesTwoDecimalPlaces(t *testing.T) {
 		{name: "zero keeps both places", cents: 0, want: "0.00"},
 		{name: "a whole amount keeps both places", cents: 2500, want: "25.00"},
 		{name: "a single cent is padded", cents: 1, want: "0.01"},
+		{name: "ten cents is the first fraction that fills both places", cents: 10, want: "0.10"},
 		{name: "tens of cents need no padding", cents: 50, want: "0.50"},
 		{name: "thousands of cents keep the units", cents: 197550, want: "1975.50"},
 		{name: "a negative difference keeps the sign", cents: -1500, want: "-15.00"},

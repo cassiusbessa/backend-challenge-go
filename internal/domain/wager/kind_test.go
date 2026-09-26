@@ -19,6 +19,7 @@ func TestString_namesTheKind(t *testing.T) {
 		{kind: KindRollback, want: "ROLLBACK"},
 		{kind: noKind, want: ""},
 		{kind: Kind(200), want: ""},
+		{kind: kindCount, want: ""},
 	}
 	for _, testCase := range cases {
 		if got := testCase.kind.String(); got != testCase.want {
@@ -42,6 +43,13 @@ func TestParseKind_readsTheKindBack(t *testing.T) {
 	}
 	if !unknown.IsZero() {
 		t.Fatalf("a refused kind produced %s, want the zero value", unknown)
+	}
+	empty, err := ParseKind("")
+	if !errors.Is(err, ErrUnknownKind) {
+		t.Fatalf("ParseKind(\"\") error = %v, want ErrUnknownKind", err)
+	}
+	if !empty.IsZero() {
+		t.Fatalf("the empty token produced %s, want the zero value", empty)
 	}
 }
 

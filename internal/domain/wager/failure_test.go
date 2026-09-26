@@ -206,6 +206,9 @@ func TestString_answersEmptyOutsideTheCatalog(t *testing.T) {
 	if got := FailureCode(200).String(); got != "" {
 		t.Fatalf("a code past the catalog answered %q, want the empty string", got)
 	}
+	if got := failureCodeCount.String(); got != "" {
+		t.Fatalf("the code at the catalog limit answered %q, want the empty string", got)
+	}
 }
 
 func TestIsZero_answersForTheUnsetCode(t *testing.T) {

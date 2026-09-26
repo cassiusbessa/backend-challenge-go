@@ -54,6 +54,7 @@ func TestString_namesTheStatus(t *testing.T) {
 		{status: Failed, want: "FAILED"},
 		{status: noStatus, want: ""},
 		{status: Status(200), want: ""},
+		{status: statusCount, want: ""},
 	}
 	for _, testCase := range cases {
 		if got := testCase.status.String(); got != testCase.want {
@@ -77,5 +78,12 @@ func TestParseStatus_readsTheStatusBack(t *testing.T) {
 	}
 	if !unknown.IsZero() {
 		t.Fatalf("a refused status produced %s, want the zero value", unknown)
+	}
+	empty, err := ParseStatus("")
+	if !errors.Is(err, ErrUnknownStatus) {
+		t.Fatalf("ParseStatus(\"\") error = %v, want ErrUnknownStatus", err)
+	}
+	if !empty.IsZero() {
+		t.Fatalf("the empty token produced %s, want the zero value", empty)
 	}
 }
