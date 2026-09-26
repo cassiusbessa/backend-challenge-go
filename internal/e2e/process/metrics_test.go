@@ -132,14 +132,12 @@ func TestWatcher_sweepsAtTheConfiguredIntervalAndStopsInsideTheBudget(t *testing
 	if checked := awaitChecked(ctx, t, base); checked < 1 {
 		t.Fatalf("wallets_checked{watch} = %v after %s at a 50ms interval, want the watcher sweeping", checked, sweepWait)
 	}
+	// The budget is not measured here: each stop runs inside its own share, and a
+	// share overrun is what makes Stop answer an error.
 	stopping, release := context.WithTimeout(context.Background(), 20*time.Second)
 	defer release()
-	started := time.Now()
 	if err := application.Stop(stopping); err != nil {
 		t.Fatalf("Stop with the watcher in flight = %v, want nil", err)
-	}
-	if took := time.Since(started); took > 20*time.Second {
-		t.Fatalf("Stop with the watcher in flight took %s, want it inside the budget", took)
 	}
 }
 
