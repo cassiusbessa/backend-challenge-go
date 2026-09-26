@@ -1,0 +1,43 @@
+# A migration roda uma vez, antes das réplicas, e é o `make cluster-up` que
+# ordena: ele apaga o Job anterior, aplica este, espera `Complete` ou `Failed` e
+# só então aplica o Deployment. Um initContainer em cada réplica migraria a cada
+# reinício, o contrário de "uma vez".
+#
+# A imagem e as migrations são as do Compose. O `migrate` do Compose já rodou no
+# `docker compose up` que o `cluster-up` chama, então este encontra o schema na
+# versão mais alta e termina sem mudança.
+#
+# O banco vem do Secret `wager-credentials`, gerado pelo `make cluster-up` das
+# mesmas variáveis que o Compose interpola; as migrations vêm do ConfigMap
+# `wager-migrations`, gerado de `deploy/migrations/`. Nenhuma credencial mora
+# neste arquivo.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: junglegaming
+spec:
+  # Uma falha é resposta, não tentativa: o `cluster-up` para e mostra o log.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: migrate/migrate:v4.19.0
+          imagePullPolicy: Never
+          args: ["-path=/migrations", "-database", "$(DATABASE_URL)", "up"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wager-credentials
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: wager-migrations

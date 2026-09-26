@@ -19,6 +19,9 @@ KC_BOOTSTRAP_ADMIN_USERNAME ?= admin
 KC_BOOTSTRAP_ADMIN_PASSWORD ?= admin
 GF_SECURITY_ADMIN_USER ?= admin
 GF_SECURITY_ADMIN_PASSWORD ?= admin
+AWS_ACCESS_KEY_ID ?= test
+AWS_SECRET_ACCESS_KEY ?= test
+AWS_REGION ?= us-east-1
 # O número de réplicas do `up`, com o mesmo padrão do Compose: o `WAGER_REPLICAS`
 # do `.env`, ou três.
 WAGER_REPLICAS ?= 3
@@ -83,6 +86,19 @@ up: ## sobe a stack com REPLICAS réplicas do processo, três por padrão, e esp
 down: ## derruba a stack e descarta os volumes dela, voltando ao estado limpo
 	docker compose down -v
 
+# O `kubectl wait` espera uma condição só, e o Job termina em uma de duas. O
+# prazo cobre a imagem já carregada no nó e o schema já aplicado pelo Compose.
+MIGRATE_JOB_WAIT = for attempt in $$(seq 1 120); do \
+		state=$$($(KUBECTL) -n $(NAMESPACE) get job migrate -o jsonpath='{.status.conditions[?(@.status=="True")].type}'); \
+		case "$$state" in \
+		*Failed*) echo "the migration Job $(NAMESPACE)/migrate failed; its log:" >&2; \
+			$(KUBECTL) -n $(NAMESPACE) logs job/migrate >&2; exit 1;; \
+		*Complete*) exit 0;; \
+		esac; \
+		sleep 1; \
+	done; \
+	echo "the migration Job $(NAMESPACE)/migrate did not finish within 120s" >&2; exit 1
+
 # O cluster parte da mesma subida do Compose, que provisiona o broker e aplica o
 # schema, e as réplicas do Compose param enquanto ele existe: com elas de pé,
 # seriam processos a mais disputando a outbox, a fila e as esperas. O nó entra na
@@ -97,6 +113,21 @@ cluster-up: ## sobe REPLICAS réplicas num cluster Kind sobre os serviços do Co
 	@archive=$$(mktemp) && trap 'rm -f "$$archive"' EXIT \
 		&& docker save --platform "$$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')" -o "$$archive" $(CLUSTER_IMAGES) \
 		&& $(KIND) load image-archive --name $(CLUSTER) "$$archive"
+	$(KUBECTL) apply -f deploy/k8s/namespace.yaml
+	@$(KUBECTL) -n $(NAMESPACE) create secret generic wager-credentials \
+		--from-literal=DATABASE_URL='$(APP_URL)' \
+		--from-literal=AWS_ACCESS_KEY_ID='$(AWS_ACCESS_KEY_ID)' \
+		--from-literal=AWS_SECRET_ACCESS_KEY='$(AWS_SECRET_ACCESS_KEY)' \
+		--from-literal=AWS_REGION='$(AWS_REGION)' \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(NAMESPACE) create configmap wager-migrations --from-file=deploy/migrations \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(NAMESPACE) create configmap wager-maps \
+		--from-file=deploy/local/clients.yaml --from-file=deploy/local/queue-senders.yaml \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(NAMESPACE) delete job migrate --ignore-not-found --wait=true
+	$(KUBECTL) apply -f deploy/k8s/migrate.yaml
+	@$(MIGRATE_JOB_WAIT)
 
 # O mesmo serviço que o `up` roda antes das réplicas, e o que o CI roda: o
 # Terraform vem da imagem, na versão fixada no `compose.yaml`, e não do host.
