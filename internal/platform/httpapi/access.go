@@ -21,6 +21,8 @@ type Routes struct {
 	Metrics         http.Handler
 	OpenWallet      http.Handler
 	ReadWallet      http.Handler
+	ListLedger      http.Handler
+	ReconcileWallet http.Handler
 	SubmitWager     http.Handler
 	ReadTransaction http.Handler
 	Logger          *slog.Logger
@@ -39,6 +41,8 @@ func Handler(routes Routes) http.Handler {
 	// the name would give every request a series of its own.
 	mux.Handle("POST /wallets", routes.wrap("POST /wallets", routes.OpenWallet))
 	mux.Handle("GET /wallets/{walletId}", routes.wrap("GET /wallets/{walletId}", routes.ReadWallet))
+	mux.Handle("GET /wallets/{walletId}/ledger", routes.wrap("GET /wallets/{walletId}/ledger", routes.ListLedger))
+	mux.Handle("GET /wallets/{walletId}/reconciliation", routes.wrap("GET /wallets/{walletId}/reconciliation", routes.ReconcileWallet))
 	mux.Handle("POST /wagering/transactions", routes.wrap("POST /wagering/transactions", routes.SubmitWager))
 	mux.Handle("GET /wagering/transactions/{transactionId}", routes.wrap("GET /wagering/transactions/{transactionId}", routes.ReadTransaction))
 	mux.Handle("/", routes.wrap("unmatched", http.NotFoundHandler()))

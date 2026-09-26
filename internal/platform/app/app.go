@@ -11,10 +11,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/listledger"
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/readwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/receivewager"
+	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/referencewait"
 	"github.com/junglegaming/backend-challenge-go/internal/app/relayoutbox"
 	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
@@ -150,6 +152,8 @@ func business() []fx.Option {
 		fx.Provide(newOutboxRelay),
 		fx.Provide(openwallet.New),
 		fx.Provide(readwallet.New),
+		fx.Provide(listledger.New),
+		fx.Provide(reconcilewallet.New),
 		fx.Provide(submitwager.New),
 		fx.Provide(readwager.New),
 		// The client map is loaded here, so a map that is missing or malformed
@@ -277,6 +281,8 @@ type wiring struct {
 	Senders       *authz.Senders
 	Opener        *openwallet.Service
 	Reader        *readwallet.Service
+	Lister        *listledger.Service
+	Reconciler    *reconcilewallet.Service
 	Reporter      *walletapi.Reporter
 	Submitter     *submitwager.Service
 	WagerReader   *readwager.Service
@@ -370,10 +376,12 @@ func routes(parts wiring) http.Handler {
 		Live:    http.HandlerFunc(httpapi.Live),
 		Ready:   parts.Ready,
 		Metrics: httpapi.MetricsHandler(parts.Registry),
-		// Only the internal wallet client opens and reads a wallet. A provider
-		// sends wagers and never touches these two routes.
-		OpenWallet: parts.Guard.Only(authz.InternalWallet, walletapi.Open(parts.Opener, parts.Reporter)),
-		ReadWallet: parts.Guard.Only(authz.InternalWallet, walletapi.Read(parts.Reader, parts.Reporter)),
+		// Only the internal wallet client opens, reads, lists and reconciles a
+		// wallet. A provider sends wagers and never touches these four routes.
+		OpenWallet:      parts.Guard.Only(authz.InternalWallet, walletapi.Open(parts.Opener, parts.Reporter)),
+		ReadWallet:      parts.Guard.Only(authz.InternalWallet, walletapi.Read(parts.Reader, parts.Reporter)),
+		ListLedger:      parts.Guard.Only(authz.InternalWallet, walletapi.ListLedger(parts.Lister, parts.Reporter)),
+		ReconcileWallet: parts.Guard.Only(authz.InternalWallet, walletapi.Reconcile(parts.Reconciler, parts.Reporter)),
 		// Only a provider sends a wager and reads its own transaction. The client
 		// of the token decides it, and the guard hands that client to the border,
 		// which checks the provider of the body against it.
