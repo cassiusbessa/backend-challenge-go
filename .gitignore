@@ -5,6 +5,9 @@
 cover.out
 coverage.*
 
+# Saída dos alvos de medição do Makefile.
+.quality/
+
 .env
 .env.*
 !.env.example
