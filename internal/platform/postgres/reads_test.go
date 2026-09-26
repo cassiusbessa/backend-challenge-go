@@ -254,7 +254,7 @@ func scanStamp() time.Time {
 func TestOldestWait_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
 	t.Parallel()
 	reads := NewReads(NewPool(config.Config{DatabaseURL: unreachable}))
-	_, err := reads.OldestWait(context.Background(), time.Now())
+	_, err := reads.OldestWait(context.Background(), scanStamp())
 	if !errors.Is(err, ErrPoolClosed) {
 		t.Fatalf("OldestWait = %v, want %v", err, ErrPoolClosed)
 	}
