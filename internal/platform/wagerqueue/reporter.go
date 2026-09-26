@@ -112,18 +112,20 @@ func correlationOf(decoded Message, message string) string {
 // go-observability reserves the error of a span for infrastructure, a version
 // conflict and the dead-letter queue, and a rejection is none of the three.
 func (rep *Reporter) mark(span trace.Span, err error) {
-	if err == nil || business(err) {
+	if _, refused := rejectionOf(err); err == nil || refused {
 		return
 	}
 	span.RecordError(err, trace.WithStackTrace(true))
 	span.SetStatus(codes.Error, "message of the ingress queue failed")
 }
 
-// business reports whether the failure is a rule refusing the operation, which is
-// an outcome and not a defect.
-func business(err error) bool {
+// rejectionOf answers the rule that refused the operation, and reports whether one
+// did. A refusal is an outcome and not a defect, and both the span and the line
+// need the token, so the chain is read once and the value travels.
+func rejectionOf(err error) (wager.Rejection, bool) {
 	var refusal wager.Rejection
-	return errors.As(err, &refusal)
+	found := errors.As(err, &refusal)
+	return refusal, found
 }
 
 // Settled records the outcome of a message that reached a decision, including a
@@ -141,6 +143,26 @@ func (rep *Reporter) Settled(ctx context.Context, result submitwager.Result) {
 		)...)
 }
 
+// Rejected records a message a rule refused, which is a settled outcome with a
+// durable row of its own and not a failure of this consumer.
+//
+// go-observability asks every rejection to log, and the token is what it logs:
+// the line the border would answer over HTTP carries the same failureCode, so the
+// two origins of one rule read alike. The span stays ok, because a rejection is
+// none of the three cases that mark one.
+func (rep *Reporter) Rejected(ctx context.Context, refusal wager.Rejection) {
+	code := refusal.Code().String()
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String("wager.status", wager.Rejected.String()),
+		attribute.String("wager.failure_code", code),
+	)
+	rep.log.LogAttrs(ctx, slog.LevelWarn, "message of the ingress queue rejected",
+		append(rep.named(ctx),
+			slog.String("status", wager.Rejected.String()),
+			slog.String("failureCode", code),
+		)...)
+}
+
 // Abandoned records a message on its way to the dead-letter queue, whatever the
 // reason, and counts it by that reason.
 //
@@ -149,12 +171,14 @@ func (rep *Reporter) Settled(ctx context.Context, result submitwager.Result) {
 // message here, and the line is the only place the true value can be read from.
 func (rep *Reporter) Abandoned(ctx context.Context, delivery Delivery, reason string, err error) {
 	rep.abandoned.WithLabelValues(reason).Inc()
-	attrs := append(rep.named(ctx), slog.String("reason", reason))
+	// Every one of the four doors to the dead-letter queue names a refusal of its
+	// own, the delivery limit included, so the chain is always there to log.
+	attrs := append(rep.named(ctx),
+		slog.String("reason", reason),
+		slog.String("error", err.Error()),
+	)
 	if errors.Is(err, authz.ErrUnmappedSender) || errors.Is(err, authz.ErrProviderNotAllowed) {
 		attrs = append(attrs, slog.String("sender", delivery.Sender))
-	}
-	if err != nil {
-		attrs = append(attrs, slog.String("error", err.Error()))
 	}
 	rep.log.LogAttrs(ctx, slog.LevelWarn, "message abandoned to the dead-letter queue", attrs...)
 }

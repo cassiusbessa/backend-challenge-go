@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"time"
 
@@ -18,6 +19,13 @@ import (
 // the way, and taking it out ourselves is what keeps the broker from discarding
 // the ones behind it.
 const deliveryLimit = 5
+
+// ErrDeliveryLimit is the message that has had every delivery this consumer
+// grants it. It is the one door to the dead-letter queue with no refusal of its
+// own to name, and it carries a sentinel anyway: go-observability marks the span
+// of a message that leaves for the queue of the dead, and a door without an error
+// would be the only one of the four to leave that span ok.
+var ErrDeliveryLimit = errors.New("wagerqueue: message reached the delivery limit of this consumer")
 
 // Delivery is one message as the broker hands it over.
 //
@@ -224,10 +232,12 @@ func (c *Consumer) stopping() bool {
 func (c *Consumer) turn(polling, work context.Context, deliveries []Delivery) {
 	for _, delivery := range deliveries {
 		if c.stopping() || polling.Err() != nil {
-			// The signal came mid batch. The rest of the messages stay in the
-			// queue, invisible until their window runs out, and are handed out
-			// again — here or in another replica.
-			c.release(work, delivery, c.timing.Visibility)
+			// The signal came mid batch. go-sqs-ingress hands a message nobody
+			// is left to process straight back: the rest of the batch was never
+			// decided, so it goes visible at once for another replica — or for
+			// this one when it comes back — instead of waiting out a window no
+			// process here is serving.
+			c.release(work, delivery, 0)
 			continue
 		}
 		c.decide(work, delivery)
@@ -251,8 +261,8 @@ func (c *Consumer) decide(work context.Context, delivery Delivery) {
 	if delivery.Deliveries >= deliveryLimit {
 		// The message has had every delivery this consumer grants it. It leaves
 		// before the broker discards the ones behind it in its group.
-		closeSpan(nil)
-		c.abandon(ctx, delivery, reasonDeliveryLimit, nil)
+		closeSpan(ErrDeliveryLimit)
+		c.abandon(ctx, delivery, reasonDeliveryLimit, ErrDeliveryLimit)
 		return
 	}
 	result, err := c.settle(ctx, delivery, decoded, refusal)
@@ -293,7 +303,15 @@ func (c *Consumer) answer(ctx, work context.Context, delivery Delivery, result s
 	answer, reason := answerOf(err)
 	switch answer {
 	case Remove:
-		c.reporter.Settled(ctx, result)
+		// Both arms remove the message, and they are not the same line: a rule
+		// refused this one, and the result the use case answers a refusal with
+		// carries no transaction to name. go-observability asks the rejection to
+		// log its token, so the reporter is told which of the two happened.
+		if refusal, refused := rejectionOf(err); refused {
+			c.reporter.Rejected(ctx, refusal)
+		} else {
+			c.reporter.Settled(ctx, result)
+		}
 		c.remove(ctx, delivery)
 	case Abandon:
 		c.abandon(ctx, delivery, reason, err)

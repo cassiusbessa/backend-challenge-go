@@ -14,6 +14,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -698,4 +699,69 @@ func gaugeOf(t *testing.T, metrics *Metrics) float64 {
 		t.Fatalf("read the gauge = %v, want nil", err)
 	}
 	return out.GetGauge().GetValue()
+}
+
+// A rule refused the operation, and go-observability asks the rejection to log its
+// token. The line the queue writes carries the same failureCode the HTTP border
+// would answer, and it is not the line of a message that settled: the result a
+// refusal comes back with names no transaction.
+func TestAnswer_logsTheTokenOfARuleThatRefusedTheOperation(t *testing.T) {
+	t.Parallel()
+	refused := &fakeReceiver{refuse: wager.NewRejection(wager.InsufficientFunds, nil)}
+	consumer, logs, _ := consumerOver(t, &fakeQueue{}, refused)
+	consumer.decide(context.Background(), arrived(1))
+	line := lineWith(t, logs, "rejected")
+	if got := line["failureCode"]; got != wager.InsufficientFunds.String() {
+		t.Fatalf("failureCode of the rejected line = %v, want %s", got, wager.InsufficientFunds)
+	}
+	if got := line["status"]; got != wager.Rejected.String() {
+		t.Fatalf("status of the rejected line = %v, want %s", got, wager.Rejected)
+	}
+	if strings.Contains(logs.String(), "settled") {
+		t.Fatalf("lines of a rejection:\n%s\nwant none of them about a message that settled", logs.String())
+	}
+	assertNoSecrets(t, line)
+}
+
+// go-observability marks the span of a message that leaves for the dead-letter
+// queue. The delivery limit is the one of the four doors with no refusal of its own
+// to name, and it carries a sentinel so its span is not the only one left ok.
+func TestDecide_marksTheSpanOfTheMessageAbandonedAtTheDeliveryLimit(t *testing.T) {
+	t.Parallel()
+	consumer, _, _ := consumerOver(t, &fakeQueue{}, &fakeReceiver{status: wager.Processed})
+	spans := recorded(t, consumer)
+	consumer.decide(context.Background(), arrived(deliveryLimit))
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("spans of a message abandoned at the limit = %d, want 1", len(ended))
+	}
+	if got := ended[0].Status().Code; got != codes.Error {
+		t.Fatalf("span status at the delivery limit = %v, want it marked as the dead-letter queue", got)
+	}
+	if len(ended[0].Events()) == 0 {
+		t.Fatalf("events on the span at the delivery limit = 0, want the sentinel recorded on it")
+	}
+}
+
+// go-sqs-ingress hands a message nobody is left to process straight back. The rest
+// of a batch the signal cut was never decided, so it goes visible at once instead
+// of waiting out a window no process here is serving.
+func TestTurn_handsTheRestOfTheBatchBackAtOnceWhenTheSignalCameMidBatch(t *testing.T) {
+	t.Parallel()
+	queue := &fakeQueue{}
+	consumer, _, _ := consumerOver(t, queue, &fakeReceiver{status: wager.Processed})
+	// The signal, as Start and Stop leave it: the channel the poll watches is
+	// closed, so stopping answers true without a run behind it.
+	consumer.fetching = make(chan struct{})
+	close(consumer.fetching)
+	consumer.turn(context.Background(), context.Background(), []Delivery{arrived(1), arrived(1)})
+	if queue.released != 2 {
+		t.Fatalf("releases of a batch the signal cut = %d, want 2", queue.released)
+	}
+	if queue.window != 0 {
+		t.Fatalf("window of a message the signal cut = %s, want 0", queue.window)
+	}
+	if queue.deleted != 0 {
+		t.Fatalf("deletes of a batch the signal cut = %d, want 0", queue.deleted)
+	}
 }
