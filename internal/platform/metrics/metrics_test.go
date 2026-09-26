@@ -50,6 +50,7 @@ func fixedNames() []string {
 		"wager_reference_wait_oldest_age_seconds",
 		"wager_reconciliation_wallets_checked_total",
 		"wager_reconciliation_divergences_total",
+		"wager_reconciliation_failures_total",
 	}
 }
 
@@ -112,6 +113,7 @@ func moveEverything(s *Settlement) {
 	s.Abandoned.WithLabelValues("invalid_body").Inc()
 	s.Checked(OriginWatch)
 	s.Diverged(OriginWatch, reconcilewallet.BalanceMismatch)
+	s.ReconciliationFailed(OriginHTTP)
 }
 
 // Each helper moves the child it names and no other, which is what lets a
@@ -171,6 +173,12 @@ func TestNew_primesTheReconciliationSeriesAtZeroForEveryOriginAndToken(t *testin
 	if got := testutil.ToFloat64(s.Divergences.WithLabelValues("http", "CHAIN_BREAK")); got != 0 {
 		t.Fatalf("divergences{http,CHAIN_BREAK} before any verdict = %v, want 0", got)
 	}
+	if got := testutil.CollectAndCount(s.ReconciliationFailures); got != 2 {
+		t.Fatalf("reconciliation failure series primed = %d, want one per origin", got)
+	}
+	if got := testutil.ToFloat64(s.ReconciliationFailures.WithLabelValues("http")) + testutil.ToFloat64(s.ReconciliationFailures.WithLabelValues("watch")); got != 0 {
+		t.Fatalf("reconciliation failures of both origins before any verdict = %v, want 0", got)
+	}
 }
 
 func TestChecked_movesTheVerdictsOfTheOrigin(t *testing.T) {
@@ -182,6 +190,18 @@ func TestChecked_movesTheVerdictsOfTheOrigin(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(s.WalletsChecked.WithLabelValues("watch")); got != 0 {
 		t.Fatalf("wallets_checked{watch} after a verdict of the route = %v, want 0", got)
+	}
+}
+
+func TestReconciliationFailed_movesTheFailuresOfTheOrigin(t *testing.T) {
+	t.Parallel()
+	s := New(prometheus.NewRegistry())
+	s.ReconciliationFailed(OriginWatch)
+	if got := testutil.ToFloat64(s.ReconciliationFailures.WithLabelValues("watch")); got != 1 {
+		t.Fatalf("reconciliation_failures{watch} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(s.ReconciliationFailures.WithLabelValues("http")); got != 0 {
+		t.Fatalf("reconciliation_failures{http} after a failure of the watcher = %v, want 0", got)
 	}
 }
 
@@ -204,9 +224,13 @@ func TestPrimeReconciliation_createsEveryOriginAndTokenAtZero(t *testing.T) {
 	s := New(prometheus.NewRegistry())
 	s.WalletsChecked.Reset()
 	s.Divergences.Reset()
+	s.ReconciliationFailures.Reset()
 	s.primeReconciliation()
 	if got := testutil.CollectAndCount(s.Divergences); got != 2*len(reconcilewallet.Vocabulary()) {
 		t.Fatalf("divergence series after priming = %d, want one per origin and token", got)
+	}
+	if got := testutil.CollectAndCount(s.ReconciliationFailures); got != 2 {
+		t.Fatalf("reconciliation failure series after priming = %d, want one per origin", got)
 	}
 	if got := testutil.ToFloat64(s.Divergences.WithLabelValues("watch", "BALANCE_MISMATCH")) + testutil.ToFloat64(s.WalletsChecked.WithLabelValues("http")); got != 0 {
 		t.Fatalf("sum of the primed series = %v, want 0: priming moves nothing", got)

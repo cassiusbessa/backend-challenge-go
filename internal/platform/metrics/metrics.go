@@ -76,8 +76,9 @@ type Settlement struct {
 	OutboxDead             prometheus.Counter
 	ReferenceWaitOldestAge prometheus.Gauge
 
-	WalletsChecked *prometheus.CounterVec
-	Divergences    *prometheus.CounterVec
+	WalletsChecked         *prometheus.CounterVec
+	Divergences            *prometheus.CounterVec
+	ReconciliationFailures *prometheus.CounterVec
 }
 
 // New builds every instrument and registers it on the registry of the process.
@@ -137,12 +138,16 @@ func New(reg prometheus.Registerer) *Settlement {
 			Name: "wager_reconciliation_divergences_total",
 			Help: "Divergences found by a reconciliation verdict, by origin and token.",
 		}, []string{"origin", "divergence"}),
+		ReconciliationFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_reconciliation_failures_total",
+			Help: "Reconciliations that produced no verdict, by origin.",
+		}, []string{"origin"}),
 	}
 	s.primeReconciliation()
 	reg.MustRegister(
 		s.Settlements, s.Rejections, s.Duplicates, s.Retries, s.Abandoned,
 		s.IngressDepth, s.DeadLetterDepth, s.OutboxPending, s.OutboxOldestAge, s.OutboxDead,
-		s.ReferenceWaitOldestAge, s.WalletsChecked, s.Divergences,
+		s.ReferenceWaitOldestAge, s.WalletsChecked, s.Divergences, s.ReconciliationFailures,
 	)
 	return s
 }
@@ -158,6 +163,7 @@ func New(reg prometheus.Registerer) *Settlement {
 func (s *Settlement) primeReconciliation() {
 	for _, origin := range []string{OriginHTTP, OriginWatch} {
 		s.WalletsChecked.WithLabelValues(origin)
+		s.ReconciliationFailures.WithLabelValues(origin)
 		for _, token := range reconcilewallet.Vocabulary() {
 			s.Divergences.WithLabelValues(origin, token.String())
 		}
@@ -193,6 +199,13 @@ func (s *Settlement) Checked(origin string) {
 // balance in disagreement.
 func (s *Settlement) Diverged(origin string, token reconcilewallet.Divergence) {
 	s.Divergences.WithLabelValues(origin, token.String()).Inc()
+}
+
+// ReconciliationFailed counts one reconciliation that produced no verdict: the
+// read failed, or the sum or the difference fell outside what Money holds. A
+// refusal is not one — the missing wallet and the malformed identity answer.
+func (s *Settlement) ReconciliationFailed(origin string) {
+	s.ReconciliationFailures.WithLabelValues(origin).Inc()
 }
 
 // RetryReason names why a failure sends the work back, off the chain and never
