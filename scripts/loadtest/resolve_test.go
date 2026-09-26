@@ -39,11 +39,13 @@ func TestResolveAll_settlesAnArrivalCommittedWithoutAnAnswer(t *testing.T) {
 		http.Error(w, "replica killed", http.StatusBadGateway)
 		return true
 	}
-	l := newLoad(optionsFor(t, server))
+	o := optionsFor(t, server)
+	o.clock = ticking(longAgo, time.Millisecond)
+	l := newLoad(o)
 	if err := l.open(context.Background()); err != nil {
 		t.Fatalf("open = %v, want nil", err)
 	}
-	l.send(context.Background(), time.Now().Add(100*time.Millisecond))
+	l.send(context.Background(), longAgo.Add(time.Second))
 	if l.errors == 0 {
 		t.Fatalf("errors of the window = %d, want the arrivals answered 502", l.errors)
 	}
@@ -85,7 +87,7 @@ func TestResolveOne_stopsAtAnUnexpectedAnswer(t *testing.T) {
 	}
 	l := newLoad(optionsFor(t, server))
 	op := &operation{key: "key-x", body: []byte(`{}`)}
-	if settled := l.resolveOne(context.Background(), op, time.Now().Add(time.Second)); !settled || l.unexpected != 1 || fake.arrivals != 1 {
+	if settled := l.resolveOne(context.Background(), op, farAhead); !settled || l.unexpected != 1 || fake.arrivals != 1 {
 		t.Fatalf("resolution of a refused key = settled %t, %d unexpected after %d arrivals, want it ended after one", settled, l.unexpected, fake.arrivals)
 	}
 }

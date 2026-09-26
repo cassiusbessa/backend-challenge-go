@@ -176,15 +176,23 @@ func (l *load) work(ctx context.Context, worker int, until time.Time) {
 	defer client.CloseIdleConnections()
 	mix := newMixer(l.opts.seed, worker, len(l.wallets))
 	var history []*operation
-	for sequence := 0; ctx.Err() == nil && time.Now().Before(until); sequence++ {
+	for sequence := 0; ctx.Err() == nil && l.now().Before(until); sequence++ {
 		op, fresh := l.nextOperation(mix, history, fmt.Sprintf("%s-%d-%d", l.run, worker, sequence))
 		if fresh {
 			history = append(history, op)
 		}
-		started := time.Now()
+		started := l.now()
 		got := l.arrive(ctx, client, op)
-		l.record(op, got, time.Since(started))
+		l.record(op, got, l.now().Sub(started))
 	}
+}
+
+// now reads the clock the window is measured by.
+func (l *load) now() time.Time {
+	if l.opts.clock != nil {
+		return l.opts.clock()
+	}
+	return time.Now()
 }
 
 // nextOperation answers an earlier operation of this worker to send again, or a

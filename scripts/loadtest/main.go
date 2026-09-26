@@ -77,9 +77,11 @@ type options struct {
 	drainWait   time.Duration
 	resolveWait time.Duration
 
-	// commands stands in for the processes the kill runs. It is nil outside the
-	// tests, which is the real process.
+	// commands stands in for the processes the kill runs, and clock for the
+	// clock the workers read the window by. Both are nil outside the tests,
+	// which is the real process and the real clock.
 	commands func(ctx context.Context, args []string) (string, error)
+	clock    func() time.Time
 }
 
 func main() {

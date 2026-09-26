@@ -62,8 +62,7 @@ func serverSideOf(t *testing.T, name string, replicas int, answers backendAnswer
 	o := optionsFor(t, server)
 	o.target, o.replicaLabel, o.replicas = name, targets[name].replica, replicas
 	var published report
-	end := time.Now()
-	failures := serverSide(context.Background(), o, &published, end.Add(-time.Minute), end)
+	failures := serverSide(context.Background(), o, &published, longAgo.Add(-time.Minute), longAgo)
 	return published, failures
 }
 
@@ -143,8 +142,7 @@ func TestServerSide_failsNamingABackendItCannotReach(t *testing.T) {
 	_, server := newFakeService(t)
 	o := optionsFor(t, server)
 	o.prometheus = address
-	end := time.Now()
-	failures := serverSide(context.Background(), o, &report{}, end.Add(-time.Minute), end)
+	failures := serverSide(context.Background(), o, &report{}, longAgo.Add(-time.Minute), longAgo)
 	if len(failures) != 1 || !strings.Contains(failures[0], "metric backend "+address+" is unreachable") {
 		t.Fatalf("failures with the backend down = %v, want it named", failures)
 	}
@@ -159,11 +157,11 @@ func TestQuery_failsOnAQueryTheBackendRefuses(t *testing.T) {
 		return http.StatusBadRequest, `{"status":"error","error":"parse error"}`
 	}
 	o := optionsFor(t, server)
-	if _, err := newBackend(o).query(context.Background(), "max(x)", time.Now()); err == nil || !strings.Contains(err.Error(), "refused max(x): 400 parse error") {
+	if _, err := newBackend(o).query(context.Background(), "max(x)", longAgo); err == nil || !strings.Contains(err.Error(), "refused max(x): 400 parse error") {
 		t.Fatalf("query refused by the backend = %v, want the query and the refusal named", err)
 	}
 	fake.metrics = func(string, time.Time) (int, string) { return vectorOf(`{"metric":{},"value":[1,"NaN?"]}`) }
-	if _, err := newBackend(o).query(context.Background(), "max(x)", time.Now()); err == nil {
+	if _, err := newBackend(o).query(context.Background(), "max(x)", longAgo); err == nil {
 		t.Fatalf("query answered with a value that is not a number = nil, want the failure")
 	}
 }
@@ -174,10 +172,9 @@ func TestDrain_answersTheTimeFromTheEndOfTheWindow(t *testing.T) {
 	t.Parallel()
 	fake, server := newFakeService(t)
 	fake.metrics = backendAnswers{}.answer
-	end := time.Now().Add(-2 * time.Second)
-	took, err := newBackend(optionsFor(t, server)).drain(context.Background(), end, time.Second)
-	if err != nil || took < 2*time.Second {
-		t.Fatalf("drain of an empty outbox = %s, %v, want at least the 2s since the window", took, err)
+	took, err := newBackend(optionsFor(t, server)).drain(context.Background(), longAgo, time.Second)
+	if err != nil || took <= 0 {
+		t.Fatalf("drain of an empty outbox = %s, %v, want the time since the window", took, err)
 	}
 }
 

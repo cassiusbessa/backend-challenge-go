@@ -60,17 +60,16 @@ func TestKillHalfway_runsTheCommandsOfTheTargetAndTheMode(t *testing.T) {
 		t.Run(tc.target+" "+tc.mode, func(t *testing.T) {
 			t.Parallel()
 			fake := &executor{listed: tc.listed}
-			o := options{target: tc.target, kill: tc.mode, root: "/repo", kubectl: "kubectl", context: "kind-junglegaming", namespace: "junglegaming", duration: 40 * time.Millisecond, commands: fake.run}
-			start := time.Now()
-			record, err := newLoad(o).killHalfway(context.Background(), start)
+			o := options{target: tc.target, kill: tc.mode, root: "/repo", kubectl: "kubectl", context: "kind-junglegaming", namespace: "junglegaming", duration: time.Minute, commands: fake.run}
+			record, err := newLoad(o).killHalfway(context.Background(), longAgo)
 			if err != nil {
 				t.Fatalf("killHalfway = %v, want nil", err)
 			}
 			if !slices.EqualFunc(fake.asked, tc.want, slices.Equal) {
 				t.Fatalf("commands = %q, want %q", fake.asked, tc.want)
 			}
-			if record.Replica != strings.Fields(tc.listed)[0] || record.Mode != tc.mode || record.AfterSeconds < 0.02 {
-				t.Fatalf("record = %+v, want the first replica, the mode and the middle of the window", record)
+			if record.Replica != strings.Fields(tc.listed)[0] || record.Mode != tc.mode || record.AfterSeconds < 30 {
+				t.Fatalf("record = %+v, want the first replica, the mode and no earlier than the middle of the window", record)
 			}
 		})
 	}
@@ -86,7 +85,7 @@ func TestKillHalfway_namesTheCommandThatFailed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			o := options{target: "compose", kill: killGraceful, root: "/repo", duration: time.Millisecond, commands: fake.run}
-			_, err := newLoad(o).killHalfway(context.Background(), time.Now())
+			_, err := newLoad(o).killHalfway(context.Background(), longAgo)
 			if err == nil || !strings.Contains(err.Error(), "kill a replica: docker ") || !strings.Contains(err.Error(), "refused") {
 				t.Fatalf("killHalfway when %s fails = %v, want the command named", name, err)
 			}
@@ -98,7 +97,7 @@ func TestKillHalfway_namesTheCommandThatFailed(t *testing.T) {
 func TestKillHalfway_failsWhenNoReplicaIsListed(t *testing.T) {
 	t.Parallel()
 	o := options{target: "compose", kill: killForced, root: "/repo", duration: time.Millisecond, commands: (&executor{}).run}
-	if _, err := newLoad(o).killHalfway(context.Background(), time.Now()); err == nil || !strings.Contains(err.Error(), "answered no replica to kill") {
+	if _, err := newLoad(o).killHalfway(context.Background(), longAgo); err == nil || !strings.Contains(err.Error(), "answered no replica to kill") {
 		t.Fatalf("killHalfway with nothing listed = %v, want the failure", err)
 	}
 }
@@ -143,7 +142,7 @@ func TestKillHalfway_killsNothingAfterTheSignal(t *testing.T) {
 	signalled, cancel := context.WithCancel(context.Background())
 	cancel()
 	o := options{target: "compose", kill: killForced, root: "/repo", duration: time.Hour, commands: fake.run}
-	if _, err := newLoad(o).killHalfway(signalled, time.Now()); !errors.Is(err, context.Canceled) || len(fake.asked) != 0 {
+	if _, err := newLoad(o).killHalfway(signalled, farAhead); !errors.Is(err, context.Canceled) || len(fake.asked) != 0 {
 		t.Fatalf("killHalfway after the signal = %v with %d commands, want the cancellation and none", err, len(fake.asked))
 	}
 }

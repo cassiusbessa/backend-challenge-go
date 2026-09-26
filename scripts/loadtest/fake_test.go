@@ -83,6 +83,27 @@ func optionsFor(t *testing.T, server *httptest.Server) options {
 	}
 }
 
+// ticking answers a clock that moves by the step at every reading, from the
+// instant given: a window then lasts a known number of readings, whatever the
+// speed of the machine.
+func ticking(from time.Time, step time.Duration) func() time.Time {
+	var mu sync.Mutex
+	at := from
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		at = at.Add(step)
+		return at
+	}
+}
+
+// The instants the cases fix: one long past, which no wait reaches, and one far
+// ahead, which every wait does.
+var (
+	longAgo  = time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	farAhead = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+)
+
 func (f *fakeService) token(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.tokens++

@@ -155,11 +155,13 @@ func TestOpen_failsWhenTheServiceRefusesTheWallet(t *testing.T) {
 func TestSend_keepsOneConnectionPerWorker(t *testing.T) {
 	t.Parallel()
 	fake, server := newFakeService(t)
-	l := newLoad(optionsFor(t, server))
+	o := optionsFor(t, server)
+	o.clock = ticking(longAgo, time.Millisecond)
+	l := newLoad(o)
 	if err := l.open(context.Background()); err != nil {
 		t.Fatalf("open = %v, want nil", err)
 	}
-	l.send(context.Background(), time.Now().Add(200*time.Millisecond))
+	l.send(context.Background(), longAgo.Add(2*time.Second))
 	if len(fake.remotes) != l.opts.concurrency {
 		t.Fatalf("connections of %d workers = %d, want one each", l.opts.concurrency, len(fake.remotes))
 	}
