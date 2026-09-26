@@ -13,8 +13,10 @@ import (
 	"sync"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -34,17 +36,25 @@ type arrival struct {
 }
 
 // standIn takes the place of the broker behind the proxy and keeps every request
-// that reached it, so a case tells what was forwarded from what was not.
+// that reached it, so a case tells what was forwarded from what was not. It
+// answers the first failing requests with a failure of the broker the SDK
+// retries, and every one after them as the broker would.
 type standIn struct {
 	mu       sync.Mutex
 	arrivals []arrival
+	failing  int
 }
 
 func (s *standIn) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
 	s.arrivals = append(s.arrivals, arrival{target: r.Header.Get(targetHeader), body: body})
+	failed := len(s.arrivals) <= s.failing
 	s.mu.Unlock()
+	if failed {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
 	if r.Header.Get(targetHeader) != "" {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
 		_, _ = io.WriteString(w, "{}")
@@ -65,7 +75,14 @@ func (s *standIn) received() []arrival {
 // stand-in.
 func proxied(t *testing.T, faculties Faculties) (*Proxy, string, *standIn) {
 	t.Helper()
-	broker := &standIn{}
+	return proxiedFailing(t, faculties, 0)
+}
+
+// proxiedFailing is proxied with a stand-in that fails the first requests it
+// receives.
+func proxiedFailing(t *testing.T, faculties Faculties, failing int) (*Proxy, string, *standIn) {
+	t.Helper()
+	broker := &standIn{failing: failing}
 	behind := httptest.NewServer(broker)
 	t.Cleanup(behind.Close)
 	target, err := url.Parse(behind.URL)
@@ -84,9 +101,15 @@ func queueAt(endpoint string) *sqs.Client {
 	return sqs.New(sqs.Options{Region: "us-east-1", Credentials: local, BaseEndpoint: aws.String(endpoint)})
 }
 
+// topicAt is a client of the topic with the retryer of the SDK, the one the relay
+// publishes with, less its waits between attempts.
 func topicAt(endpoint string) *sns.Client {
-	return sns.New(sns.Options{Region: "us-east-1", Credentials: local, BaseEndpoint: aws.String(endpoint)})
+	return sns.New(sns.Options{Region: "us-east-1", Credentials: local, BaseEndpoint: aws.String(endpoint), Retryer: promptly})
 }
+
+var promptly = retry.NewStandard(func(o *retry.StandardOptions) {
+	o.Backoff = retry.BackoffDelayerFunc(func(int, error) (time.Duration, error) { return 0, nil })
+})
 
 func deleteThrough(ctx context.Context, endpoint string) error {
 	_, err := queueAt(endpoint).DeleteMessage(ctx, &sqs.DeleteMessageInput{
@@ -158,6 +181,38 @@ func TestProxy_recordsThePublicationTheSDKSendsByItsEventID(t *testing.T) {
 	}
 	if received := broker.received(); len(received) != 1 || !bytes.Contains(received[0].body, []byte("event-1")) {
 		t.Errorf("requests that reached the broker = %d, want the one publication carrying event-1", len(received))
+	}
+}
+
+// A publication the SDK sends again after a failure of the broker is one call:
+// every attempt reaches the broker, and the event is counted once, because the
+// retry is the transport and not a relay publishing it twice.
+func TestProxy_countsOnceAPublicationTheSDKRetried(t *testing.T) {
+	t.Parallel()
+	proxy, endpoint, broker := proxiedFailing(t, Faculties{RecordPublishes: true}, 1)
+	if err := publishThrough(context.Background(), endpoint, "event-5"); err != nil {
+		t.Fatalf("Publish retried through the proxy = %v, want nil", err)
+	}
+	if got := len(broker.received()); got != 2 {
+		t.Fatalf("attempts that reached the broker = %d, want the failed one and its retry", got)
+	}
+	if got := proxy.Published(); len(got) != 1 || got["event-5"] != 1 {
+		t.Errorf("Published after a retry = %v, want event-5 once", got)
+	}
+}
+
+// Two calls that publish the same event are two sends, which is the defect the
+// scenario of the publishers looks for, and both are counted.
+func TestProxy_countsTwiceAnEventTwoCallsPublish(t *testing.T) {
+	t.Parallel()
+	proxy, endpoint, _ := proxied(t, Faculties{RecordPublishes: true})
+	for range 2 {
+		if err := publishThrough(context.Background(), endpoint, "event-6"); err != nil {
+			t.Fatalf("Publish of event-6 through the proxy = %v, want nil", err)
+		}
+	}
+	if got := proxy.Published()["event-6"]; got != 2 {
+		t.Errorf("Published of event-6 after two calls = %d, want 2", got)
 	}
 }
 
@@ -244,6 +299,32 @@ func TestRecord_notesOnlyAPublicationAndPutsEveryBodyBack(t *testing.T) {
 			}
 			if again, _ := io.ReadAll(req.Body); string(again) != tc.body {
 				t.Errorf("body after record = %q, want %q as it came", again, tc.body)
+			}
+		})
+	}
+}
+
+// note counts an event once per invocation, and a request that carries none each
+// time it comes.
+func TestNote_countsEachCallOfTheSDKOnce(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		invocations []string
+		want        int
+	}{
+		{name: "the attempts of one call are counted once", invocations: []string{"call-1", "call-1", "call-1"}, want: 1},
+		{name: "two calls are counted twice", invocations: []string{"call-1", "call-2"}, want: 2},
+		{name: "requests without an invocation are each counted", invocations: []string{"", ""}, want: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy := NewProxy(&url.URL{Scheme: "http", Host: "broker.invalid"}, Faculties{RecordPublishes: true})
+			for _, invocation := range tc.invocations {
+				proxy.note("event-7", invocation)
+			}
+			if got := proxy.Published()["event-7"]; got != tc.want {
+				t.Errorf("Published of event-7 after %v = %d, want %d", tc.invocations, got, tc.want)
 			}
 		})
 	}

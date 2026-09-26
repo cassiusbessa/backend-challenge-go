@@ -20,6 +20,10 @@ const (
 	publishAction = "Publish"
 )
 
+// invocationHeader names one call of the SDK. Every attempt of that call carries
+// the same value, the retries of transport included.
+const invocationHeader = "Amz-Sdk-Invocation-Id"
+
 // refusal is the answer to a removal the proxy refuses, shaped as an error of the
 // JSON protocol so the SDK reads it as a refusal of the broker. It is a client
 // error, which the SDK does not retry: the removal the consumer attempts is the
@@ -35,9 +39,9 @@ type Faculties struct {
 	RefuseDeletes bool
 
 	// RecordPublishes notes the deduplication of every publication, which is the
-	// eventId, before forwarding it. That counts what left the process before the
-	// FIFO topic deduplicates it, which would make a second send reach a
-	// subscriber once.
+	// eventId, before forwarding it, once per call of the SDK. That counts what
+	// left the process before the FIFO topic deduplicates it, which would make a
+	// second send reach a subscriber once.
 	RecordPublishes bool
 }
 
@@ -48,9 +52,10 @@ type Proxy struct {
 	forward   *httputil.ReverseProxy
 	faculties Faculties
 
-	mu        sync.Mutex
-	refused   int
-	published map[string]int
+	mu          sync.Mutex
+	refused     int
+	published   map[string]int
+	invocations map[string]struct{}
 }
 
 func NewProxy(broker *url.URL, faculties Faculties) *Proxy {
@@ -62,8 +67,9 @@ func NewProxy(broker *url.URL, faculties Faculties) *Proxy {
 			// test.
 			out.Out.Host = out.In.Host
 		}},
-		faculties: faculties,
-		published: map[string]int{},
+		faculties:   faculties,
+		published:   map[string]int{},
+		invocations: map[string]struct{}{},
 	}
 }
 
@@ -88,8 +94,9 @@ func (p *Proxy) Refused() int {
 	return p.refused
 }
 
-// Published answers how many times each eventId went out through the proxy. The
-// map is a copy, so a case reads it while the instances keep publishing.
+// Published answers how many calls of the SDK sent each eventId out through the
+// proxy. The map is a copy, so a case reads it while the instances keep
+// publishing.
 func (p *Proxy) Published() map[string]int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -116,9 +123,23 @@ func (p *Proxy) record(r *http.Request) error {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	form, malformed := url.ParseQuery(string(body))
 	if malformed == nil && form.Get("Action") == publishAction {
-		p.mu.Lock()
-		p.published[form.Get("MessageDeduplicationId")]++
-		p.mu.Unlock()
+		p.note(form.Get("MessageDeduplicationId"), r.Header.Get(invocationHeader))
 	}
 	return nil
+}
+
+// note counts one publication of the event, once per call of the SDK. A retry
+// repeats the invocation of the attempt before it: that is the transport sending
+// one publication again, not a relay publishing the event twice. A request with
+// no invocation is counted every time it comes.
+func (p *Proxy) note(eventID, invocation string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, repeated := p.invocations[invocation]; repeated {
+		return
+	}
+	if invocation != "" {
+		p.invocations[invocation] = struct{}{}
+	}
+	p.published[eventID]++
 }
