@@ -123,7 +123,7 @@ func openThree(ctx context.Context, t *testing.T, unit *postgres.UnitOfWork) map
 	for range 3 {
 		opened := opening(t)
 		if err := record(ctx, unit, opened); err != nil {
-			t.Fatalf("Within = %v, want nil", err)
+			t.Fatalf("Within opening one of three wallets = %v, want nil", err)
 		}
 		mine[opened.wallet.ID()] = true
 	}
