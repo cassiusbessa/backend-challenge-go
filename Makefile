@@ -2,10 +2,21 @@
 # `README.md` publica, e não uma abstração no lugar dele: quem quer entender o
 # ritual lê o README, e quem já entendeu digita o alvo.
 
+# O Compose lê o `.env` sozinho; o make não. Sem esta inclusão um `.env` que troca
+# o banco ou a senha constrói um ambiente e deixa os alvos daqui, e o verificador
+# que eles chamam, falando com outro. Valor com `#` viraria comentário aqui, e é
+# por isso que `.env.example` pede percent-encoding na senha.
+-include .env
+
 POSTGRES_USER ?= junglegaming
 POSTGRES_PASSWORD ?= junglegaming
-APP_DB ?= junglegaming
+POSTGRES_DB ?= junglegaming
+# O Compose chama de POSTGRES_DB o banco que o Makefile chama de APP_DB. É o mesmo
+# banco, e o default de um é o valor do outro para os dois não divergirem.
+APP_DB ?= $(POSTGRES_DB)
 SUITE_DB ?= junglegaming_test
+KC_BOOTSTRAP_ADMIN_USERNAME ?= admin
+KC_BOOTSTRAP_ADMIN_PASSWORD ?= admin
 
 # Dentro da rede do Compose o host do banco é o nome do serviço; no host é
 # localhost. O `go test` roda no host, o `migrate` roda na rede.
@@ -19,6 +30,15 @@ SUITE_HOST_URL := postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:543
 MIGRATE := docker compose run --rm migrate -path=/migrations -database
 
 PSQL := docker compose exec -T postgres psql -U $(POSTGRES_USER)
+
+# Uma escrita pelo papel da aplicação, numa transação desfeita: prova que os GRANT
+# de um banco valem sem deixar linha. O banco revertido é conferido com ela também,
+# porque os privilégios que a reversão revoga e a subida reconcede são justamente o
+# que mais tende a quebrar, e conferir só o banco intocado não os exerce.
+WRITE_PROBE := BEGIN; SET ROLE wager_app; \
+	INSERT INTO wallets (id, player_id, currency, balance_cents, version, created_at, updated_at) \
+	VALUES ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', 'BRL', 0, 1, now(), now()); \
+	ROLLBACK
 
 .DEFAULT_GOAL := help
 .PHONY: help up down provision migrate test test-journey cover-journey mutation verify migrate-reversibility
@@ -76,8 +96,13 @@ mutation: ## relatório de mutação do gremlins sobre o módulo
 	mkdir -p .quality
 	gremlins unleash --timeout-coefficient=30 --output=.quality/gremlins.json .
 
+# As opções vão explícitas: os defaults de flag do verificador são os mesmos deste
+# arquivo, e sem passá-los um `.env` que troca o banco ou a senha do administrador
+# deixaria o verify vermelho sobre um ambiente exatamente como declarado.
 verify: ## responde se o ambiente está no estado que os arquivos versionados declaram
-	go run -C scripts/envcheck . -root "$$PWD"
+	go run -C scripts/envcheck . -root "$$PWD" \
+		-postgres-user "$(POSTGRES_USER)" -app-db "$(APP_DB)" -suite-db "$(SUITE_DB)" \
+		-admin-user "$(KC_BOOTSTRAP_ADMIN_USERNAME)" -admin-password "$(KC_BOOTSTRAP_ADMIN_PASSWORD)"
 
 # Este alvo derruba o schema, e é por isso que o nome dele diz contra quem: o
 # banco da suíte, nunca o da aplicação, e nunca como parte de `up`.
@@ -86,8 +111,6 @@ migrate-reversibility: ## sobe, reverte e sobe de novo o banco da suíte, e conf
 	$(MIGRATE) "$(SUITE_URL)" down -all
 	$(MIGRATE) "$(SUITE_URL)" up
 	$(PSQL) -d $(SUITE_DB) -tAc "SELECT dirty FROM schema_migrations" | grep -qx f
-	$(PSQL) -d $(APP_DB) -v ON_ERROR_STOP=1 -c "BEGIN; SET ROLE wager_app; \
-		INSERT INTO wallets (id, player_id, currency, balance_cents, version, created_at, updated_at) \
-		VALUES ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', 'BRL', 0, 1, now(), now()); \
-		ROLLBACK"
-	@echo "reversibility ok: the suite database is clean and the application database still writes through wager_app"
+	$(PSQL) -d $(SUITE_DB) -v ON_ERROR_STOP=1 -c "$(WRITE_PROBE)"
+	$(PSQL) -d $(APP_DB) -v ON_ERROR_STOP=1 -c "$(WRITE_PROBE)"
+	@echo "reversibility ok: both databases are clean and write through wager_app"

@@ -27,8 +27,10 @@ make down        # derruba a stack e descarta os volumes dela
 ```
 
 `make verify` é o único que não aparece em outra seção. Ele não altera nada e
-responde por quatro coisas: os dois bancos existem e estão na mesma versão de
-schema; o realm emite token pelo tempo que `deploy/keycloak/junglegaming-realm.json`
+responde por quatro coisas: os dois bancos existem, estão na mesma versão de
+schema e nessa versão que o `*.up.sql` mais alto de `deploy/migrations` declara —
+aplicada a nenhum dos dois, uma migration os deixaria concordando e atrasados; o
+realm emite token pelo tempo que `deploy/keycloak/junglegaming-realm.json`
 declara; as filas e o tópico que o Terraform descreve existem no broker; e a
 imagem em execução não é mais antiga que o último commit que mudou o que ela
 contém — os caminhos que o `Dockerfile` copia, menos os `_test.go`, que só o
@@ -40,12 +42,19 @@ diferente de zero nomeando o que divergiu, e funciona quando a aplicação não 
 go run -C scripts/envcheck . -root "$PWD"
 ```
 
+Os defaults de flag do verificador são os valores deste repositório, e é por isso
+que o comando acima roda sem argumento. Quem tem um `.env` que troca o banco ou a
+senha do administrador usa `make verify`, que passa cada um deles explicitamente:
+o make inclui o `.env` pelo mesmo motivo que o Compose o lê.
+
 Dois alvos existem para medir, e nenhum dos dois entra na subida: `make
 cover-journey`, que soma o perfil das duas suítes com `go tool covdata`, e `make
 mutation`, que roda o gremlins sobre o módulo. E `make migrate-reversibility`
 sobe, reverte e sobe de novo **o banco da suíte**, conferindo que a versão não
-ficou suja e que o banco da aplicação continua aceitando escrita pelo mesmo
-papel; ele derruba schema, e é por isso que o nome diz contra quem roda.
+ficou suja e que os dois bancos continuam aceitando escrita pelo papel da
+aplicação — o revertido porque são os privilégios dele que a reversão revoga e a
+subida reconcede, e o da aplicação porque o papel é objeto de cluster e os dois o
+compartilham; ele derruba schema, e é por isso que o nome diz contra quem roda.
 
 ## Subida
 
@@ -78,7 +87,7 @@ O SQL versionado fica em `deploy/migrations`, com arquivos numerados aplicados p
 docker compose run --rm migrate
 ```
 
-Reverter em desenvolvimento é o `down` da migration, ou `docker compose down -v` para recriar do zero. A reversão revoga os privilégios que concedeu e deixa de pé o papel `wager_app`, que é objeto de cluster compartilhado pelos dois bancos — derrubá-lo ao reverter um deles falharia enquanto o outro existisse. Quem quiser conferir a reversibilidade usa `make migrate-reversibility`, que roda contra o banco da suíte e nunca contra o da aplicação.
+Reverter em desenvolvimento é o `down` da migration, ou `docker compose down -v` para recriar do zero. A reversão revoga os privilégios que concedeu e deixa de pé o papel `wager_app`, que é objeto de cluster compartilhado pelos dois bancos — derrubá-lo ao reverter um deles falharia enquanto o outro existisse. Quem quiser conferir a reversibilidade usa `make migrate-reversibility`, que derruba schema só no banco da suíte e nunca no da aplicação, e prova a escrita pelo papel nos dois.
 
 As três tabelas financeiras são `wallets`, `wager_transactions` e `ledger_entries`, e ao lado delas fica a `outbox_events`, com o `eventId` como chave, o payload imutável depois da inserção e o índice parcial que serve a varredura da fila de publicação. As invariantes que o agregado não substitui ficam no banco: saldo não negativo, unicidade de jogador mais moeda, os campos exigidos por tipo e por status, uma reversão `PROCESSED` por transação citada, e o ledger recusando `UPDATE`, `DELETE` e `TRUNCATE`.
 
