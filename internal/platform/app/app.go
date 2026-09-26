@@ -92,26 +92,6 @@ func stop(application *fx.App, pipe *telemetry.Pipeline, timeout time.Duration) 
 	return errors.Join(stopped, pipe.Shutdown(flushing))
 }
 
-// startedPipeline builds the telemetry pipeline and starts it here, in the
-// constructor, instead of in a lifecycle hook.
-//
-// Every constructor of the graph runs before any hook, and Start replaces the
-// Tracer and the Logger it had handed out. Started as a hook, the background
-// work keeps the provider NewPipeline built, which carries no exporter, and its
-// spans and logs never leave the process. Started here, Fx's own ordering makes
-// the handover safe: a constructor runs before anything that depends on it.
-//
-// It is not stopped here either. The flush is the one thing that must survive a
-// shutdown that overran, and a hook cannot promise that, so Run flushes it after
-// the lifecycle is done, on a budget of its own.
-func startedPipeline(cfg config.Config) (*telemetry.Pipeline, error) {
-	pipe := telemetry.NewPipeline(cfg)
-	if err := pipe.Start(context.Background()); err != nil {
-		return nil, err
-	}
-	return pipe, nil
-}
-
 func New(cfg config.Config, opts ...fx.Option) *fx.App {
 	options := []fx.Option{
 		fx.NopLogger,
@@ -123,7 +103,10 @@ func New(cfg config.Config, opts ...fx.Option) *fx.App {
 		// library instead of the budget of this process.
 		fx.StartTimeout(cfg.ShutdownTimeout),
 		fx.StopTimeout(cfg.ShutdownTimeout),
-		fx.Provide(startedPipeline),
+		// Started, and not a lifecycle hook: every constructor of the graph runs
+		// before any hook, so a pipeline started as a hook hands its Tracer and
+		// Logger to the background work and only then replaces them.
+		fx.Provide(telemetry.Started),
 		fx.Provide(postgres.NewPool),
 		fx.Provide(probe.NewPostgres),
 		fx.Provide(probe.NewQueue),

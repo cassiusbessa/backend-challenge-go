@@ -46,6 +46,20 @@ func NewPipeline(cfg config.Config) *Pipeline {
 	return pipe
 }
 
+// Started answers a pipeline whose exporters are already installed.
+//
+// It exists because the moment of the start decides what the rest of the
+// process gets: Start replaces the Tracer and the Logger the pipeline had
+// handed out, and the provider NewPipeline builds carries no exporter, so
+// anything holding the earlier pair emits into nothing.
+func Started(cfg config.Config) (*Pipeline, error) {
+	pipe := NewPipeline(cfg)
+	if err := pipe.Start(context.Background()); err != nil {
+		return nil, err
+	}
+	return pipe, nil
+}
+
 // Start installs the trace and log exporters. Process metrics are deliberately
 // left out: they stay on /metrics so that heap and goroutines have a single
 // source instead of two that can disagree.

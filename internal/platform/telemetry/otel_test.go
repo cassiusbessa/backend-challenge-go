@@ -63,7 +63,7 @@ func TestStartInstallsTheOTLPExportersWithoutReachingTheCollector(t *testing.T) 
 		t.Fatalf("start with an unreachable collector = %v, want nil", err)
 	}
 	if pipe.tracer == beforeStart {
-		t.Fatalf("provider after start is the one the constructor built, want the one start installs")
+		t.Fatalf("provider after start = %p, want one other than the constructor's %p", pipe.tracer, beforeStart)
 	}
 	if pipe.logs == nil {
 		t.Fatalf("logger provider = %v, want one after start", pipe.logs)
@@ -198,5 +198,18 @@ func TestShutdownTracer_shutsDownTheProviderInPlace(t *testing.T) {
 	}
 	if !watcher.shutdown {
 		t.Fatalf("provider in place shut down = %t, want true", watcher.shutdown)
+	}
+}
+
+// NewPipeline leaves the log provider unset and installLogs is what sets it, so
+// an installed one is the shortest proof that the pipeline comes back started.
+func TestStarted_answersAPipelineWithItsExportersInstalled(t *testing.T) {
+	t.Parallel()
+	pipe, err := Started(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
+	if err != nil {
+		t.Fatalf("Started with an unreachable collector = %v, want nil", err)
+	}
+	if pipe.logs == nil {
+		t.Fatalf("log provider of a started pipeline = %v, want one installed", pipe.logs)
 	}
 }
