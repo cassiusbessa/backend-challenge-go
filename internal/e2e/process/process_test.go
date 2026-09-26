@@ -90,23 +90,27 @@ func TestReadyFallsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	}
 }
 
-// The wager routes of this delivery are served. Without a credential they answer
-// 401, which is the guard refusing the request and not a route that is not there,
-// and the reconciliation route still answers 404 because it is not delivered.
-func TestWagerRoutesAreServedAndReconciliationIsNot(t *testing.T) {
+// The wager routes and the two wallet reads are served. Without a credential
+// they answer 401, which is the guard refusing the request and not a route that
+// is not there.
+func TestWagerAndWalletReadRoutesAreServed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	base := startProcess(t, createQueue(ctx, t))
-	submit := statusOf(ctx, t, http.MethodPost, base+"/wagering/transactions")
-	if submit != http.StatusUnauthorized {
-		t.Fatalf("POST /wagering/transactions = %d, want 401 from the guard", submit)
+	const wallet = "/wallets/11111111-1111-4111-8111-111111111111"
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/wagering/transactions"},
+		{method: http.MethodGet, path: "/wagering/transactions/33333333-3333-4333-8333-333333333333"},
+		{method: http.MethodGet, path: wallet + "/ledger"},
+		{method: http.MethodGet, path: wallet + "/reconciliation"},
 	}
-	read := statusOf(ctx, t, http.MethodGet, base+"/wagering/transactions/33333333-3333-4333-8333-333333333333")
-	if read != http.StatusUnauthorized {
-		t.Fatalf("GET /wagering/transactions/{transactionId} = %d, want 401 from the guard", read)
-	}
-	if got := statusCode(ctx, t, base+"/reconciliation"); got != http.StatusNotFound {
-		t.Fatalf("GET /reconciliation = %d, want 404 while it is not delivered", got)
+	for _, route := range routes {
+		if got := statusOf(ctx, t, route.method, base+route.path); got != http.StatusUnauthorized {
+			t.Fatalf("%s %s = %d, want 401 from the guard", route.method, route.path, got)
+		}
 	}
 }
 
