@@ -81,6 +81,37 @@ func (s store) eventsOf(ctx context.Context, t *testing.T, transactionID string)
 	return types
 }
 
+// decision is the recorded status of one transaction and the token it closed
+// with, which is empty for one that did not close as a rejection.
+type decision struct {
+	status      string
+	failureCode string
+}
+
+func (s store) decision(ctx context.Context, t *testing.T, transactionID string) decision {
+	t.Helper()
+	var read decision
+	var code *string
+	err := s.conn.QueryRow(ctx, "SELECT status, failure_code FROM wager_transactions WHERE id = $1", transactionID).
+		Scan(&read.status, &code)
+	if err != nil {
+		t.Fatalf("read the decision of the transaction = %v, want nil", err)
+	}
+	if code != nil {
+		read.failureCode = *code
+	}
+	return read
+}
+
+// awaitDecision waits until a worker of some instance has closed the transaction
+// the way the case expects.
+func (s store) awaitDecision(ctx context.Context, t *testing.T, transactionID string, want decision) {
+	t.Helper()
+	until(ctx, t, "the transaction to close as "+want.status+" "+want.failureCode, func() bool {
+		return s.decision(ctx, t, transactionID) == want
+	})
+}
+
 func (s store) count(ctx context.Context, t *testing.T, query, argument string) int64 {
 	t.Helper()
 	var total int64

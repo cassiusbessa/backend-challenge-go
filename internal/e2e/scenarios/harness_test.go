@@ -520,6 +520,11 @@ func (s *scene) wager(at *instance, key string, op operation) request {
 	return request{method: http.MethodPost, url: at.base + wagerRoute, bearer: s.provider, payload: op.body(), key: key}
 }
 
+func (s *scene) submit(ctx context.Context, t *testing.T, at *instance, key string, op operation) answer {
+	t.Helper()
+	return call(ctx, t, s.wager(at, key, op))
+}
+
 // newKey is an idempotency key no other arrival has used.
 func newKey() string {
 	return "key-" + suiteenv.NewID()
