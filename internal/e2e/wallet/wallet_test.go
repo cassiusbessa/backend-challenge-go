@@ -386,8 +386,9 @@ func suiteEnv() map[string]string {
 	}
 }
 
-// assertStored reads the committed wallet. The version is always 1 here: the
-// wallet is born at 1 and nothing in this delivery moves the balance again.
+// assertStored reads the committed wallet right after its opening, where the
+// version is 1 because the wallet is born at 1. The cases that move the balance
+// afterwards read the version from the report they assert instead.
 func assertStored(ctx context.Context, t *testing.T, walletID string, cents int64) {
 	t.Helper()
 	conn := connect(ctx, t)
