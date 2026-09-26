@@ -1,0 +1,143 @@
+# As réplicas da liquidação, a mesma imagem do Compose com o mesmo ambiente.
+#
+# O Deployment não declara `replicas`: o número é o parâmetro `REPLICAS` do
+# `make cluster-up`, que roda `kubectl scale` depois deste `apply`. Declarado
+# aqui, cada `apply` voltaria a esse valor por um instante antes de o `scale`
+# corrigir.
+#
+# Cada réplica alcança PostgreSQL, LocalStack, Keycloak e o coletor pelo nome do
+# serviço do Compose, porque o nó do cluster está na rede dele. As credenciais
+# vêm do Secret `wager-credentials` e os mapas do ConfigMap `wager-maps`, os dois
+# gerados pelo `make cluster-up` das mesmas variáveis e arquivos que o Compose lê.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wager
+  namespace: junglegaming
+  labels:
+    app: wager
+spec:
+  selector:
+    matchLabels:
+      app: wager
+  template:
+    metadata:
+      labels:
+        app: wager
+    spec:
+      # 5s do `preStop`, 10s do `SHUTDOWN_TIMEOUT` padrão do processo e os 20s de
+      # margem para a descarga da telemetria que o `stop_grace_period` do
+      # Compose já concede.
+      terminationGracePeriodSeconds: 35
+      containers:
+        - name: wager
+          image: junglegaming-wager:latest
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: HTTP_ADDR
+              value: ":8090"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wager-credentials
+                  key: DATABASE_URL
+            - name: SQS_ENDPOINT
+              value: http://localstack:4566
+            - name: SQS_QUEUE_URL
+              value: http://localstack:4566/000000000000/wager-transactions.fifo
+            - name: SQS_DLQ_URL
+              value: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+            - name: SNS_ENDPOINT
+              value: http://localstack:4566
+            - name: SNS_TOPIC_ARN
+              value: arn:aws:sns:us-east-1:000000000000:wallet-events.fifo
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: otel-collector:4317
+            # O issuer é o que o token anuncia em `iss`, visto do host; o
+            # Keycloak o emite assim pedido de dentro do pod também. O JWKS é
+            # buscado pelo nome do serviço.
+            - name: IDP_ISSUER
+              value: http://localhost:8080/realms/junglegaming
+            - name: IDP_JWKS_URL
+              value: http://keycloak:8080/realms/junglegaming/protocol/openid-connect/certs
+            - name: CLIENTS_PATH
+              value: /etc/wager/clients.yaml
+            - name: QUEUE_SENDERS_PATH
+              value: /etc/wager/queue-senders.yaml
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: wager-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wager-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: wager-credentials
+                  key: AWS_REGION
+          volumeMounts:
+            - name: maps
+              mountPath: /etc/wager
+              readOnly: true
+          # O live é o processo; o ready consulta PostgreSQL e a fila. Um banco
+          # fora tira a réplica do Service sem reiniciá-la. O prazo da sonda é o
+          # dobro do de 1s que o processo dá à própria readiness, pela mesma
+          # razão do `timeout check` do balanceador do Compose.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          # O endpoint sai do Service e o kube-proxy deixa de mandar conexão nova
+          # antes de o SIGTERM fechar o servidor. A ação é a nativa, e não um
+          # `sleep` da imagem.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          # Sem limite de CPU: o throttling do CFS distorceria a latência que a
+          # carga mede.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: maps
+          configMap:
+            name: wager-maps
+---
+# O endereço único das réplicas no host: a porta 30091 do nó, que o
+# `deploy/k8s/kind.yaml` publica em `localhost:8091`. O balanceamento é por
+# conexão.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wager
+  namespace: junglegaming
+  labels:
+    app: wager
+spec:
+  type: NodePort
+  selector:
+    app: wager
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+      nodePort: 30091
