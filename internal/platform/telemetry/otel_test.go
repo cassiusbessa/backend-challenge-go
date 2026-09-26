@@ -53,11 +53,15 @@ func TestStartInstallsTheOTLPExportersWithoutReachingTheCollector(t *testing.T) 
 	t.Parallel()
 	pipe := NewPipeline(config.Config{OTELEndpoint: "http://127.0.0.1:1", SampleRatio: 1})
 	ctx := context.Background()
+	// The constructor already leaves a provider in place, so asserting that one
+	// exists after Start says nothing about Start. What it installs has to be a
+	// different one: the exporter cannot be added to a provider already built.
+	beforeStart := pipe.tracer
 	if err := pipe.Start(ctx); err != nil {
 		t.Fatalf("start with an unreachable collector = %v, want nil", err)
 	}
-	if pipe.Tracer == nil {
-		t.Fatalf("tracer = %v, want a tracer after start", pipe.Tracer)
+	if pipe.tracer == beforeStart {
+		t.Fatalf("provider after start is the one the constructor built, want the one start installs")
 	}
 	if pipe.logs == nil {
 		t.Fatalf("logger provider = %v, want one after start", pipe.logs)
