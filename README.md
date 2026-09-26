@@ -465,17 +465,19 @@ go test -race -count=1 -tags=integration -run '^TestChannels_settleTheSameOperat
 
 Cada quantidade é uma variável de ambiente, e a ausente vale o padrão do enunciado. Um valor inválido falha o cenário nomeando a variável, antes de subir qualquer instância, e nunca cai no padrão. O desfecho esperado é calculado a partir dos parâmetros: `SCENARIO_RACING_BETS=5 SCENARIO_RACING_AMOUNT=30.00` espera três `PROCESSED`, duas `INSUFFICIENT_FUNDS` e saldo 10.00.
 
-| Variável | Padrão | Origem |
-| --- | --- | --- |
-| `SCENARIO_INSTANCES` | `3` | enunciado |
-| `SCENARIO_SAME_BET_COPIES` | `50` | enunciado |
-| `SCENARIO_OPENING_BALANCE` | `100.00` | enunciado |
-| `SCENARIO_RACING_BETS` | `2` | enunciado |
-| `SCENARIO_RACING_AMOUNT` | `80.00` | enunciado |
-| `SCENARIO_OTHER_WALLETS` | `10` | estes cenários — o enunciado não fixa |
-| `SCENARIO_PUBLISHERS` | `2` | enunciado |
-| `SCENARIO_RESTARTS` | `1` | estes cenários — o enunciado não fixa |
-| `SCENARIO_DEADLINE` | `2m` | estes cenários: o prazo de cada caso |
+Inválido é também o valor sob o qual um cenário não teria como falhar. Com uma instância só não há outra para receber a chegada, com um publicador não há disputa, com uma cópia não há replay e com uma aposta não há corrida; por isso o piso dessas quatro é dois. E duas combinações são recusadas mesmo com cada valor aceito sozinho: menos cópias da mesma aposta do que instâncias, que deixa uma instância sem chegada, e uma quantia de corrida que o saldo inicial não comporta nenhuma vez ou comporta uma vez por aposta — nos dois casos nenhuma aposta disputa o saldo, e o desfecho seria o mesmo sem o lock.
+
+| Variável | Padrão | Origem | Aceita |
+| --- | --- | --- | --- |
+| `SCENARIO_INSTANCES` | `3` | enunciado | inteiro ≥ 2 |
+| `SCENARIO_SAME_BET_COPIES` | `50` | enunciado | inteiro ≥ 2 e ≥ `SCENARIO_INSTANCES` |
+| `SCENARIO_OPENING_BALANCE` | `100.00` | enunciado | quantia > 0 |
+| `SCENARIO_RACING_BETS` | `2` | enunciado | inteiro ≥ 2 |
+| `SCENARIO_RACING_AMOUNT` | `80.00` | enunciado | quantia > 0 que o saldo inicial comporta ao menos uma vez e menos vezes que as apostas |
+| `SCENARIO_OTHER_WALLETS` | `10` | estes cenários — o enunciado não fixa | inteiro ≥ 1 |
+| `SCENARIO_PUBLISHERS` | `2` | enunciado | inteiro ≥ 2 |
+| `SCENARIO_RESTARTS` | `1` | estes cenários — o enunciado não fixa | inteiro ≥ 1 |
+| `SCENARIO_DEADLINE` | `2m` | estes cenários: o prazo de cada caso | duração > 0 |
 
 `make scenarios` roda os oito em sequência, cada um no próprio `go test`, contra o banco da suíte. Ele continua depois de um cenário que falhou, termina listando os que falharam e sai diferente de zero se algum falhou. Os parâmetros passam pela linha de comando ou pelo ambiente, e `SCENARIO_REPEAT` repete cada cenário — cada execução monta os próprios dados, então repetir contra a mesma stack é legítimo:
 

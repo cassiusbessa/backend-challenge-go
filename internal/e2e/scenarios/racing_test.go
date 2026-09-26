@@ -45,18 +45,15 @@ func TestRacingBets_settleAgainstTheBalanceAlreadyCommitted(t *testing.T) {
 
 // racing is the verdicts the race answers, derived from the parameters: the bets
 // that fit settle and the rest are refused for the balance, and a resubmission
-// answers the same two outcomes, each marked as a replay.
+// answers the same two outcomes, each marked as a replay. Read refuses a race in
+// which no bet fits or every bet does, so both outcomes are always there.
 func racing(params Params, replay bool) map[string]int {
 	fits := int(params.Fitting())
-	settled := fmt.Sprintf("201 PROCESSED replay=%t", replay)
+	settled, refused := "201 PROCESSED replay=false", "422 INSUFFICIENT_FUNDS replay=false"
 	if replay {
-		settled = "200 PROCESSED replay=true"
+		settled, refused = "200 PROCESSED replay=true", "422 INSUFFICIENT_FUNDS replay=true"
 	}
-	want := map[string]int{settled: fits}
-	if refused := params.RacingBets - fits; refused > 0 {
-		want[fmt.Sprintf("422 INSUFFICIENT_FUNDS replay=%t", replay)] = refused
-	}
-	return want
+	return map[string]int{settled: fits, refused: params.RacingBets - fits}
 }
 
 func assertVerdicts(t *testing.T, round string, answers []answer, want map[string]int) {

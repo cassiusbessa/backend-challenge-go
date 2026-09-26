@@ -56,27 +56,45 @@ func (e InvalidError) Error() string {
 // default for a variable that is unset or empty. A value that is set and invalid
 // is refused by name and never replaced by the default: a scenario that ran on
 // the default when asked for something else would pass without proving what was
-// asked.
+// asked. So is a set of values under which a scenario could not fail.
 func Read(lookup func(string) string) (Params, error) {
 	r := reader{lookup: lookup}
 	// The statement fixes every default but three: it names no count of other
 	// wallets, no count of restarts and no deadline, so those are the ones the
-	// specification of the scenarios fixes.
+	// specification of the scenarios fixes. A floor of two is where one would be
+	// no other instance, no replay, no race and no dispute.
 	params := Params{
-		Instances:      r.count(InstancesKey, 3),
-		SameBetCopies:  r.count(SameBetCopiesKey, 50),
+		Instances:      r.count(InstancesKey, 3, 2),
+		SameBetCopies:  r.count(SameBetCopiesKey, 50, 2),
 		OpeningBalance: r.amount(OpeningBalanceKey, "100.00"),
-		RacingBets:     r.count(RacingBetsKey, 2),
+		RacingBets:     r.count(RacingBetsKey, 2, 2),
 		RacingAmount:   r.amount(RacingAmountKey, "80.00"),
-		OtherWallets:   r.count(OtherWalletsKey, 10),
-		Publishers:     r.count(PublishersKey, 2),
-		Restarts:       r.count(RestartsKey, 1),
+		OtherWallets:   r.count(OtherWalletsKey, 10, 1),
+		Publishers:     r.count(PublishersKey, 2, 2),
+		Restarts:       r.count(RestartsKey, 1, 1),
 		Deadline:       r.duration(DeadlineKey, 2*time.Minute),
 	}
 	if r.refusal != nil {
 		return Params{}, r.refusal
 	}
+	if refusal := params.contested(); refusal != nil {
+		return Params{}, refusal
+	}
 	return params, nil
+}
+
+// contested refuses values each valid on its own that together leave a scenario
+// nothing to decide: fewer copies of the same bet than instances, which leaves an
+// instance with no arrival to take, and a race in which no bet fits or every bet
+// does, which settles the same whatever order the lock gives the bets.
+func (p Params) contested() error {
+	if p.SameBetCopies < p.Instances {
+		return InvalidError{Key: SameBetCopiesKey, Want: "a count of at least " + InstancesKey}
+	}
+	if fits := p.Fitting(); fits < 1 || fits >= int64(p.RacingBets) {
+		return InvalidError{Key: RacingAmountKey, Want: "an amount " + OpeningBalanceKey + " takes at least once and fewer times than " + RacingBetsKey}
+	}
+	return nil
 }
 
 // Fitting answers how many of the racing bets fit the opening balance: the lesser
@@ -122,14 +140,14 @@ func (r *reader) refuse(key, want string) {
 	r.refusal = InvalidError{Key: key, Want: want}
 }
 
-func (r *reader) count(key string, fallback int) int {
+func (r *reader) count(key string, fallback, least int) int {
 	value, reading := r.raw(key, strconv.Itoa(fallback))
 	if !reading {
 		return 0
 	}
 	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 {
-		r.refuse(key, "a positive integer")
+	if err != nil || parsed < least {
+		r.refuse(key, "an integer of at least "+strconv.Itoa(least))
 		return 0
 	}
 	return parsed

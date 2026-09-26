@@ -72,17 +72,19 @@ func TestRead_takesTheDefaultOfEveryVariableLeftEmpty(t *testing.T) {
 }
 
 // A value that is set is the value read, down to the smallest each variable
-// takes: one of a count, one cent of an amount, one nanosecond of a deadline.
+// takes: the floor of a count, one cent of an amount, one nanosecond of a
+// deadline. At the floor the copies reach every instance exactly, and one of the
+// two racing bets fits exactly.
 func TestRead_takesTheSmallestValueEachVariableAccepts(t *testing.T) {
 	t.Parallel()
 	set := map[string]string{
-		InstancesKey:      "1",
-		SameBetCopiesKey:  " 1 ",
+		InstancesKey:      "2",
+		SameBetCopiesKey:  " 2 ",
 		OpeningBalanceKey: "0.01",
-		RacingBetsKey:     "1",
+		RacingBetsKey:     "2",
 		RacingAmountKey:   "0.01",
 		OtherWalletsKey:   "1",
-		PublishersKey:     "1",
+		PublishersKey:     "2",
 		RestartsKey:       "1",
 		DeadlineKey:       "1ns",
 	}
@@ -91,13 +93,13 @@ func TestRead_takesTheSmallestValueEachVariableAccepts(t *testing.T) {
 		t.Fatalf("Read of the smallest values = %v, want nil", err)
 	}
 	want := map[string]string{
-		InstancesKey:      "1",
-		SameBetCopiesKey:  "1",
+		InstancesKey:      "2",
+		SameBetCopiesKey:  "2",
 		OpeningBalanceKey: "0.01 BRL",
-		RacingBetsKey:     "1",
+		RacingBetsKey:     "2",
 		RacingAmountKey:   "0.01 BRL",
 		OtherWalletsKey:   "1",
-		PublishersKey:     "1",
+		PublishersKey:     "2",
 		RestartsKey:       "1",
 		DeadlineKey:       "1ns",
 	}
@@ -108,15 +110,18 @@ func TestRead_takesTheSmallestValueEachVariableAccepts(t *testing.T) {
 	}
 }
 
-// invalid is every value outside what its variable takes: a count that is not a
-// positive integer, an amount the external input of money refuses or that is
-// zero, and a duration that is not positive.
+// invalid is every value outside what its variable takes: a count that is not an
+// integer or is below its floor, an amount the external input of money refuses
+// or that is zero, and a duration that is not positive.
 func invalid() [][2]string {
 	var out [][2]string
 	for _, key := range []string{InstancesKey, SameBetCopiesKey, RacingBetsKey, OtherWalletsKey, PublishersKey, RestartsKey} {
 		for _, value := range []string{"zero", "0", "-1", "1.5"} {
 			out = append(out, [2]string{key, value})
 		}
+	}
+	for _, key := range []string{InstancesKey, SameBetCopiesKey, RacingBetsKey, PublishersKey} {
+		out = append(out, [2]string{key, "1"})
 	}
 	for _, value := range []string{"0.00", "-5.00", "1e2", "10.001", "NaN", "Infinity", "cem"} {
 		out = append(out, [2]string{OpeningBalanceKey, value}, [2]string{RacingAmountKey, value})
@@ -133,17 +138,67 @@ func TestRead_refusesAnInvalidValueNamingItsVariable(t *testing.T) {
 	t.Parallel()
 	for _, pair := range invalid() {
 		t.Run(pair[0]+"="+pair[1], func(t *testing.T) {
-			assertRefusedByName(t, pair[0], pair[1])
+			assertRefusedByName(t, map[string]string{pair[0]: pair[1]}, pair[0])
 		})
 	}
 }
 
-func assertRefusedByName(t *testing.T, key, value string) {
+// Values each valid on their own are refused together when they leave a scenario
+// nothing to decide, before Read answers any of them: a race in which every bet
+// fits, by the variable to change.
+func TestRead_refusesACombinationUnderWhichAScenarioCannotFail(t *testing.T) {
+	t.Parallel()
+	assertRefusedByName(t, map[string]string{RacingAmountKey: "50.00"}, RacingAmountKey)
+}
+
+// contested sits each rule on its edge: the copies against the instances, and
+// the racing amount against the opening balance over two bets, where one cent
+// decides between a race and none.
+func TestContested_refusesOnlyASetThatLeavesAScenarioNothingToDecide(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		instances int
+		copies    int
+		amount    string
+		refuses   string
+	}{
+		{name: "one copy fewer than the instances is refused", instances: 5, copies: 4, amount: "80.00", refuses: SameBetCopiesKey},
+		{name: "as many copies as instances is a set", instances: 5, copies: 5, amount: "80.00"},
+		{name: "an amount one cent above the balance fits no bet and is refused", instances: 3, copies: 50, amount: "100.01", refuses: RacingAmountKey},
+		{name: "an amount equal to the balance fits one bet and is a set", instances: 3, copies: 50, amount: "100.00"},
+		{name: "an amount of half the balance fits both bets and is refused", instances: 3, copies: 50, amount: "50.00", refuses: RacingAmountKey},
+		{name: "an amount one cent above half the balance fits one bet and is a set", instances: 3, copies: 50, amount: "50.01"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := Params{Instances: tc.instances, SameBetCopies: tc.copies, OpeningBalance: brl(t, "100.00"), RacingBets: 2, RacingAmount: brl(t, tc.amount)}
+			if got := refusedVariable(params.contested()); got != tc.refuses {
+				t.Errorf("contested names %q, want %q", got, tc.refuses)
+			}
+		})
+	}
+}
+
+// refusedVariable is the variable a refusal names, nothing for no error, and the
+// whole error for one that is no refusal.
+func refusedVariable(err error) string {
+	var refusal InvalidError
+	if errors.As(err, &refusal) {
+		return refusal.Key
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+func assertRefusedByName(t *testing.T, set map[string]string, key string) {
 	t.Helper()
-	_, err := Read(only(key, value))
+	_, err := Read(func(asked string) string { return set[asked] })
 	var refusal InvalidError
 	if !errors.As(err, &refusal) {
-		t.Fatalf("Read with %s=%q = %v, want an InvalidError", key, value, err)
+		t.Fatalf("Read of %v = %v, want an InvalidError", set, err)
 	}
 	if refusal.Key != key || !strings.Contains(err.Error(), key) {
 		t.Errorf("refusal = %q naming %s, want it to name %s", err, refusal.Key, key)
@@ -152,7 +207,7 @@ func assertRefusedByName(t *testing.T, key, value string) {
 
 // The expectation of the racing scenario is computed from the parameters in
 // whole cents: the statement, the example of the specification, a balance every
-// bet fits exactly, and more room than bets.
+// bet fits exactly, more room than bets, and an amount above the balance.
 func TestFitting_answersHowManyRacingBetsTheOpeningBalanceTakes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -166,6 +221,7 @@ func TestFitting_answersHowManyRacingBetsTheOpeningBalanceTakes(t *testing.T) {
 		{name: "five of 30.00 over 100.00", opening: "100.00", amount: "30.00", bets: 5, want: 3},
 		{name: "three of 30.00 over exactly 90.00", opening: "90.00", amount: "30.00", bets: 3, want: 3},
 		{name: "two of 80.00 over 1000.00", opening: "1000.00", amount: "80.00", bets: 2, want: 2},
+		{name: "two of 100.01 over 100.00", opening: "100.00", amount: "100.01", bets: 2, want: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

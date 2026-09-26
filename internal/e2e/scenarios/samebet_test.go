@@ -113,7 +113,8 @@ func assertEventsOnce(ctx context.Context, t *testing.T, db store, transactionID
 // assertEveryInstanceTookItsShare reads what each instance counted: every one of
 // them decided some of the arrivals, and together they decided all of them. The
 // series are the proof the arrivals were spread, and not only that the requests
-// were addressed that way.
+// were addressed that way. Read keeps the copies at least as many as the
+// instances, so each instance is addressed at least once.
 func assertEveryInstanceTookItsShare(ctx context.Context, t *testing.T, instances fleet, copies int) {
 	t.Helper()
 	var total float64
