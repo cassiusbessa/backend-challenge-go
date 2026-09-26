@@ -9,18 +9,32 @@ import (
 	"time"
 )
 
-// run is one execution: open the wallets, send for the window, resolve what
-// was left undecided by its own key, and hold every wallet to what was counted.
+// run is one execution: open the wallets, send for the window — killing one
+// replica halfway when asked —, resolve what was left undecided by its own key,
+// hold every wallet to what was counted, and read what the replicas counted.
 func run(ctx context.Context, o options, stdout io.Writer) error {
 	l := newLoad(o)
 	if err := l.open(ctx); err != nil {
 		return err
 	}
 	start := time.Now()
+	killed := make(chan killOutcome, 1)
+	if o.kill != killNone {
+		go func() {
+			record, err := l.killHalfway(ctx, start)
+			killed <- killOutcome{record: record, err: err}
+		}()
+	}
 	l.send(ctx, start.Add(o.duration))
 	window := time.Since(start)
+	var kill killOutcome
+	if o.kill != killNone {
+		kill = <-killed
+	}
 	unresolved := l.resolveAll(ctx)
 	published := l.clientReport(window)
+	published.Kill = kill.record
+	published.Failures = append(published.Failures, errorsOf(kill.err)...)
 	published.Failures = append(published.Failures, l.failures()...)
 	published.Failures = append(published.Failures, unresolved...)
 	published.Failures = append(published.Failures, l.check(ctx)...)
@@ -63,6 +77,20 @@ func serverSide(ctx context.Context, o options, published *report, start, end ti
 	}
 	published.OutboxDrainSeconds = drained.Seconds()
 	return failures
+}
+
+// killOutcome is what the kill halfway did, or why it could not.
+type killOutcome struct {
+	record *killRecord
+	err    error
+}
+
+// errorsOf answers the message of a failure, or nothing.
+func errorsOf(err error) []string {
+	if err == nil {
+		return nil
+	}
+	return []string{err.Error()}
 }
 
 // failures answers what the arrivals themselves showed to be wrong.
