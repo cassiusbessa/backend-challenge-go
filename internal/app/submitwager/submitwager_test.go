@@ -145,6 +145,37 @@ func TestSubmit_recordsTheRejectionOfARuleAndMovesNothing(t *testing.T) {
 	}
 }
 
+// A rule that refused wrote a row of its own, and the result names it beside
+// the refusal: the border logs and counts the row, and only the commit knows
+// which one it is. A refusal that wrote no row answers the zero value.
+func TestSubmit_answersTheRowItWroteBesideTheRefusal(t *testing.T) {
+	t.Parallel()
+	funded := bookWith(t, "1000.00")
+	result, err := service(t, funded).Submit(context.Background(), commandOf(t, wager.KindBet, "2000.00"))
+	assertToken(t, err, wager.InsufficientFunds)
+	if result.TransactionID.IsZero() || result.Kind != wager.KindBet || result.Status != wager.Rejected {
+		t.Fatalf("result beside the refusal = %+v, want the REJECTED row of the bet named", result)
+	}
+	if !namesAStoredRow(funded, result) {
+		t.Fatalf("result names %s, want the row the commit wrote", result.TransactionID)
+	}
+	empty := &book{stored: map[string]wager.State{}}
+	absent, err := service(t, empty).Submit(context.Background(), commandOf(t, wager.KindBet, "25.00"))
+	assertToken(t, err, wager.WalletNotFound)
+	if absent != (Result{}) {
+		t.Fatalf("result beside a refusal that wrote no row = %+v, want the zero value", absent)
+	}
+}
+
+func namesAStoredRow(ledgerBook *book, result Result) bool {
+	for _, state := range ledgerBook.stored {
+		if state.ID == result.TransactionID {
+			return true
+		}
+	}
+	return false
+}
+
 // The token of a durable rejection is the recorded one, and the row that carries
 // it is the only thing the commit wrote.
 func assertRejectedRow(t *testing.T, ledgerBook *book, want wager.FailureCode) {

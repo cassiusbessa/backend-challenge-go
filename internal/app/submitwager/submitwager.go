@@ -207,7 +207,10 @@ func (s *Service) Submit(ctx context.Context, cmd Command) (Result, error) {
 func (s *Service) SubmitCaused(ctx context.Context, cmd Command, caused Caused) (Result, error) {
 	result, err := s.submit(ctx, cmd, caused)
 	if err != nil {
-		return Result{}, fmt.Errorf("submit wager: %w", err)
+		// The result travels beside the refusal: a rule that refused wrote a row
+		// of its own, and the border names it. A refusal that wrote no row, and a
+		// failure, come with the zero value, which is what they are.
+		return result, fmt.Errorf("submit wager: %w", err)
 	}
 	return result, nil
 }
