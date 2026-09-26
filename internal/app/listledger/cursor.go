@@ -64,7 +64,10 @@ func positionOf(sequence, entry string) (storage.EntryPosition, error) {
 		return storage.EntryPosition{}, ErrInvalidCursor
 	}
 	entryID, err := identity.ParseLedgerEntryID(entry)
-	if err != nil {
+	// The nil identifier is absence, not an entry. Accepted from a token, it would
+	// compare below every row of the sequence it names, and the page would answer
+	// again the entry the client has already seen.
+	if err != nil || entryID.IsZero() {
 		return storage.EntryPosition{}, ErrInvalidCursor
 	}
 	return storage.EntryPosition{Sequence: parsed, EntryID: entryID}, nil

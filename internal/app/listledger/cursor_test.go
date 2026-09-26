@@ -8,6 +8,10 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 )
 
+// nilEntryText is the one identity the UUID parser accepts and the ledger never
+// carries.
+const nilEntryText = "00000000-0000-0000-0000-000000000000"
+
 func TestDecodeCursor_readsBackWhatEncodeCursorWrote(t *testing.T) {
 	t.Parallel()
 	position := storage.EntryPosition{Sequence: 7, EntryID: entryOf(t, entryText)}
@@ -34,20 +38,10 @@ func TestEncodeCursor_writesTheThreePartsWithoutPadding(t *testing.T) {
 	}
 }
 
-// The first sequence of a ledger is one, and a cursor pointing at it is a
-// cursor the route issues after a page of one entry: the boundary is accepted.
-func TestDecodeCursor_acceptsTheFirstSequence(t *testing.T) {
-	t.Parallel()
-	position, err := decodeCursor(walletOf(t, walletText), raw(walletText+":1:"+entryText))
-	if err != nil {
-		t.Fatalf("decodeCursor at the first sequence = %v, want nil", err)
-	}
-	if position.Sequence != 1 {
-		t.Fatalf("sequence = %d, want 1", position.Sequence)
-	}
-}
-
-func TestDecodeCursor_refusesEveryTokenTheRouteDidNotIssue(t *testing.T) {
+// The shape of the envelope is what decodeCursor owns: the encoding and the
+// three parts. What each part has to be belongs to issuedFor and positionOf,
+// and is asserted there.
+func TestDecodeCursor_refusesATokenThatIsNotTheEnvelopeItIssues(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name   string
@@ -56,11 +50,6 @@ func TestDecodeCursor_refusesEveryTokenTheRouteDidNotIssue(t *testing.T) {
 		{name: "a token that is not base64url is refused", cursor: "not base64!"},
 		{name: "a token with two parts is refused", cursor: raw(walletText + ":7")},
 		{name: "a token with four parts is refused", cursor: raw(walletText + ":7:" + entryText + ":x")},
-		{name: "a sequence of zero is refused", cursor: raw(walletText + ":0:" + entryText)},
-		{name: "a negative sequence is refused", cursor: raw(walletText + ":-1:" + entryText)},
-		{name: "a sequence that is not a number is refused", cursor: raw(walletText + ":seven:" + entryText)},
-		{name: "an entry out of format is refused", cursor: raw(walletText + ":7:not-a-uuid")},
-		{name: "a wallet out of format is refused", cursor: raw("not-a-uuid:7:" + entryText)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +74,70 @@ func TestDecodeCursor_refusesTheCursorOfAnotherWalletTheSameWayAsGarbage(t *test
 	}
 	if otherWallet.Error() != garbage.Error() {
 		t.Fatalf("refusal of another wallet = %q, want the same text as garbage, %q", otherWallet, garbage)
+	}
+}
+
+func TestIssuedFor_answersOnlyForTheWalletNamedInTheToken(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "the wallet of the URL", text: walletText, want: true},
+		{name: "another wallet", text: otherWalletText, want: false},
+		{name: "a wallet out of format", text: "not-a-uuid", want: false},
+		{name: "no wallet at all", text: "", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" is answered", func(t *testing.T) {
+			if got := issuedFor(walletOf(t, walletText), tc.text); got != tc.want {
+				t.Fatalf("issuedFor %s = %t, want %t", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// The first sequence of a ledger is one, and a cursor pointing at it is a
+// cursor the route issues after a page of one entry: the boundary is accepted.
+func TestPositionOf_acceptsTheFirstSequence(t *testing.T) {
+	t.Parallel()
+	position, err := positionOf("1", entryText)
+	if err != nil {
+		t.Fatalf("positionOf at the first sequence = %v, want nil", err)
+	}
+	if position.Sequence != 1 || position.EntryID != entryOf(t, entryText) {
+		t.Fatalf("position = %+v, want the first sequence and the entry of the token", position)
+	}
+}
+
+// The nil identifier is the one shape the UUID parser accepts and the ledger
+// never carries: it would compare below every row of the sequence it names, and
+// the page would answer an entry the client has already seen.
+func TestPositionOf_refusesEveryPairTheRouteDidNotIssue(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		sequence string
+		entry    string
+	}{
+		{name: "a sequence of zero", sequence: "0", entry: entryText},
+		{name: "a negative sequence", sequence: "-1", entry: entryText},
+		{name: "a sequence that is not a number", sequence: "seven", entry: entryText},
+		{name: "a sequence past what int64 holds", sequence: "9223372036854775808", entry: entryText},
+		{name: "an entry out of format", sequence: "7", entry: "not-a-uuid"},
+		{name: "the nil entry identifier", sequence: "7", entry: nilEntryText},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			position, err := positionOf(tc.sequence, tc.entry)
+			if !errors.Is(err, ErrInvalidCursor) {
+				t.Fatalf("positionOf with %s = %v, want %v", tc.name, err, ErrInvalidCursor)
+			}
+			if position != (storage.EntryPosition{}) {
+				t.Fatalf("position answered with %s = %+v, want the zero value", tc.name, position)
+			}
+		})
 	}
 }
 
