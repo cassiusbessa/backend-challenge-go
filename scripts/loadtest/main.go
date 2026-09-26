@@ -21,20 +21,23 @@ import (
 	"time"
 )
 
-// target is one way the replicas run: the address they answer on and the label
-// that tells them apart in the metric backend.
+// target is one way the replicas run: the address they answer on, the label
+// that tells them apart in the metric backend, and the selector of their
+// series there.
 type target struct {
-	address string
-	replica string
+	address  string
+	replica  string
+	selector string
 }
 
 // The two targets. The Compose replicas sit behind the balancer and are
 // discovered by DNS, which labels each by instance; the cluster replicas sit
 // behind the NodePort and reach the backend through the agent, which labels
-// each by pod.
+// each by pod. The series of the agent carry an instance too, so the Compose
+// ones are the series of the job without a pod.
 var targets = map[string]target{
-	"compose": {address: "http://localhost:8090", replica: "instance"},
-	"cluster": {address: "http://localhost:8091", replica: "pod"},
+	"compose": {address: "http://localhost:8090", replica: "instance", selector: `job="wager",pod=""`},
+	"cluster": {address: "http://localhost:8091", replica: "pod", selector: `job="wager",pod!=""`},
 }
 
 // The two ways of killing a replica halfway, and no kill at all.

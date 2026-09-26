@@ -39,8 +39,8 @@ func TestReadFlags_answersTheDefaultsOfTheDesign(t *testing.T) {
 func TestWithTarget_choosesTheAddressAndTheLabelOfTheTarget(t *testing.T) {
 	t.Parallel()
 	for name, want := range map[string]target{
-		"compose": {address: "http://localhost:8090", replica: "instance"},
-		"cluster": {address: "http://localhost:8091", replica: "pod"},
+		"compose": {address: "http://localhost:8090", replica: "instance", selector: `job="wager",pod=""`},
+		"cluster": {address: "http://localhost:8091", replica: "pod", selector: `job="wager",pod!=""`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -48,8 +48,8 @@ func TestWithTarget_choosesTheAddressAndTheLabelOfTheTarget(t *testing.T) {
 			if err != nil {
 				t.Fatalf("readFlags of the %s target = %v, want nil", name, err)
 			}
-			if got.address != want.address || got.replicaLabel != want.replica {
-				t.Fatalf("%s target = %s by %s, want %s by %s", name, got.address, got.replicaLabel, want.address, want.replica)
+			if got.address != want.address || got.replicaLabel != want.replica || newBackend(got).selector != want.selector {
+				t.Fatalf("%s target = %s by %s over %s, want %s by %s over %s", name, got.address, got.replicaLabel, newBackend(got).selector, want.address, want.replica, want.selector)
 			}
 			if got.report != "/repo/.quality/load/report.json" {
 				t.Fatalf("report of the %s target = %s, want it under the root", name, got.report)

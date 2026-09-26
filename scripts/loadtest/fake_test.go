@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func optionsFor(t *testing.T, server *httptest.Server) options {
 		providerClient: "provider-a", providerSecret: "provider-a-local",
 		replicas: 1, duration: 150 * time.Millisecond, concurrency: 4, wallets: 6, seed: 7,
 		report: t.TempDir() + "/report.json",
-		settle: time.Millisecond, drainWait: time.Second, resolveWait: time.Second,
+		settle: time.Millisecond, drainWait: time.Second, resolveWait: 10 * time.Second,
 		commands: func(context.Context, []string) (string, error) { return "", fmt.Errorf("no command in this case") },
 	}
 }
@@ -206,17 +207,51 @@ func answerOutcome(w http.ResponseWriter, outcome fakeOutcome, replay bool) {
 	writeJSON(w, code, map[string]any{"transactionId": outcome.id, "status": outcome.status, "idempotentReplay": replay})
 }
 
-// query is the metric backend. With no answer set, it answers an empty vector,
-// which is what the backend answers for a series it does not hold.
+// query is the metric backend. With no answer set, it is a healthy one: every
+// arrival decided on one replica, no conflict, and an outbox that drained.
 func (f *fakeService) query(w http.ResponseWriter, r *http.Request) {
 	at, _ := strconv.ParseFloat(r.URL.Query().Get("time"), 64)
 	when := time.UnixMilli(int64(at * 1000))
-	if f.metrics == nil {
-		writePlain(w, http.StatusOK, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
-		return
+	answer := f.metrics
+	if answer == nil {
+		answer = f.healthy
 	}
-	code, body := f.metrics(r.URL.Query().Get("query"), when)
+	code, body := answer(r.URL.Query().Get("query"), when)
 	writePlain(w, code, body)
+}
+
+func (f *fakeService) healthy(query string, _ time.Time) (int, string) {
+	label := "instance"
+	if strings.Contains(query, `pod!=""`) {
+		label = "pod"
+	}
+	f.mu.Lock()
+	arrivals := f.arrivals
+	f.mu.Unlock()
+	switch {
+	case strings.Contains(query, "max_over_time(wager_settlements_total"):
+		return vectorOf(sampleOf(arrivals, label, "replica-1"))
+	case strings.Contains(query, "wager_db_pool_empty_acquires_total"),
+		strings.Contains(query, "wager_outbox_oldest_pending_age_seconds"),
+		strings.Contains(query, "wager_outbox_pending_events"):
+		return vectorOf(sampleOf(0, label, "replica-1"))
+	}
+	return vectorOf()
+}
+
+// sampleOf writes one series of an instant vector, with the labels in pairs.
+func sampleOf(value int, labels ...string) string {
+	metric := map[string]string{}
+	for at := 0; at+1 < len(labels); at += 2 {
+		metric[labels[at]] = labels[at+1]
+	}
+	encoded, _ := json.Marshal(map[string]any{"metric": metric, "value": []any{1.0, strconv.Itoa(value)}})
+	return string(encoded)
+}
+
+// vectorOf answers a successful instant vector of the series given.
+func vectorOf(series ...string) (int, string) {
+	return http.StatusOK, `{"status":"success","data":{"resultType":"vector","result":[` + strings.Join(series, ",") + `]}}`
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
