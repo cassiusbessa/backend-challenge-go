@@ -21,7 +21,7 @@ Este documento registra as decisões do desenho inteiro. Nem tudo está escrito 
 | Autorização das rotas de aposta pelo papel de provedor, com o `providerId` do corpo conferido contra o cliente do token | implementado |
 | `WIN` com referência, `REFUND`, `ROLLBACK`, `PENDING_REFERENCE` com o 202 da borda, TTL e worker da espera | implementado |
 | Outbox no commit do saldo, relay com lease por carteira e publicação no tópico FIFO | implementado |
-| Inbox e consumidor SQS | decidido, não implementado |
+| Inbox por consumidor e `messageId` no commit do saldo, consumidor da fila FIFO com backoff de visibilidade, caminho para a DLQ e desistência na quinta entrega | implementado |
 | Ledger paginado, reconciliação | decidido, não implementado |
 
 A ordem de entrega está em `openspec/changes/`. As regras que governam cada decisão estão em `.claude/rules/`.

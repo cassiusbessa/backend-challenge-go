@@ -297,14 +297,31 @@ go test -race ./...
 go vet ./...
 ```
 
-A suíte de jornada vive em `internal/e2e/`, atrás da tag `integration`, e pede o ambiente de pé, o schema aplicado e o broker provisionado:
+A suíte de jornada vive em `internal/e2e/`, atrás da tag `integration`, e pede o ambiente de pé, o broker provisionado e o schema aplicado nos dois bancos — o da aplicação e o dela:
 
 ```bash
 docker compose up -d --wait postgres localstack keycloak otel-collector
-docker compose run --rm migrate
 terraform -chdir=deploy/terraform/localstack apply -auto-approve
-go test -race -tags=integration ./...
+
+# o banco da suíte, uma vez e idempotente: CREATE DATABASE não aceita IF NOT EXISTS
+docker compose exec -T postgres psql -U junglegaming -d junglegaming -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='junglegaming_test'" | grep -q 1 \
+  || docker compose exec -T postgres createdb -U junglegaming junglegaming_test
+
+# cada banco nomeado no comando que o migra
+docker compose run --rm migrate
+docker compose run --rm migrate -path=/migrations \
+  -database "postgres://junglegaming:junglegaming@postgres:5432/junglegaming_test?sslmode=disable" up
+
+DATABASE_URL="postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable" \
+  go test -race -count=1 -p 1 -tags=integration ./...
 ```
+
+O banco próprio não é gosto: a aplicação de pé tem os próprios workers, e o relay de outbox dela varre `outbox_events` inteira a cada segundo, sem filtrar carteira, e publica a linha que um caso espera ver morta.
+
+O `-p 1` é a outra metade do mesmo estado compartilhado: a suíte de carteira encurta o `accessTokenLifespan` do realm para provar que a borda recusa token expirado, e qualquer pacote que peça token em paralelo dentro dessa janela recebe 401.
+
+Migration nova precisa ser aplicada nos dois bancos. Aplicada só num, a suíte falha num `relation does not exist` em vez de dizer que o banco está atrasado.
 
 A suíte pede IdP real: ela obtém token dos três clientes e, no caso do token expirado, encurta o `accessTokenLifespan` do realm pela API de administração e o restaura no fim. Trocar o Keycloak por um emissor de teste não provaria a borda.
 
