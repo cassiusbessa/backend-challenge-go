@@ -5,6 +5,7 @@ package scenarios
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -78,4 +79,68 @@ func queueARN(ctx context.Context, t *testing.T, client *sqs.Client, queueURL st
 		t.Fatalf("read the queue arn = %v, want nil", err)
 	}
 	return out.Attributes[string(sqstypes.QueueAttributeNameQueueArn)]
+}
+
+// send puts one message on the ingress queue of the case.
+//
+// The group is the wallet in lowercase, which is what keeps two operations of one
+// wallet in order. The deduplication is fresh every time, so the five-minute
+// window of the broker never swallows a send: that window is not the inbox, and
+// what a case sends is meant to reach the inbox.
+func (q *queues) send(ctx context.Context, t *testing.T, walletID, body string) {
+	t.Helper()
+	_, err := q.client.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:               aws.String(q.ingress),
+		MessageBody:            aws.String(body),
+		MessageGroupId:         aws.String(strings.ToLower(walletID)),
+		MessageDeduplicationId: aws.String(suiteenv.NewID()),
+	})
+	if err != nil {
+		t.Fatalf("send = %v, want nil", err)
+	}
+}
+
+// awaitEmpty waits until the ingress queue holds nothing, visible or not, which
+// is what says the message was answered for.
+func (q *queues) awaitEmpty(ctx context.Context, t *testing.T) {
+	t.Helper()
+	until(ctx, t, "the ingress queue to hold nothing", func() bool {
+		return q.depth(ctx, t, q.ingress) == 0
+	})
+}
+
+// depth is every message of that queue: waiting, in flight and delayed. A count
+// of the visible ones alone would read a message being decided as a queue that
+// drained.
+func (q *queues) depth(ctx context.Context, t *testing.T, queueURL string) int64 {
+	t.Helper()
+	names := []sqstypes.QueueAttributeName{
+		sqstypes.QueueAttributeNameApproximateNumberOfMessages,
+		sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
+		sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed,
+	}
+	out, err := q.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{QueueUrl: aws.String(queueURL), AttributeNames: names})
+	if err != nil {
+		t.Fatalf("read the depth of %s = %v, want nil", queueURL, err)
+	}
+	var total int64
+	for _, name := range names {
+		value, err := strconv.ParseInt(out.Attributes[string(name)], 10, 64)
+		if err != nil {
+			t.Fatalf("parse %s = %v, want nil", name, err)
+		}
+		total += value
+	}
+	return total
+}
+
+// envelope is the message of the ingress queue that carries the operation, under
+// that identity and that idempotency key. On the queue the key travels in the
+// data, which is where the contract puts it for that channel.
+func (op operation) envelope(messageID, key string) string {
+	raw, err := json.Marshal(map[string]any{"messageId": messageID, "data": op.with(map[string]any{"idempotencyKey": key})})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }

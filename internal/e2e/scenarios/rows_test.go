@@ -64,6 +64,23 @@ func (s store) forKey(ctx context.Context, t *testing.T, key string) int64 {
 	return s.count(ctx, t, query, key)
 }
 
+// keyed answers the identity of the one transaction under that key.
+func (s store) keyed(ctx context.Context, t *testing.T, key string) string {
+	t.Helper()
+	const query = "SELECT id::text FROM wager_transactions WHERE provider_id = 'provider-a' AND idempotency_key = $1"
+	var id string
+	if err := s.conn.QueryRow(ctx, query, key).Scan(&id); err != nil {
+		t.Fatalf("read the transaction under the key = %v, want nil", err)
+	}
+	return id
+}
+
+// inbox is every row the consumer recorded for that message.
+func (s store) inbox(ctx context.Context, t *testing.T, messageID string) int64 {
+	t.Helper()
+	return s.count(ctx, t, "SELECT count(*) FROM inbox_messages WHERE message_id = $1", messageID)
+}
+
 // eventsOf answers the types of the outbox rows of one transaction, in order,
 // with a type written twice appearing twice.
 func (s store) eventsOf(ctx context.Context, t *testing.T, transactionID string) []string {
