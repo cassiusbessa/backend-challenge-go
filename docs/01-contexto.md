@@ -86,49 +86,40 @@ O binário não carrega migration. O SQL versionado é aplicado por um serviço 
 ## As três camadas, e a direção que nunca inverte
 
 ```mermaid
-flowchart LR
-    subgraph platform["internal/platform — adaptadores"]
-        direction TB
-        httpapi
-        wagerapi
-        walletapi
-        authz
-        postgres
-        wagerqueue
-        outboxrelay
-        referenceworker
-        broker
-        telemetry
-        problem
-        fault
-        mint
-        clock
-        config
-        app["app · composition root"]
+flowchart TB
+    subgraph platform["<b>internal/platform</b> — adaptadores: implementam as portas e injetam"]
+        direction LR
+        entrada["<b>Bordas de entrada</b><br/>httpapi · wagerapi · walletapi · authz<br/>wagerqueue · referenceworker · outboxrelay"]
+        saida["<b>Adaptadores de saída</b><br/>postgres · broker · telemetry<br/>mint · clock"]
+        erro["<b>Contrato de erro</b><br/>problem · fault"]
+        root["<b>Composition root</b><br/>app · config"]
     end
-    subgraph application["internal/app — casos de uso e portas"]
-        direction TB
-        storage["storage · portas"]
-        submitwager
-        openwallet
-        resolvereference
-        relayoutbox
-        receivewager
-        readwallet
-        readwager
-        bodyhash
-        referencewait
+
+    subgraph application["<b>internal/app</b> — casos de uso: coordenam, e declaram as portas que precisam"]
+        direction LR
+        storage["<b>Portas</b><br/>storage: UnitOfWork · Tx · Reads<br/>Wallets · Transactions · Entries · Outbox · Inbox"]
+        escrita["<b>Escrita</b><br/>openwallet · submitwager · receivewager<br/>resolvereference · relayoutbox"]
+        leitura["<b>Leitura</b><br/>readwallet · readwager"]
+        apoio["<b>Apoio</b><br/>bodyhash · referencewait"]
     end
-    subgraph domain["internal/domain"]
-        direction TB
-        money
-        identity
-        wallet
-        ledger
-        wager
-        event
+
+    subgraph domain["<b>internal/domain</b> — decide: biblioteca padrão e nada mais"]
+        direction LR
+        money["money"]
+        identity["identity"]
+        wallet["wallet"]
+        ledger["ledger"]
+        wager["wager"]
+        event["event"]
     end
-    platform --> application --> domain
+
+    platform == "implementa storage.* · injeta Minter, Clock, Schedule" ==> application
+    application == "chama Open, Debit, Credit, Bet, Win… · lê wager.Rejection" ==> domain
+
+    classDef layer fill:#f7f7f7,stroke:#999,color:#222
+    classDef box fill:#fff,stroke:#666,color:#222
+    class platform,application,domain layer
+    class entrada,saida,erro,root,storage,escrita,leitura,apoio,money,identity,wallet,ledger,wager,event box
 ```
 
 `domain` importa a biblioteca padrão e a si mesmo. `app` importa `domain` e declara as portas que precisa — `storage.UnitOfWork`, `submitwager.Minter`, `submitwager.Clock` — sem nomear quem as implementa. `platform` implementa e injeta; `app` é o único pacote que conhece o Fx. A seta nunca aponta para cima: um caso de uso nunca nomeia `pgx`, e um teste de unidade nunca precisa de um banco.
