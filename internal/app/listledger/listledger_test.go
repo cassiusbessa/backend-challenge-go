@@ -181,6 +181,28 @@ func TestLimitOf_appliesTheDefaultAndRefusesOutsideTheRange(t *testing.T) {
 	}
 }
 
+// The absence of a cursor is not a case of its own for the port: it is the zero
+// position, the one before the first entry. A cursor present is whatever
+// decodeCursor reads back from it.
+func TestPositionOfQuery_answersTheZeroPositionWithoutACursorAndTheDecodedOneWithIt(t *testing.T) {
+	t.Parallel()
+	first, err := positionOfQuery(Query{WalletID: walletOf(t, walletText)})
+	if err != nil {
+		t.Fatalf("positionOfQuery without a cursor = %v, want nil", err)
+	}
+	if first != (storage.EntryPosition{}) {
+		t.Fatalf("position without a cursor = %+v, want the one before the first entry", first)
+	}
+	issued := storage.EntryPosition{Sequence: 7, EntryID: entryOf(t, entryText)}
+	next, err := positionOfQuery(Query{WalletID: walletOf(t, walletText), Cursor: encodeCursor(walletOf(t, walletText), issued)})
+	if err != nil {
+		t.Fatalf("positionOfQuery with the cursor it issued = %v, want nil", err)
+	}
+	if next != issued {
+		t.Fatalf("position with a cursor = %+v, want the one the token names, %+v", next, issued)
+	}
+}
+
 // The row past the page is the only thing that says there is a next one: with
 // it the page is cut and a cursor is issued, without it the page is whole and
 // carries none.

@@ -175,6 +175,20 @@ func TestDivergencesOf_namesEveryDeviationInTheOrderOfTheVocabulary(t *testing.T
 	}
 }
 
+// A ledger that cannot be rebuilt into Money answers a failure and not a verdict.
+// The production port refuses such a row before the summary is returned, so this
+// is the only caller that reaches the branch.
+func TestReportOf_refusesASummaryWhoseWalletCarriesNoCurrency(t *testing.T) {
+	t.Parallel()
+	report, err := reportOf(storage.LedgerSummary{})
+	if !errors.Is(err, money.ErrInvalidCurrency) {
+		t.Fatalf("reportOf of a summary with no currency = %v, want %v", err, money.ErrInvalidCurrency)
+	}
+	if !reflect.DeepEqual(report, Report{}) {
+		t.Fatalf("report = %+v, want the zero value when the ledger cannot be rebuilt", report)
+	}
+}
+
 func moneyOf(t *testing.T, amount string) money.Money {
 	t.Helper()
 	parsed, err := money.Parse(amount, "BRL")
