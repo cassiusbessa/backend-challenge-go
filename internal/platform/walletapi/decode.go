@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/listledger"
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
@@ -73,6 +75,51 @@ func decodeWalletID(r *http.Request) (identity.WalletID, error) {
 		return identity.WalletID{}, invalidField{name: "walletId"}
 	}
 	return id, nil
+}
+
+// decodeLedgerQuery reads the page asked for: the wallet of the URL, the limit
+// and the cursor of the query string.
+//
+// An absent limit is zero, which the use case reads as the default. A limit that
+// is present is refused here when it is not an integer or is below one: zero is
+// the only way to tell the use case nothing was asked, so an explicit zero has
+// to be refused before it could be mistaken for that. The ceiling stays with
+// the use case, which owns the range.
+func decodeLedgerQuery(r *http.Request) (listledger.Query, error) {
+	id, err := decodeWalletID(r)
+	if err != nil {
+		return listledger.Query{}, err
+	}
+	limit, err := decodeLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		return listledger.Query{}, err
+	}
+	return listledger.Query{WalletID: id, Limit: limit, Cursor: r.URL.Query().Get("cursor")}, nil
+}
+
+func decodeLimit(text string) (int, error) {
+	if text == "" {
+		return 0, nil
+	}
+	limit, err := strconv.Atoi(text)
+	if err != nil || limit < 1 {
+		return 0, invalidField{name: "limit"}
+	}
+	return limit, nil
+}
+
+// refusalOf translates what the use case refused into the field the client has
+// to fix. The refusal names the field and never its value: a cursor echoed back
+// would tell the client what the token carries, and a limit echoed back is
+// nothing the client does not already know.
+func refusalOf(err error) error {
+	switch {
+	case errors.Is(err, listledger.ErrInvalidCursor):
+		return invalidField{name: "cursor"}
+	case errors.Is(err, listledger.ErrInvalidLimit):
+		return invalidField{name: "limit"}
+	}
+	return err
 }
 
 // detailOf names the field that was refused. An error of another class carries no

@@ -78,7 +78,7 @@ func Read(reader Reader, reporter *Reporter) http.Handler {
 	})
 }
 
-func write(w http.ResponseWriter, status int, body walletResponse) {
+func write(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	// A client that hung up leaves nothing to answer with, and the status line

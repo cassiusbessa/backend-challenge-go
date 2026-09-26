@@ -3,11 +3,14 @@ package walletapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/listledger"
+	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
@@ -90,6 +93,66 @@ func TestDecodeWalletID_refusesAnIdentityOutOfFormat(t *testing.T) {
 	_, err := decodeWalletID(request)
 	if !errors.Is(err, problem.ErrInvalidInput) {
 		t.Fatalf("decodeWalletID = %v, want %v", err, problem.ErrInvalidInput)
+	}
+}
+
+func TestDecodeLimit_readsAnAbsentLimitAsZeroAndAPresentOneAsItself(t *testing.T) {
+	t.Parallel()
+	for text, want := range map[string]int{"": 0, "1": 1, "25": 25, "200": 200} {
+		t.Run("the limit "+text+" is read", func(t *testing.T) {
+			got, err := decodeLimit(text)
+			if err != nil {
+				t.Fatalf("decodeLimit(%q) = %v, want nil", text, err)
+			}
+			if got != want {
+				t.Fatalf("limit of %q = %d, want %d", text, got, want)
+			}
+		})
+	}
+}
+
+// An explicit zero is refused here and not read as the default: zero is the only
+// way to tell the use case nothing was asked, so a zero the client wrote cannot
+// be let through without being mistaken for that.
+func TestDecodeLimit_refusesWhatIsNotAPositiveInteger(t *testing.T) {
+	t.Parallel()
+	for _, text := range []string{"0", "-1", "abc", "2.5", "1e2"} {
+		t.Run("the limit "+text+" is refused", func(t *testing.T) {
+			_, err := decodeLimit(text)
+			if !errors.Is(err, problem.ErrInvalidInput) {
+				t.Fatalf("decodeLimit(%q) = %v, want %v", text, err, problem.ErrInvalidInput)
+			}
+			if detailOf(err) != "limit is not valid" {
+				t.Fatalf("detail = %q, want the field name", detailOf(err))
+			}
+		})
+	}
+}
+
+func TestRefusalOf_namesTheFieldTheUseCaseRefused(t *testing.T) {
+	t.Parallel()
+	cases := map[string]error{
+		"cursor is not valid": fmt.Errorf("page ledger: %w", listledger.ErrInvalidCursor),
+		"limit is not valid":  listledger.ErrInvalidLimit,
+	}
+	for detail, refused := range cases {
+		t.Run(detail, func(t *testing.T) {
+			translated := refusalOf(refused)
+			if !errors.Is(translated, problem.ErrInvalidInput) {
+				t.Fatalf("refusalOf = %v, want %v", translated, problem.ErrInvalidInput)
+			}
+			if detailOf(translated) != detail {
+				t.Fatalf("detail = %q, want %q", detailOf(translated), detail)
+			}
+		})
+	}
+}
+
+func TestRefusalOf_leavesAnyOtherFailureAsItIs(t *testing.T) {
+	t.Parallel()
+	absent := fmt.Errorf("read ledger: %w", storage.ErrWalletNotFound)
+	if translated := refusalOf(absent); translated != absent {
+		t.Fatalf("refusalOf of an absence = %v, want the same error back", translated)
 	}
 }
 
