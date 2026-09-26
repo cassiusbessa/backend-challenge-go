@@ -35,6 +35,7 @@ var seriesAtRest = []string{
 	"wager_reference_wait_oldest_age_seconds",
 	"wager_reconciliation_wallets_checked_total",
 	"wager_reconciliation_divergences_total",
+	"wager_reconciliation_failures_total",
 	"wager_db_pool_connections",
 	"wager_db_pool_max_connections",
 	"wager_db_pool_empty_acquires_total",
@@ -65,8 +66,22 @@ func TestMetrics_exposeEverySeriesWithClosedLabelsAndNoIdentity(t *testing.T) {
 		}
 	}
 	assertEveryWagerLabelClosed(t, scraped)
+	assertFailuresPrimedAtZero(t, scraped)
 	if acquired, idle, ceiling := poolOf(t, scraped); acquired+idle > ceiling {
 		t.Fatalf("pool = %v acquired and %v idle over a ceiling of %v, want the two under it", acquired, idle, ceiling)
+	}
+}
+
+// assertFailuresPrimedAtZero reads the reconciliations that produced no verdict
+// on a fresh process: both origins are there at zero, so the first failure of
+// either reads as a rise and not as the first sample of a new series.
+func assertFailuresPrimedAtZero(t *testing.T, scraped suiteenv.Scrape) {
+	t.Helper()
+	for _, origin := range []string{"http", "watch"} {
+		failures, present := scraped.Value("wager_reconciliation_failures_total", map[string]string{"origin": origin})
+		if !present || failures != 0 {
+			t.Fatalf("reconciliation_failures{%s} on a fresh process = %v, present %t, want 0 and present", origin, failures, present)
+		}
 	}
 }
 

@@ -56,6 +56,24 @@ func TestReconcile_countsTheVerdictsOfTheRoute(t *testing.T) {
 	}
 }
 
+// A wallet that does not exist is a refusal of the request and not a verdict
+// that failed: the route answers 404, and the failures of the route stay where
+// the fresh process primed them.
+func TestReconcile_countsNoFailureForAWalletThatDoesNotExist(t *testing.T) {
+	ctx, base := start(t)
+	internal := tokenFor(ctx, t, internalClient, internalSecret)
+	if status, _, _ := refusalOf(ctx, t, http.MethodPost, reconciliationURL(base, suiteenv.NewID()), internal); status != http.StatusNotFound {
+		t.Fatalf("reconciliation of a wallet that does not exist = %d, want 404", status)
+	}
+	scraped, err := suiteenv.ScrapeMetrics(ctx, base)
+	if err != nil {
+		t.Fatalf("scrape after the 404 = %v, want nil", err)
+	}
+	if failures, present := scraped.Value("wager_reconciliation_failures_total", map[string]string{"origin": "http"}); !present || failures != 0 {
+		t.Fatalf("reconciliation_failures{http} after a 404 = %v, present %t, want 0 and present", failures, present)
+	}
+}
+
 // seriesOf reads one series of the process under test, and answers zero for
 // one the scrape does not carry: a counter nothing moved yet is absent from
 // the scrape, and absent reads as zero the way the Prometheus reads it.
