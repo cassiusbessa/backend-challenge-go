@@ -140,12 +140,17 @@ services:
 
   # O schema é aplicado uma vez, antes de qualquer réplica. O binário da
   # aplicação não carrega código de migration.
+  #
+  # MIGRATE_DB escolhe o banco que recebe o schema, e o padrão é o da aplicação.
+  # A suíte de integração aponta para um banco próprio, porque a aplicação de pé
+  # tem os próprios workers: o relay de outbox dela varre a tabela inteira a cada
+  # segundo, sem filtrar carteira, e publica a linha que um caso espera ver morta.
   migrate:
     image: migrate/migrate:v4.19.0
     command:
       - "-path=/migrations"
       - "-database"
-      - "postgres://${POSTGRES_USER:-junglegaming}:${POSTGRES_PASSWORD:-junglegaming}@postgres:5432/${POSTGRES_DB:-junglegaming}?sslmode=disable"
+      - "postgres://${POSTGRES_USER:-junglegaming}:${POSTGRES_PASSWORD:-junglegaming}@postgres:5432/${MIGRATE_DB:-${POSTGRES_DB:-junglegaming}}?sslmode=disable"
       - "up"
     volumes:
       - ./deploy/migrations:/migrations:ro
