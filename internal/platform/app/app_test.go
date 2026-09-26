@@ -497,6 +497,42 @@ type emptyReads struct {
 	storage.Reads
 }
 
+// Run reaches flushed on both of its exits, and the one that failed to start
+// hands it whatever Populate managed to fill — which is nothing when the graph
+// itself is what broke.
+func TestFlushed_answersNilForAGraphThatBuiltNoPipeline(t *testing.T) {
+	t.Parallel()
+	if err := flushed(nil); err != nil {
+		t.Fatalf("flush with no pipeline in hand = %v, want nil", err)
+	}
+}
+
+func TestFlushed_stopsThePipelineItWasHanded(t *testing.T) {
+	t.Parallel()
+	pipe, err := telemetry.Started(t.Context(), loaded(t))
+	if err != nil {
+		t.Fatalf("telemetry for the flush = %v, want a started pipeline", err)
+	}
+	if err := flushed(pipe); err != nil {
+		t.Fatalf("flush of a pipeline in hand = %v, want nil", err)
+	}
+	waitCh(t, pipe.Stopped())
+}
+
+// newPipeline is what the graph provides, so what every constructor copies from
+// has to come back exporting rather than merely built.
+func TestNewPipeline_answersAPipelineAlreadyExporting(t *testing.T) {
+	t.Parallel()
+	pipe, err := newPipeline(loaded(t))
+	if err != nil {
+		t.Fatalf("newPipeline = %v, want a started pipeline", err)
+	}
+	t.Cleanup(func() { _ = flushed(pipe) })
+	if !pipe.Exporting() {
+		t.Fatalf("pipeline straight from the provider exporting = %t, want true", pipe.Exporting())
+	}
+}
+
 // newRelay and newQueueReporter copy pipe.Tracer while the graph is built, so
 // the pipeline has to be started by the time they run: the provider NewPipeline
 // hands out carries no exporter, and a span created on it never leaves the
@@ -522,6 +558,7 @@ func TestNew_handsTheBackgroundWorkTheTelemetryThatStartInstalls(t *testing.T) {
 	}
 	stopping, release := context.WithTimeout(context.Background(), stepWait)
 	defer release()
+	defer func() { _ = flushed(pipe) }()
 	defer func() { _ = application.Stop(stopping) }()
 	if !pipe.Exporting() {
 		t.Fatalf("pipeline of the graph exporting = %t, want true", pipe.Exporting())

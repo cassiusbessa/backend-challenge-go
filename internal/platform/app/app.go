@@ -54,7 +54,9 @@ func Boot(cfg config.Config, signals <-chan os.Signal) error {
 
 func Run(application *fx.App, pipe *telemetry.Pipeline, signals <-chan os.Signal, timeout time.Duration) error {
 	if err := start(application, timeout); err != nil {
-		return err
+		// A start that failed is the one with something to report, and nothing
+		// after this point would carry it out: the lifecycle never reached a stop.
+		return errors.Join(err, flushed(pipe))
 	}
 	<-signals
 	return stop(application, pipe, timeout)
@@ -83,13 +85,18 @@ func stop(application *fx.App, pipe *telemetry.Pipeline, timeout time.Duration) 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	stopped := application.Stop(ctx)
+	return errors.Join(stopped, flushed(pipe))
+}
+
+// flushed empties the telemetry buffer on a budget of its own. It answers nil
+// for a graph that never built a pipeline, which has no buffer to carry out.
+func flushed(pipe *telemetry.Pipeline) error {
 	if pipe == nil {
-		// The graph never built one, so there is no buffer to carry anything out.
-		return stopped
+		return nil
 	}
-	flushing, done := context.WithTimeout(context.Background(), flushBudget)
-	defer done()
-	return errors.Join(stopped, pipe.Shutdown(flushing))
+	ctx, cancel := context.WithTimeout(context.Background(), flushBudget)
+	defer cancel()
+	return pipe.Shutdown(ctx)
 }
 
 func New(cfg config.Config, opts ...fx.Option) *fx.App {
@@ -103,10 +110,10 @@ func New(cfg config.Config, opts ...fx.Option) *fx.App {
 		// library instead of the budget of this process.
 		fx.StartTimeout(cfg.ShutdownTimeout),
 		fx.StopTimeout(cfg.ShutdownTimeout),
-		// Started, and not a lifecycle hook: every constructor of the graph runs
-		// before any hook, so a pipeline started as a hook hands its Tracer and
-		// Logger to the background work and only then replaces them.
-		fx.Provide(telemetry.Started),
+		// A constructor, and not a lifecycle hook: every constructor of the graph
+		// runs before any hook, so a pipeline started as a hook hands its Tracer
+		// and Logger to the background work and only then replaces them.
+		fx.Provide(newPipeline),
 		fx.Provide(postgres.NewPool),
 		fx.Provide(probe.NewPostgres),
 		fx.Provide(probe.NewQueue),
@@ -160,6 +167,15 @@ func business() []fx.Option {
 		fx.Provide(newConsumer),
 		fx.Invoke(register),
 	}
+}
+
+// newPipeline starts the telemetry before any constructor reads it, on a
+// deadline of its own. The graph is built by New, which runs before Run has a
+// context, so an exporter that hung here would hang against no budget at all.
+func newPipeline(cfg config.Config) (*telemetry.Pipeline, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	return telemetry.Started(ctx, cfg)
 }
 
 // newSchedule is the single policy of the wait: the use case that writes one and

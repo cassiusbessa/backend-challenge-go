@@ -205,7 +205,7 @@ func TestShutdownTracer_shutsDownTheProviderInPlace(t *testing.T) {
 // an installed one is the shortest proof that the pipeline comes back started.
 func TestStarted_answersAPipelineWithItsExportersInstalled(t *testing.T) {
 	t.Parallel()
-	pipe, err := Started(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
+	pipe, err := Started(t.Context(), config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
 	if err != nil {
 		t.Fatalf("Started with an unreachable collector = %v, want nil", err)
 	}

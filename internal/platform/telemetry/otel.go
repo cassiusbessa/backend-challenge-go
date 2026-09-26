@@ -52,9 +52,9 @@ func NewPipeline(cfg config.Config) *Pipeline {
 // process gets: Start replaces the Tracer and the Logger the pipeline had
 // handed out, and the provider NewPipeline builds carries no exporter, so
 // anything holding the earlier pair emits into nothing.
-func Started(cfg config.Config) (*Pipeline, error) {
+func Started(ctx context.Context, cfg config.Config) (*Pipeline, error) {
 	pipe := NewPipeline(cfg)
-	if err := pipe.Start(context.Background()); err != nil {
+	if err := pipe.Start(ctx); err != nil {
 		return nil, err
 	}
 	return pipe, nil
