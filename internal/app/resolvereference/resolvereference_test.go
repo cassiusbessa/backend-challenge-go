@@ -496,6 +496,14 @@ type book struct {
 	// updateErr is what the write over the waiting row answers, which is how a
 	// case plays a commit that fails halfway.
 	updateErr error
+	// claimErr, balanceErr and outboxErr are what the claim, the write of the
+	// balance and the insert of an event answer, each breaking one step.
+	claimErr   error
+	balanceErr error
+	outboxErr  error
+	// hollowWallet hands back the wallet row with no version, which is a row
+	// the domain refuses to rehydrate.
+	hollowWallet bool
 
 	ended       []*wager.Transaction
 	rescheduled []schedulingWrite
@@ -581,6 +589,9 @@ type outboxRows struct {
 }
 
 func (r outboxRows) Insert(_ context.Context, envelope event.Envelope) error {
+	if r.book.outboxErr != nil {
+		return r.book.outboxErr
+	}
 	r.book.events = append(r.book.events, envelope)
 	return nil
 }
@@ -599,17 +610,24 @@ func (r walletRows) GetForUpdate(_ context.Context, id identity.WalletID) (walle
 	if owner == nil || owner.ID() != id {
 		return wallet.State{}, storage.ErrWalletNotFound
 	}
-	return wallet.State{
+	state := wallet.State{
 		ID:        owner.ID(),
 		PlayerID:  owner.PlayerID(),
 		Balance:   owner.Balance(),
 		Version:   owner.Version(),
 		CreatedAt: owner.CreatedAt(),
 		UpdatedAt: owner.UpdatedAt(),
-	}, nil
+	}
+	if r.book.hollowWallet {
+		state.Version = 0
+	}
+	return state, nil
 }
 
 func (r walletRows) UpdateBalance(_ context.Context, moved *wallet.Wallet, _ int64) error {
+	if r.book.balanceErr != nil {
+		return r.book.balanceErr
+	}
 	r.book.balances = append(r.book.balances, moved.Balance().Cents())
 	return nil
 }
@@ -641,6 +659,9 @@ func (r transactionRows) HasProcessedReversal(context.Context, identity.Provider
 
 func (r transactionRows) ClaimWait(_ context.Context, _ identity.TransactionID, due time.Time) (storage.Wait, error) {
 	r.book.calls = append(r.book.calls, "claim")
+	if r.book.claimErr != nil {
+		return storage.Wait{}, r.book.claimErr
+	}
 	if r.book.claimed {
 		return storage.Wait{}, storage.ErrTransactionNotFound
 	}
@@ -841,6 +862,17 @@ func (m brokenMinter) EntryID() (identity.LedgerEntryID, error) {
 
 func (m brokenMinter) EventID() (identity.EventID, error) {
 	return identity.EventID{}, m.err
+}
+
+// entrylessMinter mints the event identities and fails the entry one, which the
+// attempt asks for after them.
+type entrylessMinter struct {
+	*minter
+	err error
+}
+
+func (m entrylessMinter) EntryID() (identity.LedgerEntryID, error) {
+	return identity.LedgerEntryID{}, m.err
 }
 
 // openingBalance is the balance every case starts from.
@@ -1064,4 +1096,93 @@ func TestResolve_answersNoOutcomeForAWaitAnotherReplicaIsHolding(t *testing.T) {
 	if outcome.Closed() || outcome.Rescheduled {
 		t.Fatalf("outcome of a held row reads closed = %t and rescheduled = %t, want neither", outcome.Closed(), outcome.Rescheduled)
 	}
+}
+
+// Closed reads the two statuses an attempt ends a wait in as the end of it,
+// and nothing else: the wait itself, and the zero value of an attempt that
+// decided nothing, are not.
+func TestClosed_answersTrueOnlyForTheStatusesThatEndTheWait(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		status wager.Status
+		want   bool
+	}{
+		{name: "processed", status: wager.Processed, want: true},
+		{name: "rejected", status: wager.Rejected, want: true},
+		{name: "still waiting", status: wager.PendingReference, want: false},
+		{name: "the zero value", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Outcome{Status: tc.status}).Closed(); got != tc.want {
+				t.Errorf("Closed of %q = %t, want %t", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+// A failure anywhere in the attempt answers the failure and no outcome: the
+// commit that failed left nothing of the attempt, so the worker has nothing to
+// report for it. Each case breaks one step, in the order the attempt takes them.
+func TestResolve_answersTheFailureAndNoOutcomeWhenAStepOfTheAttemptFails(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("postgres: connection reset by peer")
+	cases := []struct {
+		name   string
+		setup  func(t *testing.T, b *book)
+		minter func(t *testing.T) Minter
+		at     time.Time
+		want   error
+	}{
+		{name: "the wallet of the wait is not there", setup: func(_ *testing.T, b *book) { b.owner = nil }, at: entered, want: storage.ErrWalletNotFound},
+		{name: "the claim fails", setup: func(_ *testing.T, b *book) { b.claimErr = broken }, at: entered, want: broken},
+		{name: "the row of the wait is incomplete", setup: func(_ *testing.T, b *book) { b.row.State.PlayerID = identity.PlayerID{} }, at: entered, want: wager.ErrIncompleteTransaction},
+		{name: "the row of the wallet is incomplete", setup: func(_ *testing.T, b *book) { b.hollowWallet = true }, at: entered, want: wallet.ErrIncompleteWallet},
+		{
+			name:   "the entry identity cannot be minted",
+			minter: func(t *testing.T) Minter { return entrylessMinter{minter: fixedMinter(t), err: broken} },
+			at:     entered, want: broken,
+		},
+		{name: "a row of a kind that cannot wait", setup: func(t *testing.T, b *book) { b.row.State = waiting(t, wager.KindBet, "25.00") }, at: entered, want: ErrKindNotWaited},
+		{name: "the moved schedule cannot be written", setup: func(_ *testing.T, b *book) { b.updateErr = broken }, at: entered, want: broken},
+		{name: "the expired wait cannot be written", setup: func(_ *testing.T, b *book) { b.updateErr = broken }, at: deadline, want: broken},
+		{name: "the rejection of the expired wait cannot be recorded", setup: func(_ *testing.T, b *book) { b.outboxErr = broken }, at: deadline, want: broken},
+		{name: "the balance of the resumed wait cannot be written", setup: resumedWith(func(b *book) { b.balanceErr = broken }), at: entered, want: broken},
+		{name: "the events of the resumed wait cannot be recorded", setup: resumedWith(func(b *book) { b.outboxErr = broken }), at: entered, want: broken},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+			if tc.setup != nil {
+				tc.setup(t, book)
+			}
+			outcome, err := New(book, mintFor(t, tc.minter), at(tc.at), schedule{}).Resolve(context.Background(), candidateOf(t))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Resolve with one step broken = %v, want %v", err, tc.want)
+			}
+			if outcome != (Outcome{}) {
+				t.Fatalf("outcome with one step broken = %+v, want the zero value", outcome)
+			}
+		})
+	}
+}
+
+// resumedWith is the wait whose cited bet arrived, so the attempt goes as far as
+// the credit, with one more step broken on top.
+func resumedWith(breaking func(b *book)) func(t *testing.T, b *book) {
+	return func(t *testing.T, b *book) {
+		b.cite(t, citedProcessed(t, wager.KindBet, "25.00"))
+		breaking(b)
+	}
+}
+
+// mintFor answers the minter of the case, and the fixed one when the case does
+// not break it.
+func mintFor(t *testing.T, build func(t *testing.T) Minter) Minter {
+	t.Helper()
+	if build == nil {
+		return fixedMinter(t)
+	}
+	return build(t)
 }
