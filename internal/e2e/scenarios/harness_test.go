@@ -234,6 +234,17 @@ func (f fleet) stop(ctx context.Context, t *testing.T) {
 	}
 }
 
+// tally sums, over every instance of the fleet, the samples of the family whose
+// labels include the ones given.
+func (f fleet) tally(ctx context.Context, t *testing.T, name string, match map[string]string) float64 {
+	t.Helper()
+	var total float64
+	for _, each := range f {
+		total += each.tally(ctx, t, name, match)
+	}
+	return total
+}
+
 // tally sums the samples of the family whose labels include the ones given. A
 // sample carries more labels than a case asks about, and each instance counts
 // only what it decided itself.
