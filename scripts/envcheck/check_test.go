@@ -447,3 +447,73 @@ func TestCompareDeclared_namesTheDatabaseBehindTheMigrations(t *testing.T) {
 		}
 	})
 }
+
+func TestDeclaredAlerts_readsTheNameOfEveryRuleInTheOrderOfTheFile(t *testing.T) {
+	t.Parallel()
+	source := `
+groups:
+  - name: settlement
+    rules:
+      - alert: ReconciliationDivergenceFound
+        expr: sum(increase(wager_reconciliation_divergences_total[15m])) > 0
+      - record: job:up
+        expr: up
+      - alert: OutboxOldestPendingTooOld
+        expr: max(wager_outbox_oldest_pending_age_seconds) > 30
+        for: 1m
+`
+	got := strings.Join(declaredAlerts(source), ",")
+	if got != "ReconciliationDivergenceFound,OutboxOldestPendingTooOld" {
+		t.Errorf("alerts = %q, want the two alerts and not the recording rule", got)
+	}
+	if got := declaredAlerts("groups: []\n"); len(got) != 0 {
+		t.Errorf("alerts of a file without one = %v, want none", got)
+	}
+}
+
+func TestMissingRules_namesOnlyWhatThePrometheusDidNotLoad(t *testing.T) {
+	t.Parallel()
+	declared := []string{"ReconciliationDivergenceFound", "OutboxOldestPendingTooOld"}
+	t.Run("both loaded", func(t *testing.T) {
+		if got := missingRules(declared, []string{"OutboxOldestPendingTooOld", "ReconciliationDivergenceFound"}); len(got) != 0 {
+			t.Errorf("findings with both loaded = %v, want none", got)
+		}
+	})
+
+	t.Run("one left behind", func(t *testing.T) {
+		got := missingRules(declared, []string{"ReconciliationDivergenceFound"})
+		if len(got) != 1 || !strings.Contains(got[0], "OutboxOldestPendingTooOld") {
+			t.Errorf("findings with one rule missing = %v, want one naming it", got)
+		}
+	})
+
+	t.Run("none loaded", func(t *testing.T) {
+		if got := missingRules(declared, nil); len(got) != 2 {
+			t.Errorf("findings with nothing loaded = %v, want both named", got)
+		}
+	})
+}
+
+func TestCompareDashboard_acceptsOnlyADashboardOfThatTitle(t *testing.T) {
+	t.Parallel()
+	t.Run("the dashboard is there", func(t *testing.T) {
+		found := []dashboardHit{{Title: "Liquidação", Type: "dash-db", UID: "liquidacao"}}
+		if got := compareDashboard("Liquidação", found); len(got) != 0 {
+			t.Errorf("findings with the dashboard provisioned = %v, want none", got)
+		}
+	})
+
+	t.Run("only a folder of that name", func(t *testing.T) {
+		found := []dashboardHit{{Title: "Liquidação", Type: "dash-folder"}}
+		got := compareDashboard("Liquidação", found)
+		if len(got) != 1 || !strings.Contains(got[0], "Liquidação") {
+			t.Errorf("findings with a folder of the same name = %v, want one naming the dashboard", got)
+		}
+	})
+
+	t.Run("nothing found", func(t *testing.T) {
+		if got := compareDashboard("Liquidação", nil); len(got) != 1 {
+			t.Errorf("findings with nothing found = %v, want one", got)
+		}
+	})
+}

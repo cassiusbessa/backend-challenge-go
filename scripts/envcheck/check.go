@@ -228,6 +228,57 @@ func declaredNames(resourceType, source string) []string {
 	return out
 }
 
+// alertLine matches the name of one alert rule in the versioned file. The file
+// is YAML and this reads it with the standard library alone, which the rest of
+// the verifier already commits to: an `alert:` key is one rule, and the name
+// is the rest of the line.
+var alertLine = regexp.MustCompile(`(?m)^\s*-\s*alert:\s*(\S+)\s*$`)
+
+// declaredAlerts reads the name of every alert rule the versioned file
+// declares, in the order of the file, so the expected set stays in the file
+// the Prometheus loads instead of being copied in here.
+func declaredAlerts(source string) []string {
+	var out []string
+	for _, found := range alertLine.FindAllStringSubmatch(source, -1) {
+		out = append(out, found[1])
+	}
+	return out
+}
+
+// missingRules names every alert the versioned file declares and the
+// Prometheus did not load. A rule file that failed to parse leaves the
+// Prometheus with the previous set, and this is what says so.
+func missingRules(declared, loaded []string) []string {
+	var out []string
+	for _, name := range declared {
+		if !contains(loaded, name) {
+			out = append(out, fmt.Sprintf("alert %s is declared in the versioned rules and the Prometheus did not load it", name))
+		}
+	}
+	return out
+}
+
+func contains(names []string, name string) bool {
+	for _, each := range names {
+		if each == name {
+			return true
+		}
+	}
+	return false
+}
+
+// compareDashboard names a dashboard the Grafana does not have as a provisioned
+// one. The search is by title and answers every kind of hit, so the type is
+// what tells a dashboard from a folder of the same name.
+func compareDashboard(title string, found []dashboardHit) []string {
+	for _, hit := range found {
+		if hit.Title == title && hit.Type == "dash-db" {
+			return nil
+		}
+	}
+	return []string{fmt.Sprintf("dashboard %q is versioned and the Grafana does not have it provisioned", title)}
+}
+
 // firstLine is the first line of what a command printed.
 //
 // A Compose service answers with one container id per replica, and the question

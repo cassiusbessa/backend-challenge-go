@@ -17,6 +17,8 @@ APP_DB ?= $(POSTGRES_DB)
 SUITE_DB ?= junglegaming_test
 KC_BOOTSTRAP_ADMIN_USERNAME ?= admin
 KC_BOOTSTRAP_ADMIN_PASSWORD ?= admin
+GF_SECURITY_ADMIN_USER ?= admin
+GF_SECURITY_ADMIN_PASSWORD ?= admin
 
 # Dentro da rede do Compose o host do banco é o nome do serviço; no host é
 # localhost. O `go test` roda no host, o `migrate` roda na rede.
@@ -109,7 +111,8 @@ mutation: ## relatório de mutação do gremlins sobre o módulo
 verify: ## responde se o ambiente está no estado que os arquivos versionados declaram
 	go run -C scripts/envcheck . -root "$$PWD" \
 		-postgres-user "$(POSTGRES_USER)" -app-db "$(APP_DB)" -suite-db "$(SUITE_DB)" \
-		-admin-user "$(KC_BOOTSTRAP_ADMIN_USERNAME)" -admin-password "$(KC_BOOTSTRAP_ADMIN_PASSWORD)"
+		-admin-user "$(KC_BOOTSTRAP_ADMIN_USERNAME)" -admin-password "$(KC_BOOTSTRAP_ADMIN_PASSWORD)" \
+		-grafana-user "$(GF_SECURITY_ADMIN_USER)" -grafana-password "$(GF_SECURITY_ADMIN_PASSWORD)"
 
 # Este alvo derruba o schema, e é por isso que o nome dele diz contra quem: o
 # banco da suíte, nunca o da aplicação, e nunca como parte de `up`.

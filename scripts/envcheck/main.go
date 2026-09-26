@@ -22,20 +22,26 @@ import (
 )
 
 type options struct {
-	root       string
-	user       string
-	app        string
-	suite      string
-	idp        string
-	realm      string
-	realmFile  string
-	migrations string
-	adminUser  string
-	adminPass  string
-	terraform  string
-	service    string
-	dockerfile string
-	timeout    time.Duration
+	root        string
+	user        string
+	app         string
+	suite       string
+	idp         string
+	realm       string
+	realmFile   string
+	migrations  string
+	adminUser   string
+	adminPass   string
+	terraform   string
+	service     string
+	dockerfile  string
+	grafana     string
+	grafanaUser string
+	grafanaPass string
+	dashboard   string
+	prometheus  string
+	rulesFile   string
+	timeout     time.Duration
 }
 
 func main() {
@@ -65,6 +71,12 @@ func readFlags() options {
 	flag.StringVar(&opts.terraform, "terraform", "deploy/terraform/localstack", "versioned provisioning, relative to root")
 	flag.StringVar(&opts.service, "service", "wager", "Compose service that runs the application")
 	flag.StringVar(&opts.dockerfile, "dockerfile", "Dockerfile", "versioned image recipe, relative to root")
+	flag.StringVar(&opts.grafana, "grafana", "http://localhost:3000", "base address of the Grafana")
+	flag.StringVar(&opts.grafanaUser, "grafana-user", "admin", "administrator of the Grafana")
+	flag.StringVar(&opts.grafanaPass, "grafana-password", "admin", "password of that administrator")
+	flag.StringVar(&opts.dashboard, "dashboard", "Liquidação", "title of the provisioned dashboard")
+	flag.StringVar(&opts.prometheus, "prometheus", "http://localhost:9095", "base address of the Prometheus")
+	flag.StringVar(&opts.rulesFile, "rules-file", "deploy/prometheus/rules/settlement.yml", "versioned alert rules, relative to root")
 	flag.DurationVar(&opts.timeout, "timeout", 30*time.Second, "deadline of each command")
 	flag.Parse()
 	return opts
@@ -79,7 +91,86 @@ func inspect(o options) []string {
 	out = append(out, checkRealm(o)...)
 	out = append(out, checkBroker(o)...)
 	out = append(out, checkImage(o)...)
+	out = append(out, checkDashboard(o)...)
+	out = append(out, checkRules(o)...)
 	return out
+}
+
+// checkDashboard asks the Grafana whether the versioned dashboard is there as a
+// provisioned one. The search is by title, and the answer is compared by title
+// and by provenance: a dashboard of the same name saved by hand is not the file.
+func checkDashboard(o options) []string {
+	var found []dashboardHit
+	endpoint := o.grafana + "/api/search?query=" + url.QueryEscape(o.dashboard)
+	if err := getBasicJSON(o, endpoint, &found); err != nil {
+		return []string{fmt.Errorf("search the Grafana for the dashboard: %w", err).Error()}
+	}
+	return compareDashboard(o.dashboard, found)
+}
+
+// dashboardHit is one row of the search of the Grafana, as much of it as the
+// comparison reads.
+type dashboardHit struct {
+	Title string `json:"title"`
+	Type  string `json:"type"`
+	UID   string `json:"uid"`
+}
+
+// checkRules reads the alert names the versioned file declares and asks the
+// Prometheus which rules it loaded. A file that failed to load leaves the
+// Prometheus with the previous set, or with none, and neither says so on its
+// own.
+func checkRules(o options) []string {
+	source, err := os.ReadFile(filepath.Join(o.root, o.rulesFile)) //nolint:gosec // the path comes from a flag the operator controls
+	if err != nil {
+		return []string{fmt.Errorf("read the versioned alert rules: %w", err).Error()}
+	}
+	declared := declaredAlerts(string(source))
+	if len(declared) == 0 {
+		return []string{fmt.Sprintf("%s declares no alert, so nothing says what the Prometheus should load", o.rulesFile)}
+	}
+	loaded, err := loadedRules(o)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return missingRules(declared, loaded)
+}
+
+// loadedRules answers the name of every rule the Prometheus has loaded, across
+// every group.
+func loadedRules(o options) ([]string, error) {
+	var body struct {
+		Data struct {
+			Groups []struct {
+				Rules []struct {
+					Name string `json:"name"`
+				} `json:"rules"`
+			} `json:"groups"`
+		} `json:"data"`
+	}
+	if err := getJSON(o, o.prometheus+"/api/v1/rules", "", &body); err != nil {
+		return nil, fmt.Errorf("read the rules the Prometheus loaded: %w", err)
+	}
+	var names []string
+	for _, group := range body.Data.Groups {
+		for _, rule := range group.Rules {
+			names = append(names, rule.Name)
+		}
+	}
+	return names, nil
+}
+
+// getBasicJSON is getJSON with the basic credential the Grafana takes, which is
+// the example password of the Compose and not a bearer.
+func getBasicJSON(o options, endpoint string, into any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(o.grafanaUser, o.grafanaPass)
+	return send(req, into)
 }
 
 func checkDatabases(o options) []string {
@@ -238,7 +329,11 @@ func getJSON(o options, endpoint, token string, into any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	// The Prometheus takes no credential, and an empty bearer would be a header
+	// carrying nothing.
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	return send(req, into)
 }
 

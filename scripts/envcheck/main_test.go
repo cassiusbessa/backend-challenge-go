@@ -138,3 +138,41 @@ func TestAdminToken_answersTheTokenTheGrantCarries(t *testing.T) {
 		t.Errorf("token = %q, want a-token", got)
 	}
 }
+
+// The Prometheus answers its rules grouped, and the names are what the
+// comparison reads: every group, every rule, in order.
+func TestLoadedRules_readsEveryRuleOfEveryGroup(t *testing.T) {
+	t.Parallel()
+	prometheus := idpAnswering(t, `{"status":"success","data":{"groups":[
+		{"name":"settlement","rules":[{"name":"ReconciliationDivergenceFound","type":"alerting"},{"name":"OutboxOldestPendingTooOld","type":"alerting"}]},
+		{"name":"other","rules":[{"name":"job:up","type":"recording"}]}]}}`)
+	got, err := loadedRules(options{prometheus: prometheus, timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if strings.Join(got, ",") != "ReconciliationDivergenceFound,OutboxOldestPendingTooOld,job:up" {
+		t.Errorf("rules = %v, want the three in the order of the answer", got)
+	}
+}
+
+func TestLoadedRules_answersTheFailureOfAPrometheusThatIsNotThere(t *testing.T) {
+	t.Parallel()
+	if _, err := loadedRules(options{prometheus: "http://127.0.0.1:1", timeout: time.Second}); err == nil {
+		t.Errorf("err of a Prometheus nothing answers on = %v, want one", err)
+	}
+}
+
+// The search of the Grafana is asked with the basic credential of the example
+// password, and the hits come back as the comparison reads them.
+func TestCheckDashboard_readsTheHitsOfTheSearch(t *testing.T) {
+	t.Parallel()
+	grafana := idpAnswering(t, `[{"title":"Liquidação","type":"dash-db","uid":"liquidacao"}]`)
+	got := checkDashboard(options{grafana: grafana, grafanaUser: "admin", grafanaPass: "admin", dashboard: "Liquidação", timeout: 5 * time.Second})
+	if len(got) != 0 {
+		t.Errorf("findings with the dashboard answered = %v, want none", got)
+	}
+	got = checkDashboard(options{grafana: "http://127.0.0.1:1", dashboard: "Liquidação", timeout: time.Second})
+	if len(got) != 1 || !strings.Contains(got[0], "search the Grafana") {
+		t.Errorf("findings with no Grafana = %v, want one naming the search", got)
+	}
+}
