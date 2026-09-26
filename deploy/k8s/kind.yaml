@@ -1,0 +1,18 @@
+# O cluster local das réplicas: um nó só, criado por `make cluster-up`.
+#
+# PostgreSQL, LocalStack, Keycloak, o coletor e o Prometheus continuam no
+# Compose. O `make cluster-up` liga o nó à rede `junglegaming` depois de criá-lo,
+# e cada pod alcança esses serviços pelo mesmo nome que o `wager` do Compose usa.
+#
+# O Service das réplicas é um NodePort, e a porta dele no nó aparece no host em
+# `localhost:8091`. Não é `8090` porque essa é do balanceador do Compose: os dois
+# endereços coexistem, e a carga escolhe o alvo pelo endereço.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: junglegaming
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30091
+        hostPort: 8091
+        protocol: TCP

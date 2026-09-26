@@ -24,6 +24,30 @@ GF_SECURITY_ADMIN_PASSWORD ?= admin
 WAGER_REPLICAS ?= 3
 REPLICAS ?= $(WAGER_REPLICAS)
 
+# O Compose recusa só parte dos números inválidos, e sem nomear a variável: o
+# `--scale` com zero derruba as réplicas, e com -1 entra em pânico. O Kubernetes
+# aceita zero e fica sem réplica. Por isso o número é conferido antes de qualquer
+# passo, com a mesma mensagem em todo alvo que o usa.
+REPLICAS_REFUSED = echo "REPLICAS must be an integer of at least 1, got '$(REPLICAS)'" >&2; exit 2
+CHECK_REPLICAS = case '$(REPLICAS)' in ''|*[!0-9]*) $(REPLICAS_REFUSED);; esac; \
+	if [ '$(REPLICAS)' -lt 1 ]; then $(REPLICAS_REFUSED); fi
+
+# O cluster das réplicas. O Kind roda pela versão fixada aqui, sem instalação no
+# host; `KIND=kind` usa um binário instalado. O contexto vai explícito em toda
+# chamada, para o `kubectl` nunca agir sobre o cluster que o operador deixou
+# ativo.
+KIND ?= go run sigs.k8s.io/kind@v0.33.0
+CLUSTER ?= junglegaming
+NAMESPACE ?= junglegaming
+KUBECTL ?= kubectl --context kind-$(CLUSTER)
+# As imagens que o nó não baixa: a das réplicas, construída pelo Compose, e as
+# duas que o cluster usa na mesma versão do Compose.
+#
+# Elas entram por arquivo, e não por `kind load docker-image`: com o image store
+# do containerd, o `docker save` de uma imagem baixada exporta o índice de todas
+# as plataformas, o conteúdo só existe para a do host, e o import no nó falha.
+CLUSTER_IMAGES := junglegaming-wager:latest migrate/migrate:v4.19.0 prom/prometheus:v3.13.3-busybox
+
 # Dentro da rede do Compose o host do banco é o nome do serviço; no host é
 # localhost. O `go test` roda no host, o `migrate` roda na rede.
 APP_URL := postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(APP_DB)?sslmode=disable
@@ -47,21 +71,32 @@ WRITE_PROBE := BEGIN; SET ROLE wager_app; \
 	ROLLBACK
 
 .DEFAULT_GOAL := help
-.PHONY: help up down provision migrate test test-journey scenarios cover-journey mutation verify migrate-reversibility rules-test
+.PHONY: help up down cluster-up provision migrate test test-journey scenarios cover-journey mutation verify migrate-reversibility rules-test
 
 help: ## lista os alvos
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -e 's/:.*## /|/' | awk -F'|' '{printf "%-24s %s\n", $$1, $$2}'
 
-# O Compose recusa só parte dos números inválidos, e sem nomear a variável: o
-# `--scale` com zero derruba as réplicas, e com -1 entra em pânico. Por isso o
-# número é conferido aqui, antes de qualquer passo.
 up: ## sobe a stack com REPLICAS réplicas do processo, três por padrão, e espera cada serviço ficar saudável
-	@case '$(REPLICAS)' in ''|*[!0-9]*) echo "REPLICAS must be an integer of at least 1, got '$(REPLICAS)'" >&2; exit 2;; esac; \
-	if [ '$(REPLICAS)' -lt 1 ]; then echo "REPLICAS must be an integer of at least 1, got '$(REPLICAS)'" >&2; exit 2; fi
+	@$(CHECK_REPLICAS)
 	docker compose up -d --build --wait --scale wager=$(REPLICAS)
 
 down: ## derruba a stack e descarta os volumes dela, voltando ao estado limpo
 	docker compose down -v
+
+# O cluster parte da mesma subida do Compose, que provisiona o broker e aplica o
+# schema, e as réplicas do Compose param enquanto ele existe: com elas de pé,
+# seriam processos a mais disputando a outbox, a fila e as esperas. O nó entra na
+# rede do Compose e alcança cada serviço pelo nome.
+cluster-up: ## sobe REPLICAS réplicas num cluster Kind sobre os serviços do Compose, em localhost:8091
+	@$(CHECK_REPLICAS)
+	docker compose up -d --build --wait
+	docker compose stop wager
+	@$(KIND) get clusters 2>/dev/null | grep -qx '$(CLUSTER)' || $(KIND) create cluster --config deploy/k8s/kind.yaml
+	@docker network inspect junglegaming -f '{{range .Containers}}{{println .Name}}{{end}}' | grep -qx '$(CLUSTER)-control-plane' \
+		|| docker network connect junglegaming $(CLUSTER)-control-plane
+	@archive=$$(mktemp) && trap 'rm -f "$$archive"' EXIT \
+		&& docker save --platform "$$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')" -o "$$archive" $(CLUSTER_IMAGES) \
+		&& $(KIND) load image-archive --name $(CLUSTER) "$$archive"
 
 # O mesmo serviço que o `up` roda antes das réplicas, e o que o CI roda: o
 # Terraform vem da imagem, na versão fixada no `compose.yaml`, e não do host.
