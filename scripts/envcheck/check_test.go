@@ -283,3 +283,47 @@ func TestFirstLine_answersForEveryReplicaWithTheFirstOne(t *testing.T) {
 		}
 	})
 }
+
+func TestImageSources_readsWhatTheRecipeCopiesIn(t *testing.T) {
+	t.Parallel()
+	recipe := `
+FROM golang:1.27.1 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -o /out/wager ./cmd/wager
+
+FROM alpine:3.22
+COPY --from=build /out/wager /wager
+ENTRYPOINT ["/wager"]
+`
+	t.Run("every path of the working tree, minus the tests", func(t *testing.T) {
+		got := strings.Join(imageSources(recipe), " ")
+		want := "go.mod go.sum cmd internal " + notTests
+		if got != want {
+			t.Errorf("sources = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("the tests are excluded, not merely absent", func(t *testing.T) {
+		got := imageSources(recipe)
+		if got[len(got)-1] != notTests {
+			t.Errorf("last pathspec = %q, want the exclusion %q: only the build stage sees a test file", got[len(got)-1], notTests)
+		}
+	})
+
+	t.Run("a stage of the build is not a path", func(t *testing.T) {
+		for _, each := range imageSources(recipe) {
+			if each == "/out/wager" {
+				t.Error("COPY --from contributed /out/wager, want it left out: it names a build stage")
+			}
+		}
+	})
+
+	t.Run("a recipe that copies nothing", func(t *testing.T) {
+		if got := imageSources("FROM alpine:3.22\nENTRYPOINT [\"/bin/sh\"]\n"); len(got) != 0 {
+			t.Errorf("sources of a recipe without COPY = %v, want none", got)
+		}
+	})
+}

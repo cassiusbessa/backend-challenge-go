@@ -22,18 +22,19 @@ import (
 )
 
 type options struct {
-	root      string
-	user      string
-	app       string
-	suite     string
-	idp       string
-	realm     string
-	realmFile string
-	adminUser string
-	adminPass string
-	terraform string
-	service   string
-	timeout   time.Duration
+	root       string
+	user       string
+	app        string
+	suite      string
+	idp        string
+	realm      string
+	realmFile  string
+	adminUser  string
+	adminPass  string
+	terraform  string
+	service    string
+	dockerfile string
+	timeout    time.Duration
 }
 
 func main() {
@@ -61,6 +62,7 @@ func readFlags() options {
 	flag.StringVar(&opts.adminPass, "admin-password", "admin", "password of that administrator")
 	flag.StringVar(&opts.terraform, "terraform", "deploy/terraform/localstack", "versioned provisioning, relative to root")
 	flag.StringVar(&opts.service, "service", "wager", "Compose service that runs the application")
+	flag.StringVar(&opts.dockerfile, "dockerfile", "Dockerfile", "versioned image recipe, relative to root")
 	flag.DurationVar(&opts.timeout, "timeout", 30*time.Second, "deadline of each command")
 	flag.Parse()
 	return opts
@@ -312,7 +314,11 @@ func checkImage(o options) []string {
 	if built.IsZero() {
 		return []string{fmt.Sprintf("service %s is not running, so no image answers for the commit", o.service)}
 	}
-	commit, err := commitTime(o)
+	sources, err := imagePaths(o)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	commit, err := commitTime(o, sources)
 	if err != nil {
 		return []string{err.Error()}
 	}
@@ -345,10 +351,24 @@ func imageBuiltAt(o options) (time.Time, error) {
 	return built, nil
 }
 
-func commitTime(o options) (time.Time, error) {
-	raw, err := run(o, "git", "-C", o.root, "log", "-1", "--format=%cI")
+// imagePaths is the Dockerfile plus everything it copies in: the set whose last
+// commit the running image has to be at least as new as.
+func imagePaths(o options) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(o.root, o.dockerfile))
+	if err != nil {
+		return nil, fmt.Errorf("read the versioned image recipe: %w", err)
+	}
+	return append([]string{o.dockerfile}, imageSources(string(data))...), nil
+}
+
+func commitTime(o options, paths []string) (time.Time, error) {
+	args := append([]string{"git", "-C", o.root, "log", "-1", "--format=%cI", "--"}, paths...)
+	raw, err := run(o, args...)
 	if err != nil {
 		return time.Time{}, err
+	}
+	if raw == "" {
+		return time.Time{}, fmt.Errorf("no commit touches %s, so nothing dates the image", strings.Join(paths, " "))
 	}
 	at, err := time.Parse(time.RFC3339, raw)
 	if err != nil {

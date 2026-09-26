@@ -186,3 +186,39 @@ func firstLine(raw string) string {
 	}
 	return trimmed
 }
+
+var copyLine = regexp.MustCompile(`(?mi)^\s*COPY\s+(.*)$`)
+
+// notTests excludes the test files from a set of paths, in the pathspec form git
+// takes.
+const notTests = ":(exclude)**/*_test.go"
+
+// imageSources reads the paths a Dockerfile copies in, so the image is compared
+// against the commit of what it actually holds.
+//
+// A build whose layers are all cached keeps the Created of the cached image, and
+// that is correct: the image is only rebuilt when its content would differ. So
+// the comparison has to be against the last commit that could have changed that
+// content, not against the newest commit of the tree — one touching the README
+// or the runner changes nothing the image holds.
+//
+// The test files are excluded for the same reason. They live under a path the
+// recipe copies, but only the build stage ever sees them: the image that runs
+// carries the binary alone, and a binary built from the same production source
+// is byte for byte the one already there.
+//
+// A `COPY --from` names a stage of the build, not a path of the working tree.
+func imageSources(dockerfile string) []string {
+	var out []string
+	for _, found := range copyLine.FindAllStringSubmatch(dockerfile, -1) {
+		fields := strings.Fields(found[1])
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "--") {
+			continue
+		}
+		out = append(out, fields[:len(fields)-1]...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return append(out, notTests)
+}

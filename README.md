@@ -30,7 +30,9 @@ make down        # derruba a stack e descarta os volumes dela
 responde por quatro coisas: os dois bancos existem e estão na mesma versão de
 schema; o realm emite token pelo tempo que `deploy/keycloak/junglegaming-realm.json`
 declara; as filas e o tópico que o Terraform descreve existem no broker; e a
-imagem em execução não é mais antiga que o commit da árvore de trabalho. Ele sai
+imagem em execução não é mais antiga que o último commit que mudou o que ela
+contém — os caminhos que o `Dockerfile` copia, menos os `_test.go`, que só o
+estágio de build enxerga. Ele sai
 diferente de zero nomeando o que divergiu, e funciona quando a aplicação não sobe
 — que é quando ele é chamado.
 
