@@ -96,7 +96,7 @@ func TestPage_cutsTheRowPastThePageAndIssuesTheCursorOfTheLastOne(t *testing.T) 
 	t.Parallel()
 	page, err := New(&rows{entries: entriesOf(t, 1, 2, 3)}).Page(context.Background(), Query{WalletID: walletOf(t, walletText), Limit: 2})
 	if err != nil {
-		t.Fatalf("Page = %v, want nil", err)
+		t.Fatalf("Page over three entries = %v, want nil", err)
 	}
 	if len(page.Entries) != 2 {
 		t.Fatalf("entries = %d, want the 2 of the limit", len(page.Entries))
@@ -109,7 +109,7 @@ func TestPage_cutsTheRowPastThePageAndIssuesTheCursorOfTheLastOne(t *testing.T) 
 func assertCursorPointsAt(t *testing.T, cursor string, last storage.EntryView) {
 	t.Helper()
 	if cursor == "" {
-		t.Fatalf("next cursor is empty, want one for the row past the page")
+		t.Fatalf("next cursor = %q, want one for the row past the page", cursor)
 	}
 	position, err := decodeCursor(walletOf(t, walletText), cursor)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestPage_answersTheLastPageWithoutACursor(t *testing.T) {
 	t.Parallel()
 	page, err := New(&rows{entries: entriesOf(t, 1, 2)}).Page(context.Background(), Query{WalletID: walletOf(t, walletText), Limit: 2})
 	if err != nil {
-		t.Fatalf("Page = %v, want nil", err)
+		t.Fatalf("Page over two entries = %v, want nil", err)
 	}
 	if len(page.Entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(page.Entries))
@@ -138,7 +138,7 @@ func TestPage_answersAnEmptyPageForAWalletWithoutMovements(t *testing.T) {
 	t.Parallel()
 	page, err := New(&rows{}).Page(context.Background(), Query{WalletID: walletOf(t, walletText)})
 	if err != nil {
-		t.Fatalf("Page = %v, want nil", err)
+		t.Fatalf("Page over no entries = %v, want nil", err)
 	}
 	if len(page.Entries) != 0 || page.NextCursor != "" {
 		t.Fatalf("page = %+v, want no entry and no cursor", page)
@@ -150,6 +150,49 @@ func TestPage_passesTheAbsenceThrough(t *testing.T) {
 	_, err := New(&rows{err: storage.ErrWalletNotFound}).Page(context.Background(), Query{WalletID: walletOf(t, walletText)})
 	if !errors.Is(err, storage.ErrWalletNotFound) {
 		t.Fatalf("Page = %v, want %v", err, storage.ErrWalletNotFound)
+	}
+}
+
+// The range of a page, at its ends: zero is the absence of a limit and takes
+// the default, one and the ceiling are accepted, and past either side is refused.
+func TestLimitOf_appliesTheDefaultAndRefusesOutsideTheRange(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		asked int
+		want  int
+		err   error
+	}{
+		{asked: 0, want: DefaultLimit},
+		{asked: 1, want: 1},
+		{asked: MaxLimit, want: MaxLimit},
+		{asked: -1, err: ErrInvalidLimit},
+		{asked: MaxLimit + 1, err: ErrInvalidLimit},
+	}
+	for _, tc := range cases {
+		t.Run("the limit "+strconv.Itoa(tc.asked), func(t *testing.T) {
+			got, err := limitOf(tc.asked)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("limitOf(%d) error = %v, want %v", tc.asked, err, tc.err)
+			}
+			if got != tc.want {
+				t.Fatalf("limitOf(%d) = %d, want %d", tc.asked, got, tc.want)
+			}
+		})
+	}
+}
+
+// The row past the page is the only thing that says there is a next one: with
+// it the page is cut and a cursor is issued, without it the page is whole and
+// carries none.
+func TestPageOf_issuesACursorOnlyWhenTheRowPastThePageExisted(t *testing.T) {
+	t.Parallel()
+	cut := pageOf(walletOf(t, walletText), entriesOf(t, 1, 2, 3), 2)
+	if len(cut.Entries) != 2 || cut.NextCursor == "" {
+		t.Fatalf("pageOf over three entries with limit 2 = %d entries and cursor %q, want 2 and a cursor", len(cut.Entries), cut.NextCursor)
+	}
+	whole := pageOf(walletOf(t, walletText), entriesOf(t, 1, 2), 2)
+	if len(whole.Entries) != 2 || whole.NextCursor != "" {
+		t.Fatalf("pageOf over two entries with limit 2 = %d entries and cursor %q, want 2 and none", len(whole.Entries), whole.NextCursor)
 	}
 }
 

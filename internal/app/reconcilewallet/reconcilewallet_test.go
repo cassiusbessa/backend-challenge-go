@@ -17,7 +17,7 @@ func TestReconcile_answersConsistentWhenTheLedgerClosesWithTheBalance(t *testing
 	t.Parallel()
 	report, err := New(&rows{summary: summaryOf(t, "1025.00", 102500, 3, 3, 0)}).Reconcile(context.Background(), walletOf(t))
 	if err != nil {
-		t.Fatalf("Reconcile = %v, want nil", err)
+		t.Fatalf("Reconcile of the closed ledger = %v, want nil", err)
 	}
 	assertConsistentReport(t, report)
 	if report.EntryCount != 3 || report.LastSequence != 3 || report.Version != 4 {
@@ -46,7 +46,7 @@ func TestReconcile_answersConsistentForTheWalletAtZeroWithoutMovements(t *testin
 	t.Parallel()
 	report, err := New(&rows{summary: summaryOf(t, "0.00", 0, 0, 0, 0)}).Reconcile(context.Background(), walletOf(t))
 	if err != nil {
-		t.Fatalf("Reconcile = %v, want nil", err)
+		t.Fatalf("Reconcile at zero = %v, want nil", err)
 	}
 	if !report.Consistent {
 		t.Fatalf("consistent = false with divergences %v, want true at zero", report.Divergences)
@@ -71,7 +71,7 @@ func TestReconcile_namesEachDivergenceAlone(t *testing.T) {
 		t.Run(tc.name+" is named", func(t *testing.T) {
 			report, err := New(&rows{summary: tc.summary}).Reconcile(context.Background(), walletOf(t))
 			if err != nil {
-				t.Fatalf("Reconcile = %v, want nil", err)
+				t.Fatalf("Reconcile of the case = %v, want nil", err)
 			}
 			if report.Consistent {
 				t.Fatalf("consistent = true, want false for %s", tc.name)
@@ -87,7 +87,7 @@ func TestReconcile_namesTwoDivergencesTogether(t *testing.T) {
 	t.Parallel()
 	report, err := New(&rows{summary: summaryOf(t, "2000.00", 102500, 3, 4, 0)}).Reconcile(context.Background(), walletOf(t))
 	if err != nil {
-		t.Fatalf("Reconcile = %v, want nil", err)
+		t.Fatalf("Reconcile with two divergences = %v, want nil", err)
 	}
 	if want := []Divergence{BalanceMismatch, SequenceGap}; !reflect.DeepEqual(report.Divergences, want) {
 		t.Fatalf("divergences = %v, want %v", report.Divergences, want)
@@ -98,7 +98,7 @@ func TestReconcile_pointsAtTheFirstEntryOutOfTheChain(t *testing.T) {
 	t.Parallel()
 	report, err := New(&rows{summary: summaryOf(t, "1025.00", 102500, 3, 3, 2)}).Reconcile(context.Background(), walletOf(t))
 	if err != nil {
-		t.Fatalf("Reconcile = %v, want nil", err)
+		t.Fatalf("Reconcile with a broken chain = %v, want nil", err)
 	}
 	if report.FirstBreakSequence != 2 {
 		t.Fatalf("first break = %d, want 2", report.FirstBreakSequence)
@@ -133,7 +133,7 @@ func TestReconcile_asksTheReadModelForTheIdentityInTheURL(t *testing.T) {
 	t.Parallel()
 	asked := &rows{summary: summaryOf(t, "0.00", 0, 0, 0, 0)}
 	if _, err := New(asked).Reconcile(context.Background(), walletOf(t)); err != nil {
-		t.Fatalf("Reconcile = %v, want nil", err)
+		t.Fatalf("Reconcile of the asked identity = %v, want nil", err)
 	}
 	if asked.asked != walletOf(t) {
 		t.Fatalf("asked for = %s, want %s", asked.asked, walletOf(t))
@@ -148,6 +148,40 @@ func TestString_answersTheTokenOfEachDivergenceAndNothingOutsideTheVocabulary(t 
 			t.Fatalf("String of %d = %q, want %q", divergence, got, want)
 		}
 	}
+}
+
+// Each divergence is decided by its own comparison, and a wallet that fails
+// none of them names nothing.
+func TestDivergencesOf_namesEveryDeviationInTheOrderOfTheVocabulary(t *testing.T) {
+	t.Parallel()
+	stored := moneyOf(t, "1025.00")
+	cases := []struct {
+		name    string
+		summary storage.LedgerSummary
+		rebuilt money.Money
+		want    []Divergence
+	}{
+		{name: "nothing deviates", summary: summaryOf(t, "1025.00", 102500, 3, 3, 0), rebuilt: stored, want: nil},
+		{name: "the sum deviates", summary: summaryOf(t, "1025.00", 102500, 3, 3, 0), rebuilt: moneyOf(t, "1000.00"), want: []Divergence{BalanceMismatch}},
+		{name: "everything deviates", summary: summaryOf(t, "1025.00", 102500, 3, 4, 2), rebuilt: moneyOf(t, "1000.00"), want: []Divergence{BalanceMismatch, SequenceGap, ChainBreak}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := divergencesOf(tc.summary, stored, tc.rebuilt)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("divergencesOf when %s = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func moneyOf(t *testing.T, amount string) money.Money {
+	t.Helper()
+	parsed, err := money.Parse(amount, "BRL")
+	if err != nil {
+		t.Fatalf("money.Parse of %s = %v, want nil", amount, err)
+	}
+	return parsed
 }
 
 // rows is the read port in memory. Only the summary belongs to this use case:

@@ -113,6 +113,20 @@ func TestWalletID_refusesAValueThatIsNotACanonicalUUID(t *testing.T) {
 	assertRefused(t, parse.err, "a wallet out of format")
 }
 
+func TestLedgerEntryID_refusesAValueThatIsNotACanonicalUUID(t *testing.T) {
+	t.Parallel()
+	var parse rowParser
+	parse.ledgerEntryID("not-a-uuid")
+	assertRefused(t, parse.err, "a ledger entry out of format")
+}
+
+func TestDirection_refusesAWordOutsideTheTwoTokens(t *testing.T) {
+	t.Parallel()
+	var parse rowParser
+	parse.direction("TRANSFER")
+	assertRefused(t, parse.err, "a direction outside DEBIT and CREDIT")
+}
+
 func TestProviderID_refusesAColumnThatIsBlank(t *testing.T) {
 	t.Parallel()
 	var parse rowParser

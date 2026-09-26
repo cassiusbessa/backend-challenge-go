@@ -27,7 +27,7 @@ func TestReconcile_answersTheConsistentReportWithoutTheTwoFields(t *testing.T) {
 func assertConsistentBody(t *testing.T, body externalReconciliation) {
 	t.Helper()
 	if !body.Consistent {
-		t.Fatalf("consistent = false, want true")
+		t.Fatalf("consistent = %t, want true", body.Consistent)
 	}
 	assertBalances(t, body, "1025.00", "1025.00")
 	assertCounters(t, body)
@@ -70,7 +70,7 @@ func TestReconcile_answersTheDivergentReportWithTheTokensAndTheBreak(t *testing.
 func assertDivergentBody(t *testing.T, body externalReconciliation) {
 	t.Helper()
 	if body.Consistent {
-		t.Fatalf("consistent = true, want false")
+		t.Fatalf("consistent = %t, want false", body.Consistent)
 	}
 	if strings.Join(body.Divergences, ",") != "BALANCE_MISMATCH,CHAIN_BREAK" {
 		t.Fatalf("divergences = %v, want BALANCE_MISMATCH and CHAIN_BREAK", body.Divergences)
@@ -101,6 +101,19 @@ func TestReconcile_refusesAnIdentityOutOfFormatWithoutAskingTheUseCase(t *testin
 	}
 	if asked.calls != 0 {
 		t.Fatalf("use case calls = %d, want 0", asked.calls)
+	}
+}
+
+// No divergence is nil and not an empty list, which is what keeps the field out
+// of the body of a consistent wallet.
+func TestTokensOf_answersNilForNoDivergenceAndTheTokensOtherwise(t *testing.T) {
+	t.Parallel()
+	if none := tokensOf(nil); none != nil {
+		t.Fatalf("tokensOf(nil) = %v, want nil", none)
+	}
+	tokens := tokensOf([]reconcilewallet.Divergence{reconcilewallet.SequenceGap, reconcilewallet.ChainBreak})
+	if strings.Join(tokens, ",") != "SEQUENCE_GAP,CHAIN_BREAK" {
+		t.Fatalf("tokensOf = %v, want SEQUENCE_GAP and CHAIN_BREAK in order", tokens)
 	}
 }
 

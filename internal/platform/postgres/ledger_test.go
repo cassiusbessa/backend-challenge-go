@@ -124,6 +124,35 @@ func TestEntriesOf_asksThePageAfterThePositionUpToTheLimit(t *testing.T) {
 	}
 }
 
+// The failure of the driver on the page itself leaves as the failure of the read,
+// with the operation named, and no wallet check can hide it.
+func TestEntriesOf_answersTheFailureOfThePageQuery(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("connection reset by peer")
+	source := &stubQuerier{row: stubRow{values: []any{rowWallet}}, queryErr: broken}
+	_, err := entriesOf(context.Background(), source, walletIdentity(t), storage.EntryPosition{}, 50)
+	if !errors.Is(err, broken) {
+		t.Fatalf("entriesOf over a broken page query = %v, want %v", err, broken)
+	}
+	if !strings.Contains(err.Error(), "read ledger page") {
+		t.Fatalf("failure of the page query = %q, want the operation named in the chain", err.Error())
+	}
+}
+
+// A row that could not be scanned stops the page where it is: the rows before it
+// are not answered as a shorter page.
+func TestScanEntries_answersTheFailureOfOneRowAndNoPage(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("connection reset by peer")
+	page, err := scanEntries(&entryStubRows{rows: [][]any{entryValues()}, scan: broken})
+	if !errors.Is(err, broken) {
+		t.Fatalf("scanEntries over a broken row = %v, want %v", err, broken)
+	}
+	if page != nil {
+		t.Fatalf("page beside the broken row = %v, want none", page)
+	}
+}
+
 // A walk that failed is not a short page: answering the rows read so far would
 // hand the client a page that ends where the failure happened, with a cursor
 // pointing there.
@@ -205,7 +234,7 @@ func TestSummary_refusesAWalletHalfTheDomainCannotAccept(t *testing.T) {
 	row := summaryRow{wallet: rowOf()}
 	row.wallet.currency = "BRLL"
 	if _, err := row.summary(); err == nil {
-		t.Fatalf("summary over a currency outside ISO 4217 = nil, want a refusal")
+		t.Fatalf("summary over a currency outside ISO 4217 = %v, want a refusal", err)
 	}
 }
 
@@ -241,10 +270,11 @@ func entryIdentity(t *testing.T) identity.LedgerEntryID {
 // stubQuerier is the pool of one case: the single row it answers, the result set
 // it hands over, and what the page was asked with.
 type stubQuerier struct {
-	row     stubRow
-	rows    pgx.Rows
-	queries int
-	args    []any
+	row      stubRow
+	rows     pgx.Rows
+	queryErr error
+	queries  int
+	args     []any
 }
 
 func (q *stubQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
@@ -254,6 +284,9 @@ func (q *stubQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
 func (q *stubQuerier) Query(_ context.Context, _ string, args ...any) (pgx.Rows, error) {
 	q.queries++
 	q.args = args
+	if q.queryErr != nil {
+		return nil, q.queryErr
+	}
 	return q.rows, nil
 }
 

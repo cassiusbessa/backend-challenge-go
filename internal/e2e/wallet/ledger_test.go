@@ -21,7 +21,7 @@ func TestListLedger_answersTheThreeMovementsInSequenceWithTheChainClosed(t *test
 	win := wallet.win(ctx, t, base, "50.00")
 	page, status := listLedger(ctx, t, base, internal, wallet.wallet.ID, "")
 	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", status)
+		t.Fatalf("status of the three movements = %d, want 200", status)
 	}
 	if len(page.Entries) != 3 || page.NextCursor != "" {
 		t.Fatalf("page = %d entries with cursor %q, want 3 and no cursor", len(page.Entries), page.NextCursor)
@@ -66,7 +66,7 @@ func TestListLedger_answersAnEmptyLedgerAndNoCursorForAWalletAtZero(t *testing.T
 	}
 	page, status := listLedger(ctx, t, base, internal, opened.ID, "")
 	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", status)
+		t.Fatalf("status of the empty ledger = %d, want 200", status)
 	}
 	if page.Entries == nil || len(page.Entries) != 0 {
 		t.Fatalf("entries = %v, want an empty list", page.Entries)
@@ -133,7 +133,7 @@ func TestListLedger_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 		t.Fatalf("status = %d, want 404", status)
 	}
 	if mediaType != problem.MediaType {
-		t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
+		t.Fatalf("content type of the absence = %s, want %s", mediaType, problem.MediaType)
 	}
 	if got := count(ctx, t, "SELECT count(*) FROM wallets WHERE id = $1", asked); got != 0 {
 		t.Fatalf("wallets for the identity listed = %d, want 0: a read writes nothing", got)
@@ -160,7 +160,7 @@ func assertInvalidField(t *testing.T, status int, mediaType string, raw []byte, 
 		t.Fatalf("status = %d, want 400", status)
 	}
 	if mediaType != problem.MediaType {
-		t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
+		t.Fatalf("content type of the refusal = %s, want %s", mediaType, problem.MediaType)
 	}
 	if refusal := problemOf(t, raw); refusal.Detail != field+" is not valid" {
 		t.Fatalf("detail = %q, want the field %s named", refusal.Detail, field)
@@ -191,7 +191,7 @@ func TestListLedger_refusesTheCursorOfAnotherWalletTheSameWayAsAMalformedOne(t *
 	first.win(ctx, t, base, "10.00")
 	issued, _ := listLedger(ctx, t, base, internal, first.wallet.ID, "limit=2")
 	if issued.NextCursor == "" {
-		t.Fatalf("cursor of wallet A is empty, want one to present on wallet B")
+		t.Fatalf("cursor of wallet A = %q, want one to present on wallet B", issued.NextCursor)
 	}
 	second := openFunded(ctx, t, base, internal)
 	status, _, otherWallet := refusalOf(ctx, t, ledgerURL(base, second.wallet.ID, "cursor="+issued.NextCursor), internal)
@@ -230,7 +230,7 @@ func assertRefusedByPermission(t *testing.T, status int, mediaType string, raw [
 		t.Fatalf("status = %d, want 403: a provider reads neither the ledger nor the reconciliation", status)
 	}
 	if mediaType != problem.MediaType {
-		t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
+		t.Fatalf("content type of the permission refusal = %s, want %s", mediaType, problem.MediaType)
 	}
 	for _, banned := range []string{"entries", "1000.00", "Balance", "consistent", "nextCursor"} {
 		if bytes.Contains(raw, []byte(banned)) {

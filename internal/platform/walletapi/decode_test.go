@@ -123,9 +123,47 @@ func TestDecodeLimit_refusesWhatIsNotAPositiveInteger(t *testing.T) {
 				t.Fatalf("decodeLimit(%q) = %v, want %v", text, err, problem.ErrInvalidInput)
 			}
 			if detailOf(err) != "limit is not valid" {
-				t.Fatalf("detail = %q, want the field name", detailOf(err))
+				t.Fatalf("detail of the limit %q = %q, want limit named", text, detailOf(err))
 			}
 		})
+	}
+}
+
+func TestDecodeLedgerQuery_readsTheWalletTheLimitAndTheCursor(t *testing.T) {
+	t.Parallel()
+	query, err := decodeLedgerQuery(ledgerRequestOf(walletText, "limit=2&cursor="+issuedCursor))
+	if err != nil {
+		t.Fatalf("decodeLedgerQuery = %v, want nil", err)
+	}
+	if query.WalletID.String() != walletText || query.Limit != 2 || query.Cursor != issuedCursor {
+		t.Fatalf("query = %+v, want the wallet of the URL, limit 2 and the cursor", query)
+	}
+}
+
+func TestDecodeLedgerQuery_readsAnAbsentLimitAndCursorAsTheFirstDefaultPage(t *testing.T) {
+	t.Parallel()
+	query, err := decodeLedgerQuery(ledgerRequestOf(walletText, ""))
+	if err != nil {
+		t.Fatalf("decodeLedgerQuery without a query string = %v, want nil", err)
+	}
+	if query.Limit != 0 || query.Cursor != "" {
+		t.Fatalf("query = %+v, want limit 0 and no cursor", query)
+	}
+}
+
+func TestDecodeLedgerQuery_refusesTheIdentityBeforeTheLimit(t *testing.T) {
+	t.Parallel()
+	_, err := decodeLedgerQuery(ledgerRequestOf("not-a-uuid", "limit=abc"))
+	if detailOf(err) != "walletId is not valid" {
+		t.Fatalf("detail of an identity out of format = %q, want walletId named first", detailOf(err))
+	}
+}
+
+func TestDecodeLedgerQuery_refusesALimitThatIsNotAnInteger(t *testing.T) {
+	t.Parallel()
+	_, err := decodeLedgerQuery(ledgerRequestOf(walletText, "limit=abc"))
+	if !errors.Is(err, problem.ErrInvalidInput) || detailOf(err) != "limit is not valid" {
+		t.Fatalf("decodeLedgerQuery with limit=abc = %v, want invalid input naming limit", err)
 	}
 }
 
@@ -142,7 +180,7 @@ func TestRefusalOf_namesTheFieldTheUseCaseRefused(t *testing.T) {
 				t.Fatalf("refusalOf = %v, want %v", translated, problem.ErrInvalidInput)
 			}
 			if detailOf(translated) != detail {
-				t.Fatalf("detail = %q, want %q", detailOf(translated), detail)
+				t.Fatalf("detail of the translated refusal = %q, want %q", detailOf(translated), detail)
 			}
 		})
 	}

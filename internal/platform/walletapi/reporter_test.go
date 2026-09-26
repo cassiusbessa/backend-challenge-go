@@ -97,14 +97,14 @@ func TestDiverged_logsTheWalletAndTheTokensWithoutABalance(t *testing.T) {
 	reporterWriting(&written).Diverged(reconciliationRequestOf(walletText), divergentReport(t))
 	line := written.String()
 	if !strings.Contains(line, `"walletId":"`+walletText+`"`) {
-		t.Fatalf("log line = %s, want the wallet identity", line)
+		t.Fatalf("divergence line = %s, want the wallet identity", line)
 	}
 	if !strings.Contains(line, "BALANCE_MISMATCH") || !strings.Contains(line, "CHAIN_BREAK") {
-		t.Fatalf("log line = %s, want the two tokens of the divergence", line)
+		t.Fatalf("divergence line = %s, want the two tokens of the divergence", line)
 	}
 	for _, banned := range []string{"2000.00", "1025.00", "storedBalance", "ledgerBalance"} {
 		if strings.Contains(line, banned) {
-			t.Fatalf("log line = %s, want it without %q", line, banned)
+			t.Fatalf("divergence line = %s, want it without %q", line, banned)
 		}
 	}
 }
@@ -125,22 +125,11 @@ func TestDiverged_leavesNoLineForAConsistentWallet(t *testing.T) {
 // does not count what the next change measures as a series of its own.
 func TestDiverged_leavesTheSpanOk(t *testing.T) {
 	t.Parallel()
-	spans := tracetest.NewSpanRecorder()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
-	t.Cleanup(func() {
-		if closed := provider.Shutdown(context.Background()); closed != nil {
-			t.Fatalf("shutdown tracer = %v, want nil", closed)
-		}
+	marked := spanMarked(t, reconciliationRequestOf(walletText), func(r *http.Request) {
+		quietReporter().Diverged(r, divergentReport(t))
 	})
-	ctx, span := provider.Tracer("test").Start(context.Background(), "answer")
-	quietReporter().Diverged(reconciliationRequestOf(walletText).WithContext(ctx), divergentReport(t))
-	span.End()
-	ended := spans.Ended()
-	if len(ended) != 1 {
-		t.Fatalf("ended spans = %d, want exactly 1", len(ended))
-	}
-	if ended[0].Status().Code == codes.Error {
-		t.Fatalf("span marked as an error by a divergence, want it left ok")
+	if marked {
+		t.Fatalf("span marked as an error = %t after a divergence, want false", marked)
 	}
 }
 
@@ -183,6 +172,17 @@ func TestRecord_carriesTheStackOnlyForABrokenClass(t *testing.T) {
 // number of an outage.
 func recorded(t *testing.T, class problem.Class, err error) (bool, string) {
 	t.Helper()
+	var written bytes.Buffer
+	marked := spanMarked(t, openRequestOf(validBody), func(r *http.Request) {
+		reporterWriting(&written).record(r, err, problem.Of(class))
+	})
+	return marked, written.String()
+}
+
+// spanMarked hands the reporter the request inside a recorded span and reports
+// whether it left the span in the error state.
+func spanMarked(t *testing.T, request *http.Request, report func(r *http.Request)) bool {
+	t.Helper()
 	spans := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
 	t.Cleanup(func() {
@@ -191,14 +191,13 @@ func recorded(t *testing.T, class problem.Class, err error) (bool, string) {
 		}
 	})
 	ctx, span := provider.Tracer("test").Start(context.Background(), "answer")
-	var written bytes.Buffer
-	reporterWriting(&written).record(openRequestOf(validBody).WithContext(ctx), err, problem.Of(class))
+	report(request.WithContext(ctx))
 	span.End()
 	ended := spans.Ended()
 	if len(ended) != 1 {
 		t.Fatalf("ended spans = %d, want exactly 1", len(ended))
 	}
-	return ended[0].Status().Code == codes.Error, written.String()
+	return ended[0].Status().Code == codes.Error
 }
 
 // A defect never crossed an I/O boundary, so nothing captured its frames on the

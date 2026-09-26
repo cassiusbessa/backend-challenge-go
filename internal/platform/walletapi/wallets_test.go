@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,23 @@ func TestRead_refusesAnIdentityOutOfFormatWithoutAskingTheReadModel(t *testing.T
 	}
 	if asked.calls != 0 {
 		t.Fatalf("read model calls = %d, want 0", asked.calls)
+	}
+}
+
+// write is what every success of this package leaves by: the status it was
+// given, the JSON media type, and the body encoded with money as strings.
+func TestWrite_answersJSONWithTheStatusItWasGiven(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	write(recorder, http.StatusCreated, walletResponse{ID: walletText, Balance: resultOf(t, "1000.00").Balance})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status written = %d, want 201", recorder.Code)
+	}
+	if recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("content type written = %s, want application/json", recorder.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(recorder.Body.String(), `"amount":"1000.00"`) {
+		t.Fatalf("body written = %s, want the balance as a decimal string", recorder.Body.String())
 	}
 }
 

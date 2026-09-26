@@ -69,7 +69,7 @@ func TestListLedger_answersAnEmptyListAndNoCursorForAWalletWithoutMovements(t *t
 	t.Parallel()
 	recorder := serve(ListLedger(&lister{}, quietReporter()), ledgerRequestOf(walletText, ""))
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", recorder.Code)
+		t.Fatalf("status of the empty ledger = %d, want 200", recorder.Code)
 	}
 	raw := recorder.Body.String()
 	if !strings.Contains(raw, `"entries":[]`) {
@@ -105,10 +105,10 @@ func TestListLedger_refusesEveryLimitOutsideTheContract(t *testing.T) {
 			asked := &lister{err: tc.refused}
 			recorder := serve(ListLedger(asked, quietReporter()), ledgerRequestOf(walletText, "limit="+tc.limit))
 			if recorder.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400", recorder.Code)
+				t.Fatalf("status of the limit %s = %d, want 400", tc.limit, recorder.Code)
 			}
 			if body := decodeProblem(t, recorder); body.Detail != "limit is not valid" {
-				t.Fatalf("detail = %q, want the field named", body.Detail)
+				t.Fatalf("detail of the limit %s = %q, want limit named", tc.limit, body.Detail)
 			}
 			if asked.calls != tc.calls {
 				t.Fatalf("use case calls = %d, want %d", asked.calls, tc.calls)
@@ -123,11 +123,11 @@ func TestListLedger_refusesTheCursorWithoutEchoingIt(t *testing.T) {
 	t.Parallel()
 	recorder := serve(ListLedger(&lister{err: listledger.ErrInvalidCursor}, quietReporter()), ledgerRequestOf(walletText, "cursor=bm90LW91cnM"))
 	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", recorder.Code)
+		t.Fatalf("status of the refused cursor = %d, want 400", recorder.Code)
 	}
 	body := decodeProblem(t, recorder)
 	if body.Detail != "cursor is not valid" {
-		t.Fatalf("detail = %q, want the field named", body.Detail)
+		t.Fatalf("detail of the cursor = %q, want cursor named", body.Detail)
 	}
 	if strings.Contains(recorder.Body.String(), "bm90LW91cnM") {
 		t.Fatalf("body = %s, want it without the cursor", recorder.Body.String())
@@ -157,6 +157,30 @@ func TestListLedger_refusesAnIdentityOutOfFormatWithoutAskingTheUseCase(t *testi
 	}
 	if asked.calls != 0 {
 		t.Fatalf("use case calls = %d, want 0", asked.calls)
+	}
+}
+
+// An empty ledger has to be an empty array and never null, and that is decided
+// here, before the encoder sees a nil slice.
+func TestEntriesOf_answersAnEmptyListAndNeverNil(t *testing.T) {
+	t.Parallel()
+	answered := entriesOf(nil)
+	if answered == nil || len(answered) != 0 {
+		t.Fatalf("entriesOf(nil) = %v, want an empty list that is not nil", answered)
+	}
+}
+
+func TestEntriesOf_writesEachEntryWithTheInstantInUTC(t *testing.T) {
+	t.Parallel()
+	answered := entriesOf([]storage.EntryView{entryViewOf(t)})
+	if len(answered) != 1 {
+		t.Fatalf("entries answered = %d, want 1", len(answered))
+	}
+	if answered[0].Direction != "DEBIT" || answered[0].Sequence != 2 || answered[0].ID != entryText {
+		t.Fatalf("entry = %+v, want DEBIT at 2 with the identity of the view", answered[0])
+	}
+	if answered[0].CreatedAt.Location() != time.UTC {
+		t.Fatalf("createdAt zone = %s, want UTC", answered[0].CreatedAt.Location())
 	}
 }
 

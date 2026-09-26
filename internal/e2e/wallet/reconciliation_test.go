@@ -147,7 +147,7 @@ func assertBalanceMismatch(t *testing.T, report externalReconciliation, status i
 		t.Fatalf("status = %d, want 200: a divergence is a result, not a failure", status)
 	}
 	if report.Consistent {
-		t.Fatalf("consistent = true, want false after the balance was written past the ledger")
+		t.Fatalf("consistent = %t, want false after the balance was written past the ledger", report.Consistent)
 	}
 	if strings.Join(report.Divergences, ",") != "BALANCE_MISMATCH" {
 		t.Fatalf("divergences = %v, want exactly BALANCE_MISMATCH", report.Divergences)
