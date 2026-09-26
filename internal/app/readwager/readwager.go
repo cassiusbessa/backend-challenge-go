@@ -33,3 +33,14 @@ func (s *Service) Transaction(ctx context.Context, id identity.TransactionID, pr
 	}
 	return view, nil
 }
+
+// ByExternal answers the outcome recorded for the operation that provider sent
+// under that external identifier. The provider is asked of the query for the same
+// reason as in Transaction: an identifier of somebody else is simply not there.
+func (s *Service) ByExternal(ctx context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (storage.TransactionView, error) {
+	view, err := s.reads.TransactionByExternal(ctx, provider, external)
+	if err != nil {
+		return storage.TransactionView{}, fmt.Errorf("read wager transaction by external identifier: %w", err)
+	}
+	return view, nil
+}

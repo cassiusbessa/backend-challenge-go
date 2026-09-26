@@ -16,18 +16,19 @@ import (
 )
 
 type Routes struct {
-	Live            http.Handler
-	Ready           http.Handler
-	Metrics         http.Handler
-	OpenWallet      http.Handler
-	ReadWallet      http.Handler
-	ListLedger      http.Handler
-	ReconcileWallet http.Handler
-	SubmitWager     http.Handler
-	ReadTransaction http.Handler
-	Logger          *slog.Logger
-	Tracer          trace.Tracer
-	Latency         *prometheus.HistogramVec
+	Live                    http.Handler
+	Ready                   http.Handler
+	Metrics                 http.Handler
+	OpenWallet              http.Handler
+	ReadWallet              http.Handler
+	ListLedger              http.Handler
+	ReconcileWallet         http.Handler
+	SubmitWager             http.Handler
+	ReadTransaction         http.Handler
+	ReadExternalTransaction http.Handler
+	Logger                  *slog.Logger
+	Tracer                  trace.Tracer
+	Latency                 *prometheus.HistogramVec
 }
 
 func Handler(routes Routes) http.Handler {
@@ -45,6 +46,8 @@ func Handler(routes Routes) http.Handler {
 	mux.Handle("GET /wallets/{walletId}/reconciliation", routes.wrap("GET /wallets/{walletId}/reconciliation", routes.ReconcileWallet))
 	mux.Handle("POST /wagering/transactions", routes.wrap("POST /wagering/transactions", routes.SubmitWager))
 	mux.Handle("GET /wagering/transactions/{transactionId}", routes.wrap("GET /wagering/transactions/{transactionId}", routes.ReadTransaction))
+	mux.Handle("GET /providers/{providerId}/wagering/transactions/{externalTransactionId}",
+		routes.wrap("GET /providers/{providerId}/wagering/transactions/{externalTransactionId}", routes.ReadExternalTransaction))
 	mux.Handle("/", routes.wrap("unmatched", http.NotFoundHandler()))
 	return mux
 }

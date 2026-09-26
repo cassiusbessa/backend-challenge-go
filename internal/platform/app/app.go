@@ -416,8 +416,11 @@ func routes(parts wiring) http.Handler {
 		// which checks the provider of the body against it.
 		SubmitWager:     parts.Guard.Only(authz.Provider, wagerapi.Submit(parts.Submitter, parts.WagerReporter)),
 		ReadTransaction: parts.Guard.Only(authz.Provider, wagerapi.Read(parts.WagerReader, parts.WagerReporter)),
-		Logger:          parts.Pipeline.Logger,
-		Tracer:          parts.Pipeline.Tracer,
-		Latency:         parts.Latency,
+		// The provider in the URL is checked against the client of the token by the
+		// border, the same way the provider of a body is.
+		ReadExternalTransaction: parts.Guard.Only(authz.Provider, wagerapi.ReadByExternal(parts.WagerReader, parts.WagerReporter)),
+		Logger:                  parts.Pipeline.Logger,
+		Tracer:                  parts.Pipeline.Tracer,
+		Latency:                 parts.Latency,
 	})
 }

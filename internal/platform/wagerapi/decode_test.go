@@ -245,6 +245,45 @@ func TestDecodeTransactionID_readsTheIdentityTheURLNames(t *testing.T) {
 	}
 }
 
+// Each segment is refused by its own name, and a blank one is out of format: an
+// identifier of the provider is kept as it arrived, so absence is its only fault.
+func TestDecodeExternal_refusesEachSegmentOutOfFormatByItsName(t *testing.T) {
+	t.Parallel()
+	for field, segments := range map[string][2]string{
+		"providerId":            {" ", "external-1"},
+		"externalTransactionId": {"provider-a", " "},
+	} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := decodeExternal(externalRequest(segments[0], segments[1]))
+			assertInvalidInput(t, err)
+			if got := detailOf(err); !strings.HasPrefix(got, field) {
+				t.Fatalf("detail of a blank segment = %q, want it naming %s", got, field)
+			}
+		})
+	}
+}
+
+func TestDecodeExternal_readsThePairTheURLNames(t *testing.T) {
+	t.Parallel()
+	provider, external, err := decodeExternal(externalRequest("provider-a", "external-1"))
+	if err != nil {
+		t.Fatalf("decodeExternal = %v, want nil", err)
+	}
+	if provider.String() != "provider-a" || external.String() != "external-1" {
+		t.Fatalf("pair = %s and %s, want provider-a and external-1", provider, external)
+	}
+}
+
+// externalRequest is the request of the read by external identifier with its two
+// segments already matched, the way the mux hands it to the handler.
+func externalRequest(provider, external string) *http.Request {
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/providers/wagering/transactions", nil)
+	request.SetPathValue("providerId", provider)
+	request.SetPathValue("externalTransactionId", external)
+	return request
+}
+
 // The detail names the field and never its value: the amount and the key of a
 // refused request must not travel back in the error body.
 func TestDetailOf_namesTheFieldAndNotItsValue(t *testing.T) {

@@ -65,6 +65,9 @@ func TestHandler_servesTheWagerRoutes(t *testing.T) {
 	if got != http.StatusOK {
 		t.Fatalf("GET /wagering/transactions/{transactionId} = %d, want the route to answer", got)
 	}
+	if got := codeOf(t, handler, "/providers/provider-a/wagering/transactions/external-1"); got != http.StatusAccepted {
+		t.Fatalf("GET /providers/{providerId}/wagering/transactions/{externalTransactionId} = %d, want the route to answer", got)
+	}
 }
 
 func TestMetricsExposeHeapAndGoroutinesWithoutDomainLabels(t *testing.T) {
@@ -196,9 +199,12 @@ func testHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 		ReadWallet:      answering(http.StatusOK),
 		SubmitWager:     answering(http.StatusCreated),
 		ReadTransaction: answering(http.StatusOK),
-		Logger:          slog.New(telemetry.Allow(slog.NewJSONHandler(buf, nil))),
-		Tracer:          provider.Tracer("test"),
-		Latency:         latency,
+		// A code of its own, so the case tells this route from the read by
+		// identity and from the 404 of a route that does not exist.
+		ReadExternalTransaction: answering(http.StatusAccepted),
+		Logger:                  slog.New(telemetry.Allow(slog.NewJSONHandler(buf, nil))),
+		Tracer:                  provider.Tracer("test"),
+		Latency:                 latency,
 	})
 	return handler, buf
 }

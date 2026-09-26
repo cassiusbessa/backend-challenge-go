@@ -36,6 +36,12 @@ type Reader interface {
 	Transaction(ctx context.Context, id identity.TransactionID, provider identity.ProviderID) (storage.TransactionView, error)
 }
 
+// ExternalReader is the query of one transaction by the identifier its provider
+// chose, as the border needs it.
+type ExternalReader interface {
+	ByExternal(ctx context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (storage.TransactionView, error)
+}
+
 // submittedResponse is what the submission answers, under the names of the
 // challenge statement.
 //
@@ -120,6 +126,48 @@ func Read(reader Reader, reporter *Reporter) http.Handler {
 		}
 		write(w, http.StatusOK, viewResponse(found))
 	})
+}
+
+// ReadByExternal serves
+// GET /providers/{providerId}/wagering/transactions/{externalTransactionId}, with
+// the representation of the read by identity.
+//
+// The provider in the URL authorizes nothing: one that is not the client of the
+// token answers the absence of an identifier nobody sent, before any query, so
+// the answer cannot tell that a record of somebody else exists.
+func ReadByExternal(reader ExternalReader, reporter *Reporter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provider, external, err := ownedExternal(r)
+		if err != nil {
+			reporter.Refuse(w, r, err)
+			return
+		}
+		found, err := reader.ByExternal(r.Context(), provider, external)
+		if err != nil {
+			reporter.Refuse(w, r, err)
+			return
+		}
+		write(w, http.StatusOK, viewResponse(found))
+	})
+}
+
+// ownedExternal answers the pair the URL names when its provider is the client of
+// the token, and the absence of the transaction when it is another one — the
+// same sentinel the read answers for an identifier nobody sent, so the two leave
+// the border by one path.
+func ownedExternal(r *http.Request) (identity.ProviderID, identity.ExternalTransactionID, error) {
+	named, external, err := decodeExternal(r)
+	if err != nil {
+		return identity.ProviderID{}, identity.ExternalTransactionID{}, err
+	}
+	provider, err := providerOf(r)
+	if err != nil {
+		return identity.ProviderID{}, identity.ExternalTransactionID{}, err
+	}
+	if named != provider {
+		return identity.ProviderID{}, identity.ExternalTransactionID{}, storage.ErrTransactionNotFound
+	}
+	return provider, external, nil
 }
 
 // providerOf answers the provider of the client the token resolved to. It is the

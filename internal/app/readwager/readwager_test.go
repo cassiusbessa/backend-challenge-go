@@ -71,6 +71,31 @@ func TestTransaction_asksTheReadModelForTheIdentityAndTheProvider(t *testing.T) 
 	}
 }
 
+func TestByExternal_asksTheReadModelForTheProviderAndTheExternalIdentifier(t *testing.T) {
+	t.Parallel()
+	asked := &rows{view: viewOf(t, wager.Processed, "975.00")}
+	provider := providerOf(t, "provider-a")
+	external := externalOf(t, "external-1")
+	found, err := New(asked).ByExternal(context.Background(), provider, external)
+	if err != nil {
+		t.Fatalf("ByExternal of the recorded operation = %v, want nil", err)
+	}
+	if asked.provider != provider || asked.external != external {
+		t.Fatalf("asked for %s of %s, want %s of %s", asked.external, asked.provider, external, provider)
+	}
+	if found.ID != asked.view.ID {
+		t.Fatalf("found %s, want the %s the read model answered", found.ID, asked.view.ID)
+	}
+}
+
+func TestByExternal_answersTheAbsenceTheReadModelAnswered(t *testing.T) {
+	t.Parallel()
+	_, err := New(&rows{err: storage.ErrTransactionNotFound}).ByExternal(context.Background(), providerOf(t, "provider-b"), externalOf(t, "external-1"))
+	if !errors.Is(err, storage.ErrTransactionNotFound) {
+		t.Fatalf("ByExternal of an identifier that is not there = %v, want %v", err, storage.ErrTransactionNotFound)
+	}
+}
+
 // rows is the read port in memory. Only the transaction read belongs to this use
 // case: the two others are part of the same port and are never reached from here.
 type rows struct {
@@ -78,6 +103,7 @@ type rows struct {
 	err      error
 	id       identity.TransactionID
 	provider identity.ProviderID
+	external identity.ExternalTransactionID
 }
 
 func (r *rows) Transaction(_ context.Context, id identity.TransactionID, provider identity.ProviderID) (storage.TransactionView, error) {
@@ -89,8 +115,13 @@ func (r *rows) Transaction(_ context.Context, id identity.TransactionID, provide
 	return r.view, nil
 }
 
-func (r *rows) TransactionByExternal(context.Context, identity.ProviderID, identity.ExternalTransactionID) (storage.TransactionView, error) {
-	return storage.TransactionView{}, storage.ErrTransactionNotFound
+func (r *rows) TransactionByExternal(_ context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (storage.TransactionView, error) {
+	r.provider = provider
+	r.external = external
+	if r.err != nil {
+		return storage.TransactionView{}, r.err
+	}
+	return r.view, nil
 }
 
 func (r *rows) Wallet(context.Context, identity.WalletID) (storage.WalletView, error) {
@@ -154,6 +185,15 @@ func transactionOf(t *testing.T) identity.TransactionID {
 	id, err := identity.ParseTransactionID("33333333-3333-4333-8333-333333333333")
 	if err != nil {
 		t.Fatalf("ParseTransactionID = %v, want nil", err)
+	}
+	return id
+}
+
+func externalOf(t *testing.T, text string) identity.ExternalTransactionID {
+	t.Helper()
+	id, err := identity.ParseExternalTransactionID(text)
+	if err != nil {
+		t.Fatalf("ParseExternalTransactionID = %v, want nil", err)
 	}
 	return id
 }

@@ -213,6 +213,15 @@ func decodeTransactionID(r *http.Request) (identity.TransactionID, error) {
 	return id, nil
 }
 
+// decodeExternal reads the provider and the external identifier the URL names,
+// and refuses the first one out of format by its name.
+func decodeExternal(r *http.Request) (identity.ProviderID, identity.ExternalTransactionID, error) {
+	var parse fields
+	provider := parse.provider(r.PathValue("providerId"))
+	external := parse.external(r.PathValue("externalTransactionId"))
+	return provider, external, parse.err
+}
+
 // detailOf names the field that was refused and why. An error of another class
 // carries no detail, because only the name of the field is safe to repeat.
 func detailOf(err error) string {

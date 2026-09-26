@@ -104,6 +104,7 @@ func TestWagerAndWalletReadRoutesAreServed(t *testing.T) {
 	}{
 		{method: http.MethodPost, path: "/wagering/transactions"},
 		{method: http.MethodGet, path: "/wagering/transactions/33333333-3333-4333-8333-333333333333"},
+		{method: http.MethodGet, path: "/providers/provider-a/wagering/transactions/external-1"},
 		{method: http.MethodGet, path: wallet + "/ledger"},
 		{method: http.MethodGet, path: wallet + "/reconciliation"},
 	}

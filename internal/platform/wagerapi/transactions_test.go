@@ -374,6 +374,92 @@ func TestRead_refusesARequestWithNoResolvedClient(t *testing.T) {
 	}
 }
 
+// A segment out of format is invalid input naming the field, and it is refused
+// before any query, so the refusal reveals nothing.
+func TestReadByExternal_refusesEachSegmentOutOfFormatWithoutReachingTheReadModel(t *testing.T) {
+	t.Parallel()
+	for field, segments := range map[string][2]string{
+		"providerId":            {" ", "external-1"},
+		"externalTransactionId": {"provider-a", " "},
+	} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			rows := &reader{view: view(t, wager.Processed, "975.00")}
+			recorder := getExternal(t, rows, "provider-a", segments[0], segments[1])
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status of a blank %s = %d, want 400", field, recorder.Code)
+			}
+			if got := refusalOf(t, recorder).Detail; !strings.HasPrefix(got, field) {
+				t.Fatalf("detail = %q, want it naming %s", got, field)
+			}
+			if rows.calls != 0 {
+				t.Fatalf("read model calls for a blank %s = %d, want 0", field, rows.calls)
+			}
+		})
+	}
+}
+
+// The provider in the URL authorizes nothing. Another one answers what an
+// identifier nobody sent answers, and the read model is never asked, so no branch
+// could learn that the record exists.
+func TestReadByExternal_answersTheAbsenceForAnotherProviderInTheURLWithoutReachingTheReadModel(t *testing.T) {
+	t.Parallel()
+	rows := &reader{view: view(t, wager.Processed, "975.00")}
+	alien := getExternal(t, rows, "provider-b", "provider-a", "external-1")
+	if rows.calls != 0 {
+		t.Fatalf("read model calls for another provider in the URL = %d, want 0", rows.calls)
+	}
+	nobody := &reader{err: storage.ErrTransactionNotFound}
+	absent := getExternal(t, nobody, "provider-a", "provider-a", "external-1")
+	if nobody.calls != 1 {
+		t.Fatalf("read model calls for the own provider = %d, want the 1 read that found nothing", nobody.calls)
+	}
+	if alien.Code != http.StatusNotFound || absent.Code != http.StatusNotFound {
+		t.Fatalf("another provider = %d and nobody sent = %d, want both 404", alien.Code, absent.Code)
+	}
+	if alien.Body.String() != absent.Body.String() {
+		t.Fatalf("another provider = %s and nobody sent = %s, want the same bytes", alien.Body, absent.Body)
+	}
+}
+
+func TestReadByExternal_answersTheTransactionOfTheProviderOfTheToken(t *testing.T) {
+	t.Parallel()
+	rows := &reader{view: view(t, wager.Processed, "975.00")}
+	recorder := getExternal(t, rows, "provider-a", "provider-a", "external-1")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status of the own transaction = %d, want 200", recorder.Code)
+	}
+	if rows.provider.String() != "provider-a" || rows.external.String() != "external-1" {
+		t.Fatalf("asked for %s of %s, want external-1 of provider-a", rows.external, rows.provider)
+	}
+	answered := answerOf(t, recorder)
+	if answered.TransactionID != transactionID || answered.Balance.Amount != "975.00" {
+		t.Fatalf("answered = %+v, want the recorded outcome", answered)
+	}
+	assertFields(t, fieldsOf(t, recorder), []string{"providerId", "externalTransactionId"}, []string{"idempotentReplay"})
+}
+
+func TestOwnedExternal_keepsThePairOnlyForTheProviderOfTheToken(t *testing.T) {
+	t.Parallel()
+	own := externalRequest("provider-a", "external-1")
+	resolved := resolvedRequest(t, "provider-a")
+	own = own.WithContext(resolved.Context())
+	provider, external, err := ownedExternal(own)
+	if err != nil {
+		t.Fatalf("ownedExternal of the own provider = %v, want nil", err)
+	}
+	if provider.String() != "provider-a" || external.String() != "external-1" {
+		t.Fatalf("owned pair = %s and %s, want provider-a and external-1", provider, external)
+	}
+	alien := externalRequest("provider-b", "external-1").WithContext(resolved.Context())
+	if _, _, err := ownedExternal(alien); !errors.Is(err, storage.ErrTransactionNotFound) {
+		t.Fatalf("ownedExternal of another provider = %v, want %v", err, storage.ErrTransactionNotFound)
+	}
+	if _, _, err := ownedExternal(externalRequest("provider-a", "external-1")); !errors.Is(err, errNoClient) {
+		t.Fatalf("ownedExternal with no resolved client = %v, want %v", err, errNoClient)
+	}
+}
+
 // externalMoney is money as the client reads it: two strings, never a JSON number.
 type externalMoney struct {
 	Amount   string `json:"amount"`
@@ -459,6 +545,11 @@ func get(t *testing.T, rows Reader, client, id string) *httptest.ResponseRecorde
 	return serve(t, client, Read(rows, reporter()), request)
 }
 
+func getExternal(t *testing.T, rows ExternalReader, client, provider, external string) *httptest.ResponseRecorder {
+	t.Helper()
+	return serve(t, client, ReadByExternal(rows, reporter()), externalRequest(provider, external))
+}
+
 // serve runs the handler behind the real guard, because the provider a request
 // speaks for is the client of the token and nothing else. An empty client serves
 // the handler bare, which is the request that carries no resolved client.
@@ -513,6 +604,17 @@ type reader struct {
 	calls    int
 	id       identity.TransactionID
 	provider identity.ProviderID
+	external identity.ExternalTransactionID
+}
+
+func (r *reader) ByExternal(_ context.Context, provider identity.ProviderID, external identity.ExternalTransactionID) (storage.TransactionView, error) {
+	r.calls++
+	r.provider = provider
+	r.external = external
+	if r.err != nil {
+		return storage.TransactionView{}, r.err
+	}
+	return r.view, nil
 }
 
 func (r *reader) Transaction(_ context.Context, id identity.TransactionID, provider identity.ProviderID) (storage.TransactionView, error) {
