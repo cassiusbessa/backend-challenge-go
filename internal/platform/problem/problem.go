@@ -76,9 +76,13 @@ const (
 // exists to keep out. FailureCode is an extension member and is present only on
 // a business rejection.
 //
-// IdempotentReplay is the other extension member: it says the refusal is one that
+// IdempotentReplay is another extension member: it says the refusal is one that
 // was already recorded and is being answered again. It carries no amount, no
 // balance, no body and no key — only the fact that the outcome is not new.
+//
+// TransactionID is the last one: the transaction a rule recorded REJECTED for
+// this refusal, on the first answer and on its replay, so the caller can read
+// the row back. It is empty for a refusal that wrote no row.
 type Details struct {
 	Type             string `json:"type"`
 	Title            string `json:"title"`
@@ -87,6 +91,7 @@ type Details struct {
 	Instance         string `json:"instance,omitempty"`
 	FailureCode      string `json:"failureCode,omitempty"`
 	IdempotentReplay bool   `json:"idempotentReplay,omitempty"`
+	TransactionID    string `json:"transactionId,omitempty"`
 
 	// Class is what this body was built from. It stays off the wire, which
 	// carries the type and the number: the class is what the reporter asks to

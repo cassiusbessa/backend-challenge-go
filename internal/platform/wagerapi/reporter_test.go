@@ -258,6 +258,43 @@ func TestRejected_namesNoTransactionForARefusalThatWroteNoRow(t *testing.T) {
 	}
 }
 
+// The body names the row the rule wrote, on the first refusal and on its replay,
+// so the provider reads the REJECTED transaction back through the identity the
+// refusal carried.
+func TestRejected_answersTheTransactionOfTheRowOnTheRefusalAndOnItsReplay(t *testing.T) {
+	t.Parallel()
+	id := transactionOf(t)
+	first := httptest.NewRecorder()
+	rejected := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.InsufficientFunds, nil))
+	reporter().Rejected(first, requestOf(t), rejectedRow(id), rejected)
+	again := httptest.NewRecorder()
+	replayed := rejectedRow(id)
+	replayed.IdempotentReplay = true
+	reporter().Rejected(again, requestOf(t), replayed, fmt.Errorf("submit wager: %w", replayedRefusal()))
+	if got := refusalOf(t, first).TransactionID; got != id.String() {
+		t.Fatalf("transactionId of the first refusal = %q, want %s", got, id)
+	}
+	answered := refusalOf(t, again)
+	if answered.TransactionID != id.String() || !answered.IdempotentReplay {
+		t.Fatalf("replayed refusal = %+v, want %s marked as a replay", answered, id)
+	}
+}
+
+// A refusal that wrote no row has no transaction to read back, and the zero
+// identity would name one that does not exist.
+func TestRejected_answersNoTransactionForARefusalThatWroteNoRow(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	refused := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.OpeningNotAllowed, nil))
+	reporter().Rejected(recorder, requestOf(t), submitwager.Result{}, refused)
+	if body := recorder.Body.String(); strings.Contains(body, "transactionId") {
+		t.Fatalf("body of a refusal that wrote no row = %s, want no transactionId", body)
+	}
+	if got := refusalOf(t, recorder).FailureCode; got != "OPENING_NOT_ALLOWED" {
+		t.Fatalf("failureCode = %s, want OPENING_NOT_ALLOWED", got)
+	}
+}
+
 // replayMarker is a recorded refusal answered again, as the use case marks it:
 // the rejection stays reachable underneath, and the behaviour says it is a
 // replay. It is a type of this file because the marker of the use case keeps

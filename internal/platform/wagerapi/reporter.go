@@ -83,9 +83,20 @@ func (rep *Reporter) Rejected(w http.ResponseWriter, r *http.Request, settled su
 func (rep *Reporter) answer(w http.ResponseWriter, r *http.Request, settled submitwager.Result, err error) {
 	details := problem.From(err)
 	details.Detail = detailOf(err)
+	details.TransactionID = rowOf(settled)
 	rep.count(settled, err, details)
 	rep.record(r, settled.TransactionID, err, details)
 	problem.Write(w, r, details)
+}
+
+// rowOf answers the transaction a refusal wrote, which is what lets the caller
+// read the REJECTED row back, and nothing for a refusal that wrote none: the zero
+// identity would read as a row that exists.
+func rowOf(settled submitwager.Result) string {
+	if settled.TransactionID.IsZero() {
+		return ""
+	}
+	return settled.TransactionID.String()
 }
 
 // count moves the series the refusal belongs to, by class and never by number:

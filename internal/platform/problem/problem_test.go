@@ -318,10 +318,23 @@ func TestWrite_leavesOutTheMembersTheRefusalDoesNotCarry(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	Write(recorder, requestTo("/wallets"), Of(Unavailable))
 	body := recorder.Body.String()
-	for _, absent := range []string{"failureCode", "detail"} {
+	for _, absent := range []string{"failureCode", "detail", "transactionId"} {
 		if strings.Contains(body, absent) {
 			t.Fatalf("body = %s, want it without %q", body, absent)
 		}
+	}
+}
+
+// The transaction a rule recorded for the refusal is an extension member beside
+// the token, so the caller can read the REJECTED row back.
+func TestWrite_carriesTheTransactionOfARefusalThatWroteARow(t *testing.T) {
+	t.Parallel()
+	details := From(wager.NewRejection(wager.InsufficientFunds, nil))
+	details.TransactionID = "33333333-3333-4333-8333-333333333333"
+	recorder := httptest.NewRecorder()
+	Write(recorder, requestTo("/wagering/transactions"), details)
+	if got := decode(t, recorder).TransactionID; got != details.TransactionID {
+		t.Fatalf("transactionId written = %q, want %q", got, details.TransactionID)
 	}
 }
 

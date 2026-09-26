@@ -129,21 +129,26 @@ func TestSubmit_replaysTheSameKeyAndTheSameBody(t *testing.T) {
 }
 
 // A rejection by rule is durable: the row stays REJECTED with its token, the wallet
-// does not move, and reading it afterwards succeeds.
+// does not move, and the identity the refusal carried reads it back.
 func TestSubmit_keepsTheRejectedRowAndMovesNothing(t *testing.T) {
 	ctx, at := start(t)
 	wallet := openWallet(ctx, t, at)
 	key := "key-" + suiteenv.NewID()
 	payload := wallet.bet("2000.00", nil)
-	assertRefusedByBalance(ctx, t, at, key, payload)
+	carried := assertRefusedByBalance(ctx, t, at, key, payload)
+	if recorded := rejectedID(ctx, t, key); carried != recorded {
+		t.Fatalf("transactionId of the refusal = %q, want the row it wrote, %s", carried, recorded)
+	}
 	assertWallet(ctx, t, wallet.id, 100000, 1)
 	assertEntries(ctx, t, wallet.id, 1)
-	assertRead(ctx, t, at, rejectedID(ctx, t, key), "REJECTED", "INSUFFICIENT_FUNDS")
-	assertRefusalReplayed(ctx, t, at, key, payload)
+	assertRead(ctx, t, at, carried, "REJECTED", "INSUFFICIENT_FUNDS")
+	assertRefusalReplayed(ctx, t, at, key, payload, carried)
 	assertRowsForKey(ctx, t, key, 1)
 }
 
-func assertRefusedByBalance(ctx context.Context, t *testing.T, at suite, key, payload string) {
+// assertRefusedByBalance answers the transaction the refusal named, which is the
+// row the rule wrote.
+func assertRefusedByBalance(ctx context.Context, t *testing.T, at suite, key, payload string) string {
 	t.Helper()
 	refused := submit(ctx, t, at, at.provider, key, payload)
 	if refused.status != http.StatusUnprocessableEntity {
@@ -156,11 +161,12 @@ func assertRefusedByBalance(ctx context.Context, t *testing.T, at suite, key, pa
 	if details.FailureCode != "INSUFFICIENT_FUNDS" || details.IdempotentReplay {
 		t.Fatalf("refusal = %+v, want INSUFFICIENT_FUNDS without the marker", details)
 	}
+	return details.TransactionID
 }
 
-// The recorded refusal is answered again with the same token, and the marker says it
-// is not a new decision.
-func assertRefusalReplayed(ctx context.Context, t *testing.T, at suite, key, payload string) {
+// The recorded refusal is answered again with the same token and the same row, and
+// the marker says it is not a new decision.
+func assertRefusalReplayed(ctx context.Context, t *testing.T, at suite, key, payload, row string) {
 	t.Helper()
 	replayed := submit(ctx, t, at, at.provider, key, payload)
 	if replayed.status != http.StatusUnprocessableEntity {
@@ -169,6 +175,9 @@ func assertRefusalReplayed(ctx context.Context, t *testing.T, at suite, key, pay
 	marked := replayed.refusal(t)
 	if marked.FailureCode != "INSUFFICIENT_FUNDS" || !marked.IdempotentReplay {
 		t.Fatalf("replayed refusal = %+v, want the same token with the marker", marked)
+	}
+	if marked.TransactionID != row {
+		t.Fatalf("transactionId of the replayed refusal = %q, want the %s of the first", marked.TransactionID, row)
 	}
 }
 
@@ -210,8 +219,12 @@ func TestSubmit_refusesTheOperationsThatCanCarryNoRow(t *testing.T) {
 			if refused.status != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d, want 422: %s", refused.status, refused.body)
 			}
-			if got := refused.refusal(t).FailureCode; got != tc.code {
-				t.Fatalf("failureCode = %s, want %s", got, tc.code)
+			details := refused.refusal(t)
+			if details.FailureCode != tc.code {
+				t.Fatalf("failureCode = %s, want %s", details.FailureCode, tc.code)
+			}
+			if details.TransactionID != "" {
+				t.Fatalf("transactionId = %s, want none: the refusal wrote no row", details.TransactionID)
 			}
 			assertRowsForKey(ctx, t, key, 0)
 		})
