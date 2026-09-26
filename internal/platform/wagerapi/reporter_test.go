@@ -472,7 +472,7 @@ func TestCountRejection_movesTheSeriesTheTokenAndTheRowCallFor(t *testing.T) {
 		t.Fatalf("duplicates{http,key_conflict} = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("http", "INSUFFICIENT_FUNDS")); got != 1 {
-		t.Fatalf("rejections{http,INSUFFICIENT_FUNDS} = %v, want 1", got)
+		t.Fatalf("rejections{http,INSUFFICIENT_FUNDS} of the rule that wrote a row = %v, want 1", got)
 	}
 	if got := testutil.CollectAndCount(series.Rejections); got != 1 {
 		t.Fatalf("rejection series = %d, want only the one of the rule that wrote a row", got)

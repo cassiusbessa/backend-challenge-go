@@ -309,14 +309,18 @@ func TestNewReporter_logsAndCountsThroughWhatItWasGiven(t *testing.T) {
 func TestCountDuplicate_answersWhetherTheArrivalWasOneAndUnderWhichReason(t *testing.T) {
 	t.Parallel()
 	reporter, series := countingReporter()
-	if reporter.countDuplicate(processedBet(t)) {
-		t.Fatalf("countDuplicate of a first outcome = true, want false")
+	answers := map[string]struct {
+		result submitwager.Result
+		want   bool
+	}{
+		"a first outcome": {result: processedBet(t), want: false},
+		"a redelivery":    {result: submitwager.Result{IdempotentReplay: true, Redelivered: true}, want: true},
+		"a replay":        {result: submitwager.Result{IdempotentReplay: true}, want: true},
 	}
-	if !reporter.countDuplicate(submitwager.Result{IdempotentReplay: true, Redelivered: true}) {
-		t.Fatalf("countDuplicate of a redelivery = false, want true")
-	}
-	if !reporter.countDuplicate(submitwager.Result{IdempotentReplay: true}) {
-		t.Fatalf("countDuplicate of a replay = false, want true")
+	for name, each := range answers {
+		if got := reporter.countDuplicate(each.result); got != each.want {
+			t.Fatalf("countDuplicate of %s = %t, want %t", name, got, each.want)
+		}
 	}
 	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", "redelivery")) + testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", "replay")); got != 2 {
 		t.Fatalf("duplicates{sqs,redelivery} plus duplicates{sqs,replay} = %v, want one of each", got)
