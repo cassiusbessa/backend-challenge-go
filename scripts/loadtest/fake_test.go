@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,8 +30,11 @@ type fakeService struct {
 	// wager answers the wager route in place of the settlement when it reports
 	// true: the case about an answer the load does not expect.
 	wager func(w http.ResponseWriter, r *http.Request, arrival int) bool
-	// drift is added to the balance a read answers, to fake a lost movement.
-	drift int64
+	// The drifts are added to what the reads answer, to fake a lost or a
+	// duplicated movement.
+	drift        int64
+	versionDrift int64
+	entriesDrift int64
 	// metrics answers the query of the metric backend, by expression.
 	metrics func(query string, at time.Time) (int, string)
 }
@@ -116,7 +119,7 @@ func (f *fakeService) read(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": r.PathValue("id"), "version": held.version,
+		"id": r.PathValue("id"), "version": held.version + f.versionDrift,
 		"balance": map[string]string{"amount": amountOf(held.cents + f.drift), "currency": "BRL"},
 	})
 }
@@ -129,7 +132,7 @@ func (f *fakeService) reconcile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"consistent": true, "checkedEntries": held.entries})
+	writeJSON(w, http.StatusOK, map[string]any{"consistent": f.entriesDrift == 0, "checkedEntries": held.entries + f.entriesDrift})
 }
 
 // settle is the wager route: a known key with the same body is a replay, and a
@@ -141,6 +144,7 @@ func (f *fakeService) settle(w http.ResponseWriter, r *http.Request) {
 	arrival := f.arrivals
 	f.remotes[r.RemoteAddr] = true
 	f.mu.Unlock()
+	r.Body = io.NopCloser(bytes.NewReader(body))
 	if f.wager != nil && f.wager(w, r, arrival) {
 		return
 	}
@@ -154,6 +158,17 @@ func (f *fakeService) settle(w http.ResponseWriter, r *http.Request) {
 	outcome := f.apply(body)
 	f.keys[key] = outcome
 	answerOutcome(w, outcome, false)
+}
+
+// commitSilently records the arrival the way the settlement would, and leaves
+// the answer to the case: the replica that committed and died before answering.
+func (f *fakeService) commitSilently(r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, recorded := f.keys[r.Header.Get("Idempotency-Key")]; !recorded {
+		f.keys[r.Header.Get("Idempotency-Key")] = f.apply(body)
+	}
 }
 
 func (f *fakeService) apply(body []byte) fakeOutcome {
@@ -214,12 +229,4 @@ func writePlain(w http.ResponseWriter, code int, body string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_, _ = io.WriteString(w, body)
-}
-
-// centsOf reads a two-place decimal the way the fake needs it: the load only
-// ever writes that form.
-func centsOf(amount string) (int64, error) {
-	whole, fraction, _ := strings.Cut(amount, ".")
-	units, err := strconv.ParseInt(whole+fraction, 10, 64)
-	return units, err
 }

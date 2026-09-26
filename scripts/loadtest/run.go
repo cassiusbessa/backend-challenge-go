@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// run is one execution: open the wallets, send for the window, and answer
-// whether anything the load saw is a defect.
+// run is one execution: open the wallets, send for the window, resolve what
+// was left undecided by its own key, and hold every wallet to what was counted.
 func run(ctx context.Context, o options, stdout io.Writer) error {
 	l := newLoad(o)
 	if err := l.open(ctx); err != nil {
@@ -18,8 +18,10 @@ func run(ctx context.Context, o options, stdout io.Writer) error {
 	}
 	start := time.Now()
 	l.send(ctx, start.Add(o.duration))
+	unresolved := l.resolveAll(ctx)
+	wallets := l.check(ctx)
 	fmt.Fprintf(stdout, "sent %d arrivals: %d decided, %d errors, %d replays\n", l.sent, len(l.latencies), l.errors, l.replays)
-	return verdictOf(l.failures())
+	return verdictOf(append(append(l.failures(), unresolved...), wallets...))
 }
 
 // failures answers what the arrivals themselves showed to be wrong.
