@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
@@ -308,13 +309,13 @@ type decisions struct {
 	hold func(context.Context)
 }
 
-func (d *decisions) Resolve(ctx context.Context, candidate storage.WaitCandidate) error {
+func (d *decisions) Resolve(ctx context.Context, candidate storage.WaitCandidate) (resolvereference.Outcome, error) {
 	d.seen = append(d.seen, candidate)
 	if hold := d.hold; hold != nil {
 		d.hold = nil
 		hold(ctx)
 	}
-	return d.err
+	return resolvereference.Outcome{}, d.err
 }
 
 // frozen is the clock of a case that is not about an instant: the scan reads it

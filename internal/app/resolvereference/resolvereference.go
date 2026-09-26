@@ -56,6 +56,29 @@ type Schedule interface {
 	NextAttemptAt(attempts int64, now, deadline time.Time) time.Time
 }
 
+// Outcome is what one attempt did to the wait, as the border of this use case
+// reports it. The zero value is an attempt that decided nothing: the row was
+// held by another replica, no longer in the wait, or not due, and none of the
+// three is a failure.
+//
+// Status is the status the row was left in: PROCESSED or REJECTED when the
+// attempt closed the wait, and PENDING_REFERENCE when it only moved the
+// schedule, which Rescheduled says. FailureCode is set only on a wait closed
+// by a rule or by the clock.
+type Outcome struct {
+	TransactionID identity.TransactionID
+	WalletID      identity.WalletID
+	Kind          wager.Kind
+	Status        wager.Status
+	FailureCode   wager.FailureCode
+	Rescheduled   bool
+}
+
+// Closed reports whether the attempt ended the wait with a terminal status.
+func (o Outcome) Closed() bool {
+	return o.Status == wager.Processed || o.Status == wager.Rejected
+}
+
 // Service decides one wait. The zero value is not used: New is the only
 // constructor.
 type Service struct {
@@ -69,21 +92,23 @@ func New(uow storage.UnitOfWork, minter Minter, clock Clock, schedule Schedule) 
 	return &Service{uow: uow, minter: minter, clock: clock, schedule: schedule}
 }
 
-// Resolve decides the wait the candidate names, in one commit.
+// Resolve decides the wait the candidate names, in one commit, and answers what
+// it did to it.
 //
 // A candidate that is no longer waiting, or that another replica is holding, is
 // not decided and is not a failure: the scan chose it, and what decides is the
-// row re-read under the lock. It comes back as a candidate on the next scan.
-func (s *Service) Resolve(ctx context.Context, candidate storage.WaitCandidate) error {
-	err := s.resolve(ctx, candidate)
+// row re-read under the lock. It comes back as a candidate on the next scan,
+// and the outcome answered for it is the zero value.
+func (s *Service) Resolve(ctx context.Context, candidate storage.WaitCandidate) (Outcome, error) {
+	outcome, err := s.resolve(ctx, candidate)
 	if err == nil {
-		return nil
+		return outcome, nil
 	}
 	var attempted attemptFailure
 	if errors.As(err, &attempted) {
 		s.setBack(ctx, attempted)
 	}
-	return fmt.Errorf("resolve pending reference: %w", err)
+	return Outcome{}, fmt.Errorf("resolve pending reference: %w", err)
 }
 
 // attemptFailure is a failure of one attempt over a row this replica had already
@@ -120,23 +145,32 @@ func (s *Service) setBack(ctx context.Context, failed attemptFailure) {
 	})
 }
 
-func (s *Service) resolve(ctx context.Context, candidate storage.WaitCandidate) error {
-	return s.uow.Within(ctx, func(tx storage.Tx) error {
-		return s.decide(ctx, tx, candidate)
+func (s *Service) resolve(ctx context.Context, candidate storage.WaitCandidate) (Outcome, error) {
+	var outcome Outcome
+	err := s.uow.Within(ctx, func(tx storage.Tx) error {
+		var err error
+		outcome, err = s.decide(ctx, tx, candidate)
+		return err
 	})
+	if err != nil {
+		// A commit that failed left nothing of the attempt, so nothing of it is
+		// reported either.
+		return Outcome{}, err
+	}
+	return outcome, nil
 }
 
 // decide takes the wallet first and the row of the wait second, the order of
 // every operation on this wallet. The scan took no lock at all, so nothing here
 // stands between a submission and the balance it moves for longer than one
 // decision.
-func (s *Service) decide(ctx context.Context, tx storage.Tx, candidate storage.WaitCandidate) error {
+func (s *Service) decide(ctx context.Context, tx storage.Tx, candidate storage.WaitCandidate) (Outcome, error) {
 	// A wait names its wallet by foreign key, so the absence of that wallet is
 	// not a state this row can reach: it leaves as the failure it is, and the
 	// wait is not decided.
 	state, err := tx.Wallets().GetForUpdate(ctx, candidate.WalletID)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	// One instant stamps the whole attempt: the claim tests the schedule against
 	// it, and the decision is written with it.
@@ -145,10 +179,10 @@ func (s *Service) decide(ctx context.Context, tx storage.Tx, candidate storage.W
 	if errors.Is(err, storage.ErrTransactionNotFound) {
 		// Held by another replica, no longer there, or no longer due. None is this
 		// replica's to decide, and none is a failure.
-		return nil
+		return Outcome{}, nil
 	}
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	return s.decideClaimed(ctx, tx, claimed, state, now)
 }
@@ -157,35 +191,36 @@ func (s *Service) decide(ctx context.Context, tx storage.Tx, candidate storage.W
 //
 // A row that left the wait between the scan and the claim is not decided again:
 // what the first conclusion recorded stands.
-func (s *Service) decideClaimed(ctx context.Context, tx storage.Tx, claimed storage.Wait, state wallet.State, now time.Time) error {
+func (s *Service) decideClaimed(ctx context.Context, tx storage.Tx, claimed storage.Wait, state wallet.State, now time.Time) (Outcome, error) {
 	if claimed.State.Status != wager.PendingReference {
-		return nil
+		return Outcome{}, nil
 	}
-	if err := s.attempt(ctx, tx, claimed, state, now); err != nil {
+	outcome, err := s.attempt(ctx, tx, claimed, state, now)
+	if err != nil {
 		// Past the claim, a failure belongs to a row this replica holds, so its
 		// schedule is what keeps it from being claimed again on the next tick.
-		return attemptFailure{
+		return Outcome{}, attemptFailure{
 			error:    err,
 			id:       claimed.State.ID,
 			attempts: claimed.Attempts,
 			deadline: claimed.State.ReferenceDeadlineAt,
 		}
 	}
-	return nil
+	return outcome, nil
 }
 
-func (s *Service) attempt(ctx context.Context, tx storage.Tx, claimed storage.Wait, state wallet.State, now time.Time) error {
+func (s *Service) attempt(ctx context.Context, tx storage.Tx, claimed storage.Wait, state wallet.State, now time.Time) (Outcome, error) {
 	waiting, err := wager.Rehydrate(claimed.State)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	owner, err := wallet.Rehydrate(state)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	outcome, balance, err := s.eventIDs()
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	return s.run(ctx, tx, attempt{
 		waiting:     waiting,
@@ -239,14 +274,26 @@ func (a attempt) emitted(entry ledger.Entry, version int64) event.Commit {
 	}
 }
 
-func (s *Service) run(ctx context.Context, tx storage.Tx, turn attempt) error {
+// result reads the wait as the attempt left it. It is read after the write,
+// so the status and the token are the ones the row now carries.
+func (a attempt) result() Outcome {
+	return Outcome{
+		TransactionID: a.waiting.ID(),
+		WalletID:      a.waiting.WalletID(),
+		Kind:          a.waiting.Kind(),
+		Status:        a.waiting.Status(),
+		FailureCode:   a.waiting.FailureCode(),
+	}
+}
+
+func (s *Service) run(ctx context.Context, tx storage.Tx, turn attempt) (Outcome, error) {
 	move, err := s.movement(turn.now)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	reference, err := citedFor(ctx, tx, turn)
 	if err != nil {
-		return err
+		return Outcome{}, err
 	}
 	decision, err := decisionOf(turn, reference, move)
 	if err != nil {
@@ -316,12 +363,17 @@ func decisionOf(turn attempt, reference wager.Reference, move wager.Movement) (w
 // goOn answers the wait that this attempt did not end: either the deadline has
 // come and the wait is closed with the token of what was missing, or the next
 // attempt is scheduled.
-func (s *Service) goOn(ctx context.Context, tx storage.Tx, turn attempt, reference wager.Reference) error {
+func (s *Service) goOn(ctx context.Context, tx storage.Tx, turn attempt, reference wager.Reference) (Outcome, error) {
 	if !turn.now.Before(turn.waiting.ReferenceDeadlineAt()) {
 		return s.close(ctx, tx, turn, expiredWith(reference), turn.now)
 	}
 	next := s.schedule.NextAttemptAt(turn.claimed.Attempts, turn.now, turn.waiting.ReferenceDeadlineAt())
-	return tx.Transactions().RescheduleWait(ctx, turn.waiting.ID(), next, turn.now)
+	if err := tx.Transactions().RescheduleWait(ctx, turn.waiting.ID(), next, turn.now); err != nil {
+		return Outcome{}, err
+	}
+	outcome := turn.result()
+	outcome.Rescheduled = true
+	return outcome, nil
 }
 
 // expiredWith names what was missing when the deadline came.
@@ -340,47 +392,59 @@ func expiredWith(reference wager.Reference) wager.FailureCode {
 // reject closes the wait on a rule: the cited operation arrived and does not
 // close with the one waiting, or it already ended badly, or it is already
 // reversed. None of them waits for the deadline.
-func (s *Service) reject(ctx context.Context, tx storage.Tx, turn attempt, refusal error) error {
+func (s *Service) reject(ctx context.Context, tx storage.Tx, turn attempt, refusal error) (Outcome, error) {
 	var rejection wager.Rejection
 	if !errors.As(refusal, &rejection) {
-		return refusal
+		return Outcome{}, refusal
 	}
 	return s.close(ctx, tx, turn, rejection.Code(), turn.now)
 }
 
 // close writes the wait as REJECTED with its token. Nothing moves: no entry, no
 // balance and no version.
-func (s *Service) close(ctx context.Context, tx storage.Tx, turn attempt, code wager.FailureCode, at time.Time) error {
+func (s *Service) close(ctx context.Context, tx storage.Tx, turn attempt, code wager.FailureCode, at time.Time) (Outcome, error) {
 	if err := turn.waiting.Reject(code, at); err != nil {
-		return err
+		return Outcome{}, err
 	}
 	if err := tx.Transactions().EndWait(ctx, turn.waiting); err != nil {
-		return err
+		return Outcome{}, err
 	}
-	return storage.Record(ctx, tx, turn.emitted(ledger.Entry{}, 0))
+	if err := storage.Record(ctx, tx, turn.emitted(ledger.Entry{}, 0)); err != nil {
+		return Outcome{}, err
+	}
+	return turn.result(), nil
 }
 
 // resume carries out the operation the wait was for: the credit of the WIN or
 // the movement of the reversal, with the entry and the balance in this very
 // commit.
-func (s *Service) resume(ctx context.Context, tx storage.Tx, turn attempt, decision wager.Decision, move wager.Movement) error {
+func (s *Service) resume(ctx context.Context, tx storage.Tx, turn attempt, decision wager.Decision, move wager.Movement) (Outcome, error) {
 	entry, movedBalance := decision.Entry()
 	if !movedBalance {
 		// No kind that waits for a cited operation settles without moving the
 		// balance, so a decision with no entry is one nothing here can write.
-		return ErrKindNotWaited
+		return Outcome{}, ErrKindNotWaited
 	}
 	if err := turn.waiting.Process(decision.Balance(), move.At); err != nil {
-		return err
+		return Outcome{}, err
 	}
+	if err := s.write(ctx, tx, turn, entry); err != nil {
+		return Outcome{}, err
+	}
+	if err := storage.Record(ctx, tx, turn.emitted(entry, decision.Version())); err != nil {
+		return Outcome{}, err
+	}
+	return turn.result(), nil
+}
+
+// write puts the balance, the row of the wait and the entry in one commit, in
+// the order of the lock: the wallet, then the transaction the ledger points at.
+func (s *Service) write(ctx context.Context, tx storage.Tx, turn attempt, entry ledger.Entry) error {
 	if err := tx.Wallets().UpdateBalance(ctx, turn.owner, turn.readVersion); err != nil {
 		return err
 	}
 	if err := tx.Transactions().EndWait(ctx, turn.waiting); err != nil {
 		return err
 	}
-	if err := tx.Entries().Insert(ctx, entry); err != nil {
-		return err
-	}
-	return storage.Record(ctx, tx, turn.emitted(entry, decision.Version()))
+	return tx.Entries().Insert(ctx, entry)
 }

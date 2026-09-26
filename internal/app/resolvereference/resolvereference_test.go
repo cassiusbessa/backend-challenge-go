@@ -273,7 +273,7 @@ func TestResolve_leavesTheWaitUntouchedWhenTheCommitFails(t *testing.T) {
 	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
 	book.cite(t, citedProcessed(t, wager.KindBet, "25.00"))
 	book.updateErr = broken
-	if err := service(t, book, entered).Resolve(context.Background(), candidateOf(t)); !errors.Is(err, broken) {
+	if _, err := service(t, book, entered).Resolve(context.Background(), candidateOf(t)); !errors.Is(err, broken) {
 		t.Fatalf("Resolve = %v, want %v", err, broken)
 	}
 	if book.commits != 0 {
@@ -292,7 +292,7 @@ func TestResolve_movesTheScheduleOfAnAttemptThatFailed(t *testing.T) {
 	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
 	book.attempts = 2
 	failing := New(book, brokenMinter{err: broken}, at(entered), schedule{})
-	if err := failing.Resolve(context.Background(), candidateOf(t)); !errors.Is(err, broken) {
+	if _, err := failing.Resolve(context.Background(), candidateOf(t)); !errors.Is(err, broken) {
 		t.Fatalf("Resolve with an unmintable identity = %v, want %v", err, broken)
 	}
 	assertNothingMoved(t, book)
@@ -312,7 +312,7 @@ func TestResolve_keepsTheScheduleOfAnAttemptTheShutdownCancelled(t *testing.T) {
 	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
 	book.cite(t, citedProcessed(t, wager.KindBet, "25.00"))
 	book.updateErr = context.Canceled
-	if err := service(t, book, entered).Resolve(context.Background(), candidateOf(t)); !errors.Is(err, context.Canceled) {
+	if _, err := service(t, book, entered).Resolve(context.Background(), candidateOf(t)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Resolve of a cancelled turn = %v, want %v", err, context.Canceled)
 	}
 	assertNothingWritten(t, book)
@@ -328,8 +328,12 @@ func TestResolve_decidesNothingOverARowWhoseNextAttemptWasMoved(t *testing.T) {
 	t.Parallel()
 	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
 	book.row.State.NextAttemptAt = entered.Add(time.Minute)
-	if err := service(t, book, entered).Resolve(context.Background(), candidateOf(t)); err != nil {
+	outcome, err := service(t, book, entered).Resolve(context.Background(), candidateOf(t))
+	if err != nil {
 		t.Fatalf("Resolve of a row no longer due = %v, want nil", err)
+	}
+	if outcome != (Outcome{}) {
+		t.Fatalf("outcome of a row no longer due = %+v, want the zero value: nothing was decided", outcome)
 	}
 	assertNothingWritten(t, book)
 }
@@ -342,7 +346,7 @@ func TestCitedFor_refusesAWaitThatNamesNoOperation(t *testing.T) {
 	state := waiting(t, wager.KindWin, "50.00")
 	state.ReferenceExternalID = identity.ExternalTransactionID{}
 	book := bookWith(t, state)
-	err := service(t, book, entered).Resolve(context.Background(), candidateOf(t))
+	_, err := service(t, book, entered).Resolve(context.Background(), candidateOf(t))
 	if !errors.Is(err, ErrKindNotWaited) {
 		t.Fatalf("Resolve of a wait naming no operation = %v, want %v", err, ErrKindNotWaited)
 	}
@@ -365,7 +369,7 @@ func TestResume_refusesADecisionThatMovedNoBalance(t *testing.T) {
 	t.Parallel()
 	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
 	turn := attempt{waiting: rehydrate(t, waiting(t, wager.KindWin, "50.00")), owner: walletWith(t)}
-	err := service(t, book, entered).resume(context.Background(), book, turn, wager.Decision{}, wager.Movement{})
+	_, err := service(t, book, entered).resume(context.Background(), book, turn, wager.Decision{}, wager.Movement{})
 	if !errors.Is(err, ErrKindNotWaited) {
 		t.Fatalf("resume of a decision with no entry = %v, want %v", err, ErrKindNotWaited)
 	}
@@ -399,9 +403,18 @@ func resolve(t *testing.T, ledgerBook *book) {
 
 func resolveAt(t *testing.T, ledgerBook *book, now time.Time) {
 	t.Helper()
-	if err := service(t, ledgerBook, now).Resolve(context.Background(), candidateOf(t)); err != nil {
+	outcomeAt(t, ledgerBook, now)
+}
+
+// outcomeAt takes one attempt at that instant and answers what it did to the
+// wait, for the cases about the outcome the worker is handed back.
+func outcomeAt(t *testing.T, ledgerBook *book, now time.Time) Outcome {
+	t.Helper()
+	outcome, err := service(t, ledgerBook, now).Resolve(context.Background(), candidateOf(t))
+	if err != nil {
 		t.Fatalf("Resolve = %v, want nil", err)
 	}
+	return outcome
 }
 
 func service(t *testing.T, ledgerBook *book, now time.Time) *Service {
@@ -946,4 +959,109 @@ func gameOf(t *testing.T) identity.GameID {
 		t.Fatalf("ParseGameID = %v, want nil", err)
 	}
 	return id
+}
+
+// The outcome the worker is handed back names the wait and what the attempt did
+// to it, so the border of this use case can log and count it without reading
+// the row again. Every branch answers one, and none of the writes changes.
+func TestResolve_answersTheOutcomeOfEachBranch(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		book   func(t *testing.T) *book
+		at     time.Time
+		status wager.Status
+		code   wager.FailureCode
+	}{
+		{
+			name: "the awaited bet arrived and the win is credited",
+			book: func(t *testing.T) *book {
+				b := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+				b.cite(t, citedProcessed(t, wager.KindBet, "25.00"))
+				return b
+			},
+			at: entered, status: wager.Processed,
+		},
+		{
+			name: "the deadline came and the cited operation never arrived",
+			book: func(t *testing.T) *book { return bookWith(t, waiting(t, wager.KindWin, "50.00")) },
+			at:   deadline, status: wager.Rejected, code: wager.ReferenceNotFound,
+		},
+		{
+			name: "the deadline came and the cited operation is still running",
+			book: func(t *testing.T) *book {
+				b := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+				b.cite(t, *citedWaiting(t))
+				return b
+			},
+			at: deadline, status: wager.Rejected, code: wager.ReferenceNotProcessed,
+		},
+		{
+			name: "the cited operation ended badly",
+			book: func(t *testing.T) *book {
+				b := bookWith(t, waiting(t, wager.KindRefund, "25.00"))
+				ended := citedProcessed(t, wager.KindBet, "25.00")
+				ended.Status = wager.Failed
+				ended.FailureCode = wager.ReferenceNotFound
+				ended.ObservedBalance = money.Money{}
+				b.cite(t, ended)
+				return b
+			},
+			at: entered, status: wager.Rejected, code: wager.ReferenceUnsuccessful,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome := outcomeAt(t, tc.book(t), tc.at)
+			if !outcome.Closed() || outcome.Rescheduled {
+				t.Fatalf("outcome = %+v, want a closed wait that was not rescheduled", outcome)
+			}
+			if outcome.Status != tc.status || outcome.FailureCode != tc.code {
+				t.Fatalf("outcome = %s with %q, want %s with %q", outcome.Status, outcome.FailureCode, tc.status, tc.code)
+			}
+			assertNamesTheWait(t, outcome)
+		})
+	}
+}
+
+// assertNamesTheWait pins the identifiers of the outcome: the transaction and
+// the wallet of the wait, and the kind of the operation.
+func assertNamesTheWait(t *testing.T, outcome Outcome) {
+	t.Helper()
+	if outcome.TransactionID != transactionOf(t) || outcome.WalletID != walletOf(t) {
+		t.Fatalf("outcome names %s of %s, want the wait %s of %s", outcome.TransactionID, outcome.WalletID, transactionOf(t), walletOf(t))
+	}
+	if outcome.Kind.IsZero() {
+		t.Fatalf("kind of the outcome = %s, want the kind of the wait", outcome.Kind)
+	}
+}
+
+// A wait that was only scheduled again is not closed, and the outcome says so:
+// the row stays in the wait, and what moved was the schedule.
+func TestResolve_answersARescheduledOutcomeWhileTheDeadlineHasNotCome(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+	outcome := outcomeAt(t, book, deadline.Add(-time.Nanosecond))
+	if !outcome.Rescheduled || outcome.Closed() {
+		t.Fatalf("outcome = %+v, want it rescheduled and not closed", outcome)
+	}
+	if outcome.Status != wager.PendingReference || !outcome.FailureCode.IsZero() {
+		t.Fatalf("outcome = %s with %q, want the wait still PENDING_REFERENCE with no token", outcome.Status, outcome.FailureCode)
+	}
+	assertNamesTheWait(t, outcome)
+}
+
+// A row another replica holds decides nothing, and the outcome is the zero
+// value: neither closed nor rescheduled, with nothing to name.
+func TestResolve_answersNoOutcomeForAWaitAnotherReplicaIsHolding(t *testing.T) {
+	t.Parallel()
+	book := bookWith(t, waiting(t, wager.KindWin, "50.00"))
+	book.claimed = true
+	outcome := outcomeAt(t, book, entered)
+	if outcome != (Outcome{}) {
+		t.Fatalf("outcome of a held row = %+v, want the zero value", outcome)
+	}
+	if outcome.Closed() || outcome.Rescheduled {
+		t.Fatalf("outcome of a held row reads closed = %t and rescheduled = %t, want neither", outcome.Closed(), outcome.Rescheduled)
+	}
 }

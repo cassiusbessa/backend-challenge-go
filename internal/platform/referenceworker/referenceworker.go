@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
@@ -29,9 +30,9 @@ type Scanner interface {
 	DueWaits(ctx context.Context, now time.Time, limit int) ([]storage.WaitCandidate, error)
 }
 
-// Resolver decides one wait.
+// Resolver decides one wait and answers what it did to it.
 type Resolver interface {
-	Resolve(ctx context.Context, candidate storage.WaitCandidate) error
+	Resolve(ctx context.Context, candidate storage.WaitCandidate) (resolvereference.Outcome, error)
 }
 
 // Clock reads the instant the queue is scanned against.
@@ -141,7 +142,7 @@ func (w *Worker) turn(ctx context.Context) {
 // makes for a message with no correlation of its own.
 func (w *Worker) decide(ctx context.Context, candidate storage.WaitCandidate) {
 	ctx = telemetry.WithCorrelation(ctx, candidate.TransactionID.String())
-	if err := w.resolver.Resolve(ctx, candidate); err != nil {
+	if _, err := w.resolver.Resolve(ctx, candidate); err != nil {
 		w.failed(ctx, "resolve a pending reference", err,
 			slog.String("transactionId", candidate.TransactionID.String()),
 			slog.String("walletId", candidate.WalletID.String()),
