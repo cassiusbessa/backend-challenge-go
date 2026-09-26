@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 )
 
@@ -147,5 +149,54 @@ func TestShutdownWithoutStartStaysSilentAndRepeatable(t *testing.T) {
 	}
 	if !closed {
 		t.Fatalf("Stopped closed = %v, want true", closed)
+	}
+}
+
+// recordingProcessor answers whether the provider holding it was shut down. The
+// SDK offers no way to ask a TracerProvider whether it is still running, and the
+// life of the provider is what installTrace and shutdownTracer decide.
+type recordingProcessor struct{ shutdown bool }
+
+func (r *recordingProcessor) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+
+func (r *recordingProcessor) OnEnd(sdktrace.ReadOnlySpan) {}
+
+func (r *recordingProcessor) ForceFlush(context.Context) error { return nil }
+
+func (r *recordingProcessor) Shutdown(context.Context) error {
+	r.shutdown = true
+	return nil
+}
+
+// watched builds a pipeline whose current provider reports its own shutdown.
+func watched(t *testing.T) (*Pipeline, *recordingProcessor) {
+	t.Helper()
+	pipe := NewPipeline(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
+	watcher := &recordingProcessor{}
+	pipe.tracer = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(watcher))
+	return pipe, watcher
+}
+
+// A provider left running keeps its batcher and its exporter connection, and
+// installTrace replaces the provider on every call.
+func TestInstallTrace_shutsDownTheProviderItReplaces(t *testing.T) {
+	t.Parallel()
+	pipe, watcher := watched(t)
+	if err := pipe.installTrace(context.Background()); err != nil {
+		t.Fatalf("installTrace over a provider already in place = %v, want nil", err)
+	}
+	if !watcher.shutdown {
+		t.Fatalf("the replaced provider was left running, want it shut down")
+	}
+}
+
+func TestShutdownTracer_shutsDownTheProviderInPlace(t *testing.T) {
+	t.Parallel()
+	pipe, watcher := watched(t)
+	if err := pipe.shutdownTracer(context.Background()); err != nil {
+		t.Fatalf("shutdownTracer with a provider in place = %v, want nil", err)
+	}
+	if !watcher.shutdown {
+		t.Fatalf("the provider in place survived the shutdown, want it closed")
 	}
 }

@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
@@ -298,4 +300,49 @@ func getStatus(t *testing.T, rawURL string) int {
 	defer func() { _ = res.Body.Close() }()
 	_, _ = io.Copy(io.Discard, res.Body)
 	return res.StatusCode
+}
+
+// listening gives serve a listener of its own, so the case can decide how Serve
+// ends: Start hides the listener inside the goroutine it launches, and from
+// outside there is no way to close that one or to know when it returned.
+func listening(t *testing.T) (*Server, *http.Server, net.Listener, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
+	server := NewServer(config.Config{HTTPAddr: "127.0.0.1:0", PPROFAddr: "127.0.0.1:0"}, http.NotFoundHandler(), logger)
+	srv := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the fixture = %v, want nil", err)
+	}
+	return server, srv, ln, buf
+}
+
+func TestServe_reportsAnEndThatIsNotTheCleanClose(t *testing.T) {
+	t.Parallel()
+	server, srv, ln, buf := listening(t)
+	// Closing the listener out from under Serve ends it with net.ErrClosed, which
+	// is the shape of a server that stopped without being asked to.
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close of the listener = %v, want nil", err)
+	}
+	server.serve(srv, ln)
+	if !strings.Contains(buf.String(), `"status":"error"`) {
+		t.Fatalf("serve after a broken listener wrote %q, want a status error attribute", buf.String())
+	}
+}
+
+func TestServe_saysNothingWhenTheServerWasAskedToStop(t *testing.T) {
+	t.Parallel()
+	server, srv, ln, buf := listening(t)
+	t.Cleanup(func() { _ = ln.Close() })
+	// Close before Serve makes it end with http.ErrServerClosed, the same error a
+	// shutdown produces, and that end is the ordinary one.
+	if err := srv.Close(); err != nil {
+		t.Fatalf("close of the server = %v, want nil", err)
+	}
+	server.serve(srv, ln)
+	if buf.Len() != 0 {
+		t.Fatalf("serve after a clean close wrote %q, want nothing", buf.String())
+	}
 }
