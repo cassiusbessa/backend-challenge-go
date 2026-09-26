@@ -46,7 +46,7 @@ func TestParseKind_readsTheKindBack(t *testing.T) {
 	}
 	empty, err := ParseKind("")
 	if !errors.Is(err, ErrUnknownKind) {
-		t.Fatalf("ParseKind(\"\") error = %v, want ErrUnknownKind", err)
+		t.Fatalf("the empty token error = %v, want ErrUnknownKind", err)
 	}
 	if !empty.IsZero() {
 		t.Fatalf("the empty token produced %s, want the zero value", empty)

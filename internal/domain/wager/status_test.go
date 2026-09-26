@@ -81,7 +81,7 @@ func TestParseStatus_readsTheStatusBack(t *testing.T) {
 	}
 	empty, err := ParseStatus("")
 	if !errors.Is(err, ErrUnknownStatus) {
-		t.Fatalf("ParseStatus(\"\") error = %v, want ErrUnknownStatus", err)
+		t.Fatalf("the empty token error = %v, want ErrUnknownStatus", err)
 	}
 	if !empty.IsZero() {
 		t.Fatalf("the empty token produced %s, want the zero value", empty)
