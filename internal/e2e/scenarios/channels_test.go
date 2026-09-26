@@ -19,14 +19,19 @@ func TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue(t *testing.T) {
 	ctx, at := setUp(t)
 	instances := at.launch(ctx, t, at.params.Instances, nil)
 	db := connect(ctx, t)
-	t.Run("over HTTP first and then on the queue", func(t *testing.T) {
+	t.Run("the queue after HTTP answers the replay of what HTTP recorded", func(t *testing.T) {
 		holder, key, message, bet := sameOperation(ctx, t, at, instances)
 		assertSettledUnderKey(ctx, t, at, instances.at(1), key, bet)
+		// A key conflict on the queue also leaves one transaction and removes the
+		// message, so the series are what tell the replay from it.
+		before := queueDuplicates(ctx, t, instances)
 		at.queues.send(ctx, t, holder.id, bet.envelope(message, key))
 		at.queues.awaitEmpty(ctx, t)
+		assertCountedOnTheQueue(ctx, t, instances, duplicates{replays: before.replays + 1, conflicts: before.conflicts})
+		t.Log("the fleet removed the message as the replay of what HTTP recorded")
 		assertOneEffect(ctx, t, at, db, holder, key, message)
 	})
-	t.Run("on the queue first and then over HTTP", func(t *testing.T) {
+	t.Run("HTTP after the queue answers the replay of what the queue recorded", func(t *testing.T) {
 		holder, key, message, bet := sameOperation(ctx, t, at, instances)
 		at.queues.send(ctx, t, holder.id, bet.envelope(message, key))
 		at.queues.awaitEmpty(ctx, t)
@@ -40,19 +45,17 @@ func TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue(t *testing.T) {
 		t.Logf("HTTP answered %s with the transaction the queue recorded", replayed.verdict(t))
 		assertOneEffect(ctx, t, at, db, holder, key, message)
 	})
-	t.Run("another amount on the queue after HTTP", func(t *testing.T) {
+	t.Run("another amount on the queue after HTTP is removed as a key conflict", func(t *testing.T) {
 		holder, key, message, bet := sameOperation(ctx, t, at, instances)
 		assertSettledUnderKey(ctx, t, at, instances.at(1), key, bet)
-		conflicts := keyConflicts(ctx, t, instances)
+		before := queueDuplicates(ctx, t, instances)
 		at.queues.send(ctx, t, holder.id, otherAmount(bet).envelope(message, key))
 		at.queues.awaitEmpty(ctx, t)
-		if got := keyConflicts(ctx, t, instances); got != conflicts+1 {
-			t.Errorf("key conflicts counted on the queue = %v, want the %v before plus the one sent", got, conflicts)
-		}
-		t.Logf("the fleet removed the message as a key conflict, %v of them counted on the queue so far", conflicts+1)
+		assertCountedOnTheQueue(ctx, t, instances, duplicates{replays: before.replays, conflicts: before.conflicts + 1})
+		t.Logf("the fleet removed the message as a key conflict, %v of them counted on the queue so far", before.conflicts+1)
 		assertOneEffect(ctx, t, at, db, holder, key, message)
 	})
-	t.Run("another amount over HTTP after the queue", func(t *testing.T) {
+	t.Run("another amount over HTTP after the queue is refused as a key conflict", func(t *testing.T) {
 		holder, key, message, bet := sameOperation(ctx, t, at, instances)
 		at.queues.send(ctx, t, holder.id, bet.envelope(message, key))
 		at.queues.awaitEmpty(ctx, t)
@@ -79,9 +82,27 @@ func otherAmount(bet operation) operation {
 	return bet.with(map[string]any{"money": map[string]string{"amount": "30.00", "currency": Currency}})
 }
 
-// keyConflicts is what the fleet counted as a key arriving on the queue with
-// another body: the conflict the consumer answers by removing the message.
-func keyConflicts(ctx context.Context, t *testing.T, instances fleet) float64 {
+// duplicates is what the fleet counted as a key arriving on the queue after it
+// was recorded: with the same body, the replay, and with another, the conflict.
+// The consumer answers both by removing the message.
+type duplicates struct {
+	replays   float64
+	conflicts float64
+}
+
+func queueDuplicates(ctx context.Context, t *testing.T, instances fleet) duplicates {
 	t.Helper()
-	return instances.tally(ctx, t, "wager_duplicates_total", map[string]string{"origin": "sqs", "reason": "key_conflict"})
+	return duplicates{
+		replays:   instances.tally(ctx, t, "wager_duplicates_total", map[string]string{"origin": "sqs", "reason": "replay"}),
+		conflicts: instances.tally(ctx, t, "wager_duplicates_total", map[string]string{"origin": "sqs", "reason": "key_conflict"}),
+	}
+}
+
+// assertCountedOnTheQueue checks the fleet counted the one arrival on the queue
+// as the reason the case expects, and nothing more.
+func assertCountedOnTheQueue(ctx context.Context, t *testing.T, instances fleet, want duplicates) {
+	t.Helper()
+	if got := queueDuplicates(ctx, t, instances); got != want {
+		t.Errorf("duplicates counted on the queue = %+v, want %+v", got, want)
+	}
 }
