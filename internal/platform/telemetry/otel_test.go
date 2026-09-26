@@ -186,7 +186,7 @@ func TestInstallTrace_shutsDownTheProviderItReplaces(t *testing.T) {
 		t.Fatalf("installTrace over a provider already in place = %v, want nil", err)
 	}
 	if !watcher.shutdown {
-		t.Fatalf("the replaced provider was left running, want it shut down")
+		t.Fatalf("replaced provider shut down = %t, want true", watcher.shutdown)
 	}
 }
 
@@ -197,6 +197,6 @@ func TestShutdownTracer_shutsDownTheProviderInPlace(t *testing.T) {
 		t.Fatalf("shutdownTracer with a provider in place = %v, want nil", err)
 	}
 	if !watcher.shutdown {
-		t.Fatalf("the provider in place survived the shutdown, want it closed")
+		t.Fatalf("provider in place shut down = %t, want true", watcher.shutdown)
 	}
 }
