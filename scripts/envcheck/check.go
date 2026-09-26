@@ -215,12 +215,20 @@ const notTests = ":(exclude)**/*_test.go"
 // carries the binary alone, and a binary built from the same production source
 // is byte for byte the one already there.
 //
-// A `COPY --from` names a stage of the build, not a path of the working tree.
+// A `COPY --from` names a stage of the build, not a path of the working tree, so
+// that line is dropped. Every other flag is stripped on its own and the paths
+// behind it are kept: dropping the whole line for any `--` would take a real path
+// out of the dated set for something as ordinary as `COPY --chown`.
 func imageSources(dockerfile string) []string {
 	var out []string
 	for _, found := range copyLine.FindAllStringSubmatch(dockerfile, -1) {
 		fields := strings.Fields(found[1])
-		if len(fields) < 2 || strings.HasPrefix(fields[0], "--") {
+		fromStage := false
+		for len(fields) > 0 && strings.HasPrefix(fields[0], "--") {
+			fromStage = fromStage || strings.HasPrefix(fields[0], "--from")
+			fields = fields[1:]
+		}
+		if fromStage || len(fields) < 2 {
 			continue
 		}
 		out = append(out, fields[:len(fields)-1]...)

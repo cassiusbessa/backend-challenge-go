@@ -348,6 +348,20 @@ ENTRYPOINT ["/wager"]
 		}
 	})
 
+	t.Run("a flag that is not a stage keeps the paths behind it", func(t *testing.T) {
+		got := strings.Join(imageSources("COPY --chown=nonroot:nonroot deploy/local /etc/wager\n"), " ")
+		want := "deploy/local " + notTests
+		if got != want {
+			t.Errorf("sources behind a --chown = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a stage named after another flag is still a stage", func(t *testing.T) {
+		if got := imageSources("COPY --chown=root --from=build /out/wager /wager\n"); len(got) != 0 {
+			t.Errorf("sources of a flagged stage copy = %v, want none", got)
+		}
+	})
+
 	t.Run("a recipe that copies nothing", func(t *testing.T) {
 		if got := imageSources("FROM alpine:3.22\nENTRYPOINT [\"/bin/sh\"]\n"); len(got) != 0 {
 			t.Errorf("sources of a recipe without COPY = %v, want none", got)
