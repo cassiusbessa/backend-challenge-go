@@ -325,11 +325,15 @@ type settlement struct {
 	rejection error
 }
 
+// answerOf hands the caller both halves of what the commit decided.
+//
+// A durable rejection has a row of its own, and the result names it. Dropping the
+// result here left that transaction unreachable to every border: go-observability
+// asks the rejection to log the transaction it wrote, and only the commit knows
+// it. A refusal that wrote no row — the two conflicts of idempotency — carries the
+// zero value, which is what it is.
 func answerOf(decided settlement) (Result, error) {
-	if decided.rejection != nil {
-		return Result{}, decided.rejection
-	}
-	return decided.result, nil
+	return decided.result, decided.rejection
 }
 
 func (s *Service) settle(ctx context.Context, job pending) (settlement, error) {

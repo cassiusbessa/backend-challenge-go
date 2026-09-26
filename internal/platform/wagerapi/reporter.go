@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
@@ -43,10 +44,28 @@ func (rep *Reporter) Settled(r *http.Request, settled submitwager.Result) {
 }
 
 // Refuse classifies the failure, answers problem details and records the outcome.
+//
+// The refusals that reach it wrote no row: a body this border did not take, a
+// client speaking for another provider, a transaction of someone else. A rule that
+// refused the operation did write one, and Rejected is what names it.
 func (rep *Reporter) Refuse(w http.ResponseWriter, r *http.Request, err error) {
+	rep.answer(w, r, identity.TransactionID{}, err)
+}
+
+// Rejected answers a rule that refused the operation, naming the transaction the
+// commit wrote for it.
+//
+// go-observability asks the rejection to log its row, and only the commit knows
+// which one it is: the token says which rule refused, and the identifier is what
+// joins the line to the transaction the provider can read back.
+func (rep *Reporter) Rejected(w http.ResponseWriter, r *http.Request, id identity.TransactionID, err error) {
+	rep.answer(w, r, id, err)
+}
+
+func (rep *Reporter) answer(w http.ResponseWriter, r *http.Request, id identity.TransactionID, err error) {
 	details := problem.From(err)
 	details.Detail = detailOf(err)
-	rep.record(r, err, details)
+	rep.record(r, id, err, details)
 	problem.Write(w, r, details)
 }
 
@@ -56,16 +75,16 @@ func (rep *Reporter) Refuse(w http.ResponseWriter, r *http.Request, err error) {
 // of the contract and a request that can be retried shortly all leave the span ok,
 // and a retryable answer shares its number with an outage, so the number alone
 // cannot tell them apart.
-func (rep *Reporter) record(r *http.Request, err error, details problem.Details) {
+func (rep *Reporter) record(r *http.Request, id identity.TransactionID, err error, details problem.Details) {
 	span := trace.SpanFromContext(r.Context())
 	span.SetAttributes(attribute.Int("http.response.status_code", details.Status))
 	if !details.Broken() {
-		rep.refused(r, details, nil)
+		rep.refused(r, id, details, nil)
 		return
 	}
 	span.RecordError(err, trace.WithStackTrace(true))
 	span.SetStatus(codes.Error, details.Title)
-	rep.refused(r, details, stackOf(err))
+	rep.refused(r, id, details, stackOf(err))
 }
 
 // stackOf answers the frames of the failure, capturing them here when the chain
@@ -81,8 +100,15 @@ func stackOf(err error) []string {
 	return fault.Stack(fault.Wrap("answer wager request", err))
 }
 
-func (rep *Reporter) refused(r *http.Request, details problem.Details, stack []string) {
+func (rep *Reporter) refused(r *http.Request, id identity.TransactionID, details problem.Details, stack []string) {
 	attrs := []slog.Attr{slog.String("status", strconv.Itoa(details.Status))}
+	// A refusal that wrote no row has no transaction to name, and an empty
+	// attribute would read as one whose value was lost.
+	if !id.IsZero() {
+		attrs = append(attrs, slog.String("transactionId", id.String()))
+		span := trace.SpanFromContext(r.Context())
+		span.SetAttributes(attribute.String("wager.transaction.id", id.String()))
+	}
 	if details.FailureCode != "" {
 		attrs = append(attrs, slog.String("failureCode", details.FailureCode))
 	}

@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
@@ -143,7 +144,7 @@ func recorded(t *testing.T, class problem.Class, err error) (bool, string) {
 	})
 	ctx, span := provider.Tracer("test").Start(context.Background(), "answer")
 	var written bytes.Buffer
-	reporterWriting(&written).record(requestOf(t).WithContext(ctx), err, problem.Of(class))
+	reporterWriting(&written).record(requestOf(t).WithContext(ctx), identity.TransactionID{}, err, problem.Of(class))
 	span.End()
 	ended := spans.Ended()
 	if len(ended) != 1 {
@@ -182,7 +183,7 @@ func TestStackOf_keepsTheStackTheChainAlreadyCarries(t *testing.T) {
 func TestRefused_leavesOutTheAttributesThatHoldNothing(t *testing.T) {
 	t.Parallel()
 	var bare bytes.Buffer
-	reporterWriting(&bare).refused(requestOf(t), problem.Details{Status: http.StatusBadRequest}, nil)
+	reporterWriting(&bare).refused(requestOf(t), identity.TransactionID{}, problem.Details{Status: http.StatusBadRequest}, nil)
 	if !strings.Contains(bare.String(), `"status":"400"`) {
 		t.Fatalf("bare line = %s, want the status of the answer", bare.String())
 	}
@@ -192,7 +193,7 @@ func TestRefused_leavesOutTheAttributesThatHoldNothing(t *testing.T) {
 		}
 	}
 	var full bytes.Buffer
-	reporterWriting(&full).refused(requestOf(t), problem.Details{Status: 422, FailureCode: "INSUFFICIENT_FUNDS"}, []string{"frame"})
+	reporterWriting(&full).refused(requestOf(t), identity.TransactionID{}, problem.Details{Status: 422, FailureCode: "INSUFFICIENT_FUNDS"}, []string{"frame"})
 	for _, present := range []string{`"failureCode":"INSUFFICIENT_FUNDS"`, `"stack"`} {
 		if !strings.Contains(full.String(), present) {
 			t.Fatalf("full line = %s, want %s carried when it holds something", full.String(), present)
@@ -209,4 +210,39 @@ func reporterWriting(sink *bytes.Buffer) *Reporter {
 func requestOf(t *testing.T) *http.Request {
 	t.Helper()
 	return httptest.NewRequestWithContext(context.Background(), http.MethodPost, Route, strings.NewReader(submission(nil)))
+}
+
+// A rule that refused wrote a row of its own, and go-observability asks the
+// rejection to log it: the token says which rule refused, and the identifier is
+// what joins the line to the transaction the provider can read back.
+func TestRejected_namesTheTransactionTheCommitWroteForTheRefusal(t *testing.T) {
+	t.Parallel()
+	var written bytes.Buffer
+	id := transactionOf(t)
+	rejected := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.InsufficientFunds, nil))
+	reporterWriting(&written).Rejected(httptest.NewRecorder(), requestOf(t), id, rejected)
+	line := written.String()
+	if !strings.Contains(line, `"transactionId":"`+id.String()+`"`) {
+		t.Fatalf("rejected line = %s, want the transaction of the row it wrote", line)
+	}
+	if !strings.Contains(line, `"failureCode":"INSUFFICIENT_FUNDS"`) {
+		t.Fatalf("rejected line = %s, want the token beside the transaction", line)
+	}
+}
+
+// The two conflicts of idempotency refuse without writing a row, so the result
+// they come back with names nothing and the attribute is left out. An empty one
+// would read as a transaction whose value was lost.
+func TestRejected_namesNoTransactionForARefusalThatWroteNoRow(t *testing.T) {
+	t.Parallel()
+	var written bytes.Buffer
+	conflict := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.IdempotencyConflict, nil))
+	reporterWriting(&written).Rejected(httptest.NewRecorder(), requestOf(t), identity.TransactionID{}, conflict)
+	line := written.String()
+	if strings.Contains(line, `"transactionId"`) {
+		t.Fatalf("conflict line = %s, want no transaction named: it wrote no row", line)
+	}
+	if !strings.Contains(line, `"failureCode":"IDEMPOTENCY_CONFLICT"`) {
+		t.Fatalf("conflict line = %s, want the token of the conflict", line)
+	}
 }

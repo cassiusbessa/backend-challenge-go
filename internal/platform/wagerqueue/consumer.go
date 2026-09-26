@@ -319,12 +319,12 @@ func (c *Consumer) answer(ctx, work context.Context, delivery Delivery, result s
 	answer, reason := answerOf(err)
 	switch answer {
 	case Remove:
-		// Both arms remove the message, and they are not the same line: a rule
-		// refused this one, and the result the use case answers a refusal with
-		// carries no transaction to name. go-observability asks the rejection to
-		// log its token, so the reporter is told which of the two happened.
+		// Both arms remove the message and they are not the same line: one settled
+		// and a rule refused the other. go-observability asks the rejection to log
+		// its token beside the row it wrote, so the reporter is told which of the
+		// two happened and is given both halves of it.
 		if refusal, refused := rejectionOf(err); refused {
-			c.reporter.Rejected(ctx, refusal)
+			c.reporter.Rejected(ctx, result, refusal)
 		} else {
 			c.reporter.Settled(ctx, result)
 		}

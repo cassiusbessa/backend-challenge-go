@@ -150,14 +150,18 @@ func (rep *Reporter) Settled(ctx context.Context, result submitwager.Result) {
 // the line the border would answer over HTTP carries the same failureCode, so the
 // two origins of one rule read alike. The span stays ok, because a rejection is
 // none of the three cases that mark one.
-func (rep *Reporter) Rejected(ctx context.Context, refusal wager.Rejection) {
+func (rep *Reporter) Rejected(ctx context.Context, result submitwager.Result, refusal wager.Rejection) {
 	code := refusal.Code().String()
+	transaction := result.TransactionID.String()
 	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String("wager.transaction.id", transaction),
 		attribute.String("wager.status", wager.Rejected.String()),
 		attribute.String("wager.failure_code", code),
 	)
 	rep.log.LogAttrs(ctx, slog.LevelWarn, "message of the ingress queue rejected",
 		append(rep.named(ctx),
+			slog.String("transactionId", transaction),
+			slog.String("kind", result.Kind.String()),
 			slog.String("status", wager.Rejected.String()),
 			slog.String("failureCode", code),
 		)...)

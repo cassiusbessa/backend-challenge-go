@@ -75,7 +75,10 @@ func (s *Service) Receive(ctx context.Context, delivery Delivery) (submitwager.R
 	}
 	result, err := s.submitter.SubmitCaused(ctx, delivery.Command, delivery.caused())
 	if err != nil {
-		return submitwager.Result{}, fmt.Errorf("receive wager: %w", err)
+		// The result travels with the refusal: a rule that refused wrote a row of
+		// its own, and the border names it. Only the sender refusal above answers
+		// nothing, because it leaves no row of any kind.
+		return result, fmt.Errorf("receive wager: %w", err)
 	}
 	return result, nil
 }

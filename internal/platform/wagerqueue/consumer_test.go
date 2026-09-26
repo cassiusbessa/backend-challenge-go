@@ -22,6 +22,7 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/receivewager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 )
@@ -449,7 +450,17 @@ func TestMeasure_keepsTheLastDepthWhenTheBrokerIsOut(t *testing.T) {
 const (
 	observedSender  = "000000000000"
 	deduplicationID = "message-1"
+	transactionID   = "3f2c1a9e-5b7d-4e8a-9c1f-2d6b8a4e7c05"
 )
+
+func transactionOf(t *testing.T) identity.TransactionID {
+	t.Helper()
+	id, err := identity.ParseTransactionID(transactionID)
+	if err != nil {
+		t.Fatalf("ParseTransactionID = %v, want nil", err)
+	}
+	return id
+}
 
 func arrived(deliveries int64) Delivery {
 	return Delivery{
@@ -615,6 +626,9 @@ func (q *fakeQueue) awaitFetch(t *testing.T) {
 type fakeReceiver struct {
 	status wager.Status
 	refuse error
+	// refusedRow is what the use case answers beside a refusal: a rule that refused
+	// wrote a row of its own, and the result names it.
+	refusedRow submitwager.Result
 	// hold is how long it pretends to work, which is what makes the deadline of
 	// the decision observable.
 	hold     time.Duration
@@ -637,9 +651,31 @@ func (f *fakeReceiver) Receive(ctx context.Context, _ receivewager.Delivery) (su
 		}
 	}
 	if f.refuse != nil {
-		return submitwager.Result{}, f.refuse
+		return f.refusedRow, f.refuse
 	}
 	return submitwager.Result{Status: f.status, Kind: wager.KindBet}, nil
+}
+
+// A rule that refused wrote a row of its own, and the result answers it. The line
+// of the rejection names that transaction: go-observability asks for it, and it is
+// what joins the line to the row the provider can read back.
+func TestAnswer_namesTheTransactionTheRefusalWrote(t *testing.T) {
+	t.Parallel()
+	id := transactionOf(t)
+	refused := &fakeReceiver{
+		refuse:     wager.NewRejection(wager.InsufficientFunds, nil),
+		refusedRow: submitwager.Result{TransactionID: id, Kind: wager.KindBet, Status: wager.Rejected},
+	}
+	consumer, logs, _ := consumerOver(t, &fakeQueue{}, refused)
+	consumer.decide(context.Background(), arrived(1))
+	line := lineWith(t, logs, "rejected")
+	if got := line["transactionId"]; got != id.String() {
+		t.Fatalf("transactionId of the rejected line = %v, want %s", got, id)
+	}
+	if got := line["kind"]; got != wager.KindBet.String() {
+		t.Fatalf("kind of the rejected line = %v, want %s", got, wager.KindBet)
+	}
+	assertNoSecrets(t, line)
 }
 
 // lineWith answers the log line whose message contains that word, so a case reads
