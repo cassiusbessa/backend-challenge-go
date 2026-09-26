@@ -45,25 +45,42 @@ func (rep *Reporter) Checked(ctx context.Context, report reconcilewallet.Report)
 	)
 }
 
-// Failed records a failure of the turn: the chain that names where it came
-// from, the frames of where it was first seen, and the wallet when the failure
-// was about one.
+// Failed records a page of wallets that could not be read: the chain that
+// names where it came from and the frames of where it was first seen. No
+// verdict was attempted, so nothing is counted.
 //
 // A turn the shutdown cut is not a failure. It is read off the error and not
 // off the context: once Stop has cancelled, a context test would drop every
 // failure that merely raced the signal, and that is the last one the process
 // gets to report.
-func (rep *Reporter) Failed(ctx context.Context, message string, err error, wallets ...identity.WalletID) {
+func (rep *Reporter) Failed(ctx context.Context, message string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return
 	}
-	attrs := []slog.Attr{
+	rep.logFailure(ctx, message, err)
+}
+
+// Unverified records a verdict that could not be produced over one wallet: the
+// line of a failure, with the wallet, and one reconciliation failure of the
+// watcher. The cut by the shutdown is neither, for the reason Failed gives.
+//
+// It is apart from Failed so the count does not hang on an optional argument:
+// a page that fails must never count because a caller passed a wallet.
+func (rep *Reporter) Unverified(ctx context.Context, err error, id identity.WalletID) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	rep.metrics.ReconciliationFailed(metrics.OriginWatch)
+	rep.logFailure(ctx, "reconcile a wallet", err, slog.String("walletId", id.String()))
+}
+
+// logFailure writes the line of a failure of the turn, with the attributes of
+// what it was about after the chain and the frames.
+func (rep *Reporter) logFailure(ctx context.Context, message string, err error, about ...slog.Attr) {
+	attrs := append([]slog.Attr{
 		slog.String("error", err.Error()),
 		slog.Any("stack", stackOf(message, err)),
-	}
-	for _, id := range wallets {
-		attrs = append(attrs, slog.String("walletId", id.String()))
-	}
+	}, about...)
 	rep.log.LogAttrs(ctx, slog.LevelError, message, attrs...)
 }
 

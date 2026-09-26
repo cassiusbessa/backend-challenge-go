@@ -81,7 +81,8 @@ func TestTurn_movesPastTheWalletWhoseVerdictFails(t *testing.T) {
 	table := &pages{wallets: wallets(t, 3)}
 	broken := errors.New("postgres: bigint out of range")
 	verdicts := &verdicts{failing: map[identity.WalletID]error{table.wallets[1]: broken}}
-	worker := New(table, verdicts, NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), series()), tick, 2)
+	moved := series()
+	worker := New(table, verdicts, NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved), tick, 2)
 	worker.turn(context.Background())
 	if worker.cursor != table.wallets[1] {
 		t.Fatalf("cursor after a failed verdict = %s, want the wallet that failed %s", worker.cursor, table.wallets[1])
@@ -91,6 +92,7 @@ func TestTurn_movesPastTheWalletWhoseVerdictFails(t *testing.T) {
 			t.Fatalf("log = %q, want %q in it", written.String(), want)
 		}
 	}
+	assertWatched(t, moved, 1, 1)
 	expected := [][]identity.WalletID{
 		table.wallets[2:3],
 		table.wallets[0:2],
@@ -102,6 +104,19 @@ func TestTurn_movesPastTheWalletWhoseVerdictFails(t *testing.T) {
 			t.Fatalf("turn %d after the failure checked %v, want %v", turn+1, verdicts.seen, want)
 		}
 	}
+	assertWatched(t, moved, 3, 2)
+}
+
+// assertWatched reads the two series of the watcher: the verdicts produced and
+// the ones that could not be.
+func assertWatched(t *testing.T, moved *metrics.Settlement, checked, failed float64) {
+	t.Helper()
+	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != checked {
+		t.Fatalf("wallets_checked{watch} = %v, want %v: a verdict that failed is not a wallet checked", got, checked)
+	}
+	if got := testutil.ToFloat64(moved.ReconciliationFailures.WithLabelValues("watch")); got != failed {
+		t.Fatalf("reconciliation_failures{watch} = %v, want %v: one per turn that read the failing wallet", got, failed)
+	}
 }
 
 // A page that could not be read ends the turn before any verdict, and the
@@ -111,13 +126,17 @@ func TestTurn_checksNothingWhenThePageFails(t *testing.T) {
 	var written strings.Builder
 	table := &pages{wallets: wallets(t, 2), failFirst: errors.New("postgres: connection refused")}
 	verdicts := &verdicts{}
-	worker := New(table, verdicts, NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), series()), tick, 2)
+	moved := series()
+	worker := New(table, verdicts, NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved), tick, 2)
 	worker.turn(context.Background())
 	if len(verdicts.seen) != 0 {
 		t.Fatalf("wallets checked after a page that failed = %v, want none", verdicts.seen)
 	}
 	if !strings.Contains(written.String(), "page the wallets") {
 		t.Fatalf("log = %q, want the failure of the page in it", written.String())
+	}
+	if got := testutil.ToFloat64(moved.ReconciliationFailures.WithLabelValues("watch")); got != 0 {
+		t.Fatalf("reconciliation_failures{watch} after a page that failed = %v, want 0: no verdict was attempted", got)
 	}
 	worker.turn(context.Background())
 	if len(verdicts.seen) != 2 {
@@ -223,6 +242,9 @@ func TestCheck_reportsTheVerdictAndAnswersWhetherTheTurnGoesOn(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 1 {
 		t.Fatalf("wallets_checked{watch} = %v, want only the verdict that was produced", got)
+	}
+	if got := testutil.ToFloat64(moved.ReconciliationFailures.WithLabelValues("watch")); got != 1 {
+		t.Fatalf("reconciliation_failures{watch} after one verdict that failed = %v, want 1", got)
 	}
 }
 

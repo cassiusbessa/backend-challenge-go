@@ -137,7 +137,7 @@ func (w *Worker) turn(ctx context.Context) {
 func (w *Worker) check(ctx context.Context, id identity.WalletID) bool {
 	report, err := w.reconciler.Reconcile(ctx, id)
 	if err != nil {
-		w.reporter.Failed(ctx, "reconcile a wallet", err, id)
+		w.reporter.Unverified(ctx, err, id)
 		return false
 	}
 	w.reporter.Checked(ctx, report)

@@ -117,15 +117,56 @@ func TestFailed_recordsNothingForATurnTheShutdownCutShort(t *testing.T) {
 }
 
 // The chain names where the failure came from and the frames say where it was
-// first seen; a failure that crossed no boundary is captured at this border.
-func TestFailed_recordsTheChainAndTheFrames(t *testing.T) {
+// first seen; a failure that crossed no boundary is captured at this border. A
+// page that fails attempted no verdict, and counts none as failed.
+func TestFailed_recordsTheChainAndTheFramesAndCountsNothing(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), series())
-	reporter.Failed(context.Background(), "reconcile a wallet", errors.New("rebuild ledger balance: overflow"))
+	moved := series()
+	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved)
+	reporter.Failed(context.Background(), "page the wallets", errors.New("scan wallet id: connection reset"))
 	line := written.String()
-	if !strings.Contains(line, "rebuild ledger balance: overflow") || !strings.Contains(line, "divergencewatch.stackOf") {
+	if !strings.Contains(line, "scan wallet id: connection reset") || !strings.Contains(line, "divergencewatch.stackOf") {
 		t.Fatalf("log = %q, want the chain and frames captured at this border", line)
+	}
+	if got := testutil.ToFloat64(moved.ReconciliationFailures.WithLabelValues("watch")); got != 0 {
+		t.Fatalf("reconciliation_failures{watch} after a page that failed = %v, want 0", got)
+	}
+}
+
+// A verdict that could not be produced leaves the line of the failure with the
+// wallet, and counts one failure of the watcher and none of the route.
+func TestUnverified_logsTheWalletAndCountsOneFailureOfTheWatcher(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	moved := series()
+	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved)
+	id := wallets(t, 1)[0]
+	reporter.Unverified(context.Background(), errors.New("rebuild ledger balance: overflow"), id)
+	assertLine(t, written.String(),
+		[]string{`"msg":"reconcile a wallet"`, `"walletId":"` + id.String() + `"`, "rebuild ledger balance: overflow", "divergencewatch.stackOf"},
+		nil)
+	if got := testutil.ToFloat64(moved.ReconciliationFailures.WithLabelValues("watch")); got != 1 {
+		t.Fatalf("reconciliation_failures{watch} after a verdict that failed = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(moved.ReconciliationFailures.WithLabelValues("http")); got != 0 {
+		t.Fatalf("reconciliation_failures{http} after a verdict of the watcher = %v, want 0", got)
+	}
+}
+
+// A verdict the shutdown cut is neither logged nor counted: the process is
+// leaving, and nothing about the wallet was learnt.
+func TestUnverified_recordsNothingForAVerdictTheShutdownCutShort(t *testing.T) {
+	t.Parallel()
+	var written strings.Builder
+	moved := series()
+	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved)
+	reporter.Unverified(context.Background(), fmt.Errorf("reconcile wallet: %w", context.Canceled), wallets(t, 1)[0])
+	if written.Len() != 0 {
+		t.Fatalf("log of a cancelled verdict = %q, want nothing", written.String())
+	}
+	if got := testutil.ToFloat64(moved.ReconciliationFailures.WithLabelValues("watch")); got != 0 {
+		t.Fatalf("reconciliation_failures{watch} after a cancelled verdict = %v, want 0", got)
 	}
 }
 
