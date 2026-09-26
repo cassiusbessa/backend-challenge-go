@@ -22,8 +22,31 @@ jobs:
         with:
           version: v2.14.0
 
+      # `scripts/` carries a module per tool, and the action above runs at the
+      # root, whose `./...` stops at the module boundary. Each one is named here
+      # or it is linted nowhere.
+      - name: lint the nested modules
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.14.0
+          working-directory: scripts/envcheck
+
+      - name: lint the nested modules of the gates
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.14.0
+          working-directory: scripts/testgates
+
       - name: unit tests
         run: go test -race -count=1 -coverprofile=cover.out ./...
+
+      # Same boundary as the lint above: the `./...` of the root module reaches
+      # no nested module, so the tests of the verifier ran nowhere until this
+      # step existed. `-C` has to be the first flag of the command.
+      - name: unit tests of the nested modules
+        run: |
+          go test -C scripts/envcheck -race -count=1 ./...
+          go test -C scripts/testgates -race -count=1 ./...
 
       - name: coverage floors
         run: go run -C scripts/testgates . -root "$PWD" -cover "$PWD/cover.out"

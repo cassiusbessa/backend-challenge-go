@@ -42,8 +42,13 @@ migrate: ## aplica o schema nos dois bancos, cada um nomeado no comando
 		|| docker compose exec -T postgres createdb -U $(POSTGRES_USER) $(SUITE_DB)
 	$(MIGRATE) "$(SUITE_URL)" up
 
+# Os módulos de `scripts/` entram por nome: o `./...` do módulo raiz para na
+# fronteira de módulo, e sem estas duas linhas os testes do verificador não
+# rodam em lugar nenhum. O `-C` tem de ser o primeiro flag.
 test: ## a suíte de unidade, que não sobe Docker
 	go test -race -count=1 ./...
+	go test -C scripts/envcheck -race -count=1 ./...
+	go test -C scripts/testgates -race -count=1 ./...
 
 test-journey: ## a suíte de jornada: em série, e contra o banco dela
 	DATABASE_URL="$(SUITE_HOST_URL)" go test -race -count=1 -p 1 -tags=integration ./...
