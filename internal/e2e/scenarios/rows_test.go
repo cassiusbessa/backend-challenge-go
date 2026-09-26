@@ -4,8 +4,11 @@ package scenarios
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -150,12 +153,26 @@ func (s store) decision(ctx context.Context, t *testing.T, transactionID string)
 }
 
 // awaitDecision waits until a worker of some instance has closed the transaction
-// the way the case expects.
+// the way the case expects, and reports how long that took.
 func (s store) awaitDecision(ctx context.Context, t *testing.T, transactionID string, want decision) {
 	t.Helper()
+	started := time.Now()
 	until(ctx, t, "the transaction to close as "+want.status+" "+want.failureCode, func() bool {
 		return s.decision(ctx, t, transactionID) == want
 	})
+	t.Logf("transaction %s closed as %s after %s", transactionID, strings.TrimSpace(want.status+" "+want.failureCode), since(started))
+}
+
+// String writes the wallet the way the contract writes money, beside its
+// version. The balance of a wallet is never negative, so the two places come
+// straight off the cents.
+func (w stored) String() string {
+	return fmt.Sprintf("%d.%02d at version %d", w.cents/100, w.cents%100, w.version)
+}
+
+// since is the time elapsed from that instant, rounded to what a person reads.
+func since(started time.Time) time.Duration {
+	return time.Since(started).Round(time.Millisecond)
 }
 
 func (s store) count(ctx context.Context, t *testing.T, query, argument string) int64 {

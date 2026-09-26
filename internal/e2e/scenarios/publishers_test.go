@@ -5,6 +5,7 @@ package scenarios
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // publishedWallets is how many wallets the publishers dispute: enough groups that
@@ -34,16 +35,19 @@ func TestPublishers_sendEachEventOnce(t *testing.T) {
 		assertCreated(ctx, t, at, publishers.at(index+1), wallets[index].bet(betAmount))
 	}
 
+	started := time.Now()
 	recorded := awaitEveryEventPublished(ctx, t, db, wallets)
 	if len(recorded) != publishedWallets*eventsPerWallet {
 		t.Fatalf("events of the wallets = %d, want %d", len(recorded), publishedWallets*eventsPerWallet)
 	}
+	t.Logf("%d publishers published the %d events of %d wallets within %s", len(publishers), len(recorded), len(wallets), since(started))
 	sent := recording.Published()
 	for _, eventID := range recorded {
 		if sent[eventID] != 1 {
 			t.Errorf("event %s left the publishers %d times, want exactly once", eventID, sent[eventID])
 		}
 	}
+	t.Logf("the proxy saw %d distinct events leave, %d of them of other wallets of the database; each event of the case once", len(sent), len(sent)-len(recorded))
 }
 
 // awaitEveryEventPublished waits until no wallet of the case has an event left to

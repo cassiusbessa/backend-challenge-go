@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -25,15 +27,16 @@ func TestRacingBets_settleAgainstTheBalanceAlreadyCommitted(t *testing.T) {
 		asks[index] = at.wager(instances.at(index), newKey(), holder.bet(at.params.RacingAmount.Amount()))
 	}
 
+	t.Logf("%d bets of %s at once over a wallet of %s: %d fit", len(asks), at.params.RacingAmount, at.params.OpeningBalance, at.params.Fitting())
 	decided := together(ctx, t, asks)
-	assertVerdicts(t, decided, racing(at.params, false))
+	assertVerdicts(t, "race", decided, racing(at.params, false))
 	settled := assertRaceSettled(ctx, t, db, holder, at.params)
 
 	again := together(ctx, t, asks)
-	assertVerdicts(t, again, racing(at.params, true))
+	assertVerdicts(t, "resubmission", again, racing(at.params, true))
 	assertSameTransactions(t, decided, again)
 	if got := db.wallet(ctx, t, holder.id); got != settled {
-		t.Errorf("wallet after the resubmission = %+v, want the %+v of the race", got, settled)
+		t.Errorf("wallet after the resubmission = %v, want the %v of the race", got, settled)
 	}
 	if got := db.entries(ctx, t, holder.id); got != 1+at.params.Fitting() {
 		t.Errorf("entries after the resubmission = %d, want the %d of the race", got, 1+at.params.Fitting())
@@ -56,15 +59,26 @@ func racing(params Params, replay bool) map[string]int {
 	return want
 }
 
-func assertVerdicts(t *testing.T, answers []answer, want map[string]int) {
+func assertVerdicts(t *testing.T, round string, answers []answer, want map[string]int) {
 	t.Helper()
 	got := map[string]int{}
 	for _, answered := range answers {
 		got[answered.verdict(t)]++
 	}
 	if !maps.Equal(got, want) {
-		t.Fatalf("verdicts = %v, want %v", got, want)
+		t.Fatalf("verdicts of the %s = %v, want %v", round, got, want)
 	}
+	t.Logf("verdicts of the %s: %s", round, tallied(got))
+}
+
+// tallied writes how many answers each verdict had, in a stable order.
+func tallied(counts map[string]int) string {
+	verdicts := slices.Sorted(maps.Keys(counts))
+	written := make([]string, 0, len(verdicts))
+	for _, verdict := range verdicts {
+		written = append(written, fmt.Sprintf("%d× %s", counts[verdict], verdict))
+	}
+	return strings.Join(written, ", ")
 }
 
 // assertRaceSettled checks the wallet against what the parameters derive — the
@@ -78,11 +92,13 @@ func assertRaceSettled(ctx context.Context, t *testing.T, db store, holder owner
 	}
 	want := stored{cents: remaining.Cents(), version: 1 + params.Fitting()}
 	if got := db.wallet(ctx, t, holder.id); got != want {
-		t.Fatalf("wallet after the race = %+v, want %+v", got, want)
+		t.Fatalf("wallet after the race = %v, want %v", got, want)
 	}
-	if got := db.debits(ctx, t, holder.id); got != params.Fitting() {
-		t.Errorf("debits after the race = %d, want %d", got, params.Fitting())
+	debits := db.debits(ctx, t, holder.id)
+	if debits != params.Fitting() {
+		t.Errorf("debits after the race = %d, want %d", debits, params.Fitting())
 	}
+	t.Logf("wallet after the race: %v, debits: %d", want, debits)
 	return want
 }
 

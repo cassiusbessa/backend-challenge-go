@@ -37,6 +37,7 @@ func TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue(t *testing.T) {
 		if got, want := replayed.outcome(t).ID, db.keyed(ctx, t, key); got != want {
 			t.Errorf("replay over HTTP answered %s, want the %s the queue recorded", got, want)
 		}
+		t.Logf("HTTP answered %s with the transaction the queue recorded", replayed.verdict(t))
 		assertOneEffect(ctx, t, at, db, holder, key, message)
 	})
 	t.Run("another amount on the queue after HTTP", func(t *testing.T) {
@@ -48,6 +49,7 @@ func TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue(t *testing.T) {
 		if got := keyConflicts(ctx, t, instances); got != conflicts+1 {
 			t.Errorf("key conflicts counted on the queue = %v, want the %v before plus the one sent", got, conflicts)
 		}
+		t.Logf("the fleet removed the message as a key conflict, %v of them counted on the queue so far", conflicts+1)
 		assertOneEffect(ctx, t, at, db, holder, key, message)
 	})
 	t.Run("another amount over HTTP after the queue", func(t *testing.T) {
@@ -58,6 +60,7 @@ func TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue(t *testing.T) {
 		if got := refused.verdict(t); got != "422 IDEMPOTENCY_CONFLICT replay=false" {
 			t.Fatalf("another amount over HTTP after the queue = %s, want 422 IDEMPOTENCY_CONFLICT replay=false", got)
 		}
+		t.Logf("HTTP answered %s", refused.verdict(t))
 		assertOneEffect(ctx, t, at, db, holder, key, message)
 	})
 }

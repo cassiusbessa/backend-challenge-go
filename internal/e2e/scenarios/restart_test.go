@@ -40,9 +40,11 @@ func TestRestart_keepsIdempotencyTheWaitAndTheLedger(t *testing.T) {
 		t.Fatalf("events pending when the fleet goes down = %d, want the %d it recorded", len(pending), recordedEvents)
 	}
 	first.stop(ctx, t)
+	t.Logf("the first fleet recorded the bet under the key, a wait and %d unpublished events, and went down", len(pending))
 
 	recording, endpoint := front(t, snsEndpoint(), Faculties{RecordPublishes: true})
 	for restart := range at.params.Restarts {
+		t.Logf("restart %d of %d", restart+1, at.params.Restarts)
 		next := at.launch(ctx, t, at.params.Instances, map[string]string{"SNS_ENDPOINT": endpoint})
 		assertKeySurvives(ctx, t, at, db, next, key, bet, settled)
 		if restart == 0 {
@@ -83,6 +85,7 @@ func assertKeySurvives(ctx context.Context, t *testing.T, at *scene, db store, n
 	if got := db.forKey(ctx, t, key); got != 1 {
 		t.Errorf("transactions under the key after the restart = %d, want 1", got)
 	}
+	t.Logf("the key replayed %s with the %s observed before the restart, and another body was the conflict", settled.ID, settled.ObservedBalance.Amount)
 }
 
 // awaitPublished waits until the wallet has nothing left to publish, and then
@@ -99,6 +102,7 @@ func awaitPublished(ctx context.Context, t *testing.T, db store, holder owner, r
 			t.Errorf("event %s recorded before the restart went out %d times, want at least once", eventID, sent[eventID])
 		}
 	}
+	t.Logf("the %d events the first fleet left went out through the new fleet under the eventId they were recorded with", len(pending))
 }
 
 // assertReconciled reads the reconciliation of the wallet: consistent, at the
@@ -117,4 +121,5 @@ func assertReconciled(ctx context.Context, t *testing.T, at *scene, in *instance
 	if !report.Consistent || report.StoredBalance.Amount != "975.00" || report.LedgerBalance.Amount != "975.00" {
 		t.Errorf("reconciliation = %+v, want consistent at 975.00 on both sides", report)
 	}
+	t.Logf("reconciliation: consistent=%t, stored %s, ledger %s", report.Consistent, report.StoredBalance.Amount, report.LedgerBalance.Amount)
 }

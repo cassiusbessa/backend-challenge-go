@@ -180,7 +180,18 @@ func (s *scene) launch(ctx context.Context, t *testing.T, count int, overrides m
 	for range count {
 		out = append(out, s.boot(ctx, t, overrides))
 	}
+	t.Logf("%d instances up: %s", count, out)
 	return out
+}
+
+// String names the instances by the address each one listens on, which is how
+// the output of a case says which process took what.
+func (f fleet) String() string {
+	bases := make([]string, 0, len(f))
+	for _, each := range f {
+		bases = append(bases, each.base)
+	}
+	return strings.Join(bases, " ")
 }
 
 // boot starts one instance the way the binary does, through app.New, and stops
@@ -480,27 +491,43 @@ func together(ctx context.Context, t *testing.T, asks []request) []answer {
 
 // until polls the condition until it holds, and fails naming what it waited for
 // when the deadline of the case comes first.
+//
+// It gives up a margin before that deadline and not at it: a check that is still
+// reading the database or the queue when the deadline comes fails on its own
+// canceled call, and the failure would name the read instead of the wait.
 func until(ctx context.Context, t *testing.T, what string, holds func() bool) {
 	t.Helper()
+	waiting, cancel := context.WithDeadline(ctx, giveUp(ctx))
+	defer cancel()
 	ticker := time.NewTicker(pollEvery)
 	defer ticker.Stop()
-	for {
-		if ctx.Err() != nil {
-			t.Fatalf("waited for %s until the deadline of the case, and it did not happen", what)
-		}
-		if holds() {
-			return
-		}
+	for !holds() {
 		select {
-		case <-ctx.Done():
+		case <-waiting.Done():
+			t.Fatalf("waited for %s until the deadline of the case, and it did not happen", what)
 		case <-ticker.C:
 		}
 	}
 }
 
+// giveUp is when a wait stops looking: the deadline of the case less the margin
+// one last check has to finish in.
+func giveUp(ctx context.Context) time.Time {
+	deadline, bounded := ctx.Deadline()
+	if !bounded {
+		return time.Now().Add(time.Hour)
+	}
+	return deadline.Add(-checkMargin)
+}
+
 // pollEvery is how often a wait looks. It is well above the interval the
 // workers run at, and far below any deadline.
 const pollEvery = 50 * time.Millisecond
+
+// checkMargin is what one check of a wait takes at most: a query of the
+// database or a read of the queue, which answer in milliseconds on the local
+// stack.
+const checkMargin = 500 * time.Millisecond
 
 // owner is a wallet a case operates on, with the player that owns it.
 type owner struct {

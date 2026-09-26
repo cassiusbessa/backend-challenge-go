@@ -78,6 +78,7 @@ func assertWaits(ctx context.Context, t *testing.T, at *scene, in *instance, op 
 	if waiting.Status != "PENDING_REFERENCE" || waiting.ObservedBalance.Amount != "" {
 		t.Fatalf("wait = %+v, want PENDING_REFERENCE with no balance observed", waiting)
 	}
+	t.Logf("%s %s recorded as PENDING_REFERENCE by %s", op["kind"], waiting.ID, in.base)
 	return waiting.ID
 }
 
@@ -87,6 +88,7 @@ func assertCreated(ctx context.Context, t *testing.T, at *scene, in *instance, o
 	if created.status != http.StatusCreated {
 		t.Fatalf("the cited operation = %d, want 201: %s", created.status, created.body)
 	}
+	t.Logf("%s %s settled by %s", op["kind"], created.outcome(t).ID, in.base)
 }
 
 // assertBackWhereItOpened checks the balance is the one of the opening, at the
@@ -95,9 +97,10 @@ func assertCreated(ctx context.Context, t *testing.T, at *scene, in *instance, o
 func assertBackWhereItOpened(ctx context.Context, t *testing.T, db store, holder owner, version int64) {
 	t.Helper()
 	if got := db.wallet(ctx, t, holder.id); got != (stored{cents: 100000, version: version}) {
-		t.Errorf("wallet = %+v, want 100000 cents at version %d", got, version)
+		t.Errorf("wallet = %v, want 1000.00 at version %d", got, version)
 	}
 	if got := db.entries(ctx, t, holder.id); got != version {
 		t.Errorf("entries = %d, want %d, one per version", got, version)
 	}
+	t.Logf("wallet back at the 1000.00 it opened with, at version %d", version)
 }

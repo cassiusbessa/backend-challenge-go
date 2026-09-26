@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -31,15 +32,19 @@ func TestLockedWallet_doesNotHoldTheOthers(t *testing.T) {
 	}
 
 	arrivals := release(ctx, asks)
+	released := time.Now()
 	for index := 1; index < len(asks); index++ {
 		assertSettledWhileHeld(t, arrivals.answered(ctx, t, index))
 	}
+	t.Logf("%d other wallets settled %s after the release, while the row of %s was held", len(asks)-1, since(released), held.id)
 	holding.awaitBlocked(ctx, t)
 	if !arrivals.waiting(0) {
 		t.Fatalf("the bet of the held wallet answered while its row was held: %s", arrivals.answered(ctx, t, 0).body)
 	}
+	t.Logf("the bet of the held wallet is blocked by backend %d and has not answered", holding.backend)
 	holding.letGo(ctx, t)
 	assertSettledWhileHeld(t, arrivals.answered(ctx, t, 0))
+	t.Logf("the bet of the held wallet settled once the row was let go, %s after the release", since(released))
 	assertEachDebitedOnce(ctx, t, db, wallets)
 }
 
@@ -47,9 +52,10 @@ func assertEachDebitedOnce(ctx context.Context, t *testing.T, db store, wallets 
 	t.Helper()
 	for _, each := range wallets {
 		if got := db.wallet(ctx, t, each.id); got != (stored{cents: 97500, version: 2}) {
-			t.Errorf("wallet %s = %+v, want 97500 cents at version 2", each.id, got)
+			t.Errorf("wallet %s = %v, want 975.00 at version 2", each.id, got)
 		}
 	}
+	t.Logf("all %d wallets: 975.00 at version 2", len(wallets))
 }
 
 func assertSettledWhileHeld(t *testing.T, answered answer) {

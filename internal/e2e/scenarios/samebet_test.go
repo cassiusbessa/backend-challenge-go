@@ -36,7 +36,9 @@ func TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce(t *testing.T) {
 		asks[index] = at.wager(instances.at(index), key, bet)
 	}
 
+	t.Logf("sent %d copies of one bet under one key at once", len(asks))
 	settled := assertOneSettledAndTheRestReplayed(t, together(ctx, t, asks))
+	t.Logf("1 settled as %s with %s observed, %d answered the replay of it", settled.ID, settled.ObservedBalance.Amount, len(asks)-1)
 	assertDebitedOnce(ctx, t, db, holder, key, settled)
 	assertEveryInstanceTookItsShare(ctx, t, instances, at.params.SameBetCopies)
 }
@@ -91,17 +93,21 @@ func assertDebitedOnce(ctx context.Context, t *testing.T, db store, holder owner
 	if got := db.debits(ctx, t, holder.id); got != 1 {
 		t.Errorf("debits of the wallet = %d, want 1", got)
 	}
-	if got := db.wallet(ctx, t, holder.id); got != (stored{cents: 97500, version: 2}) {
-		t.Errorf("wallet = %+v, want 97500 cents at version 2", got)
+	wallet := db.wallet(ctx, t, holder.id)
+	if wallet != (stored{cents: 97500, version: 2}) {
+		t.Errorf("wallet = %v, want 975.00 at version 2", wallet)
 	}
 	assertEventsOnce(ctx, t, db, settled.ID)
+	t.Logf("wallet: %v, with one transaction under the key and one debit", wallet)
 }
 
 func assertEventsOnce(ctx context.Context, t *testing.T, db store, transactionID string) {
 	t.Helper()
-	if got := db.eventsOf(ctx, t, transactionID); !slices.Equal(got, settledEvents) {
+	got := db.eventsOf(ctx, t, transactionID)
+	if !slices.Equal(got, settledEvents) {
 		t.Errorf("outbox rows of the transaction = %v, want %v once each", got, settledEvents)
 	}
+	t.Logf("outbox of %s: %v", transactionID, got)
 }
 
 // assertEveryInstanceTookItsShare reads what each instance counted: every one of
@@ -111,15 +117,18 @@ func assertEventsOnce(ctx context.Context, t *testing.T, db store, transactionID
 func assertEveryInstanceTookItsShare(ctx context.Context, t *testing.T, instances fleet, copies int) {
 	t.Helper()
 	var total float64
+	shares := make([]float64, 0, len(instances))
 	for index, each := range instances {
 		decided := each.tally(ctx, t, "wager_settlements_total", map[string]string{"origin": "http", "kind": "BET"}) +
 			each.tally(ctx, t, "wager_duplicates_total", map[string]string{"origin": "http", "reason": "replay"})
 		if decided < 1 {
 			t.Errorf("arrivals decided by instance %d = %v, want at least 1", index, decided)
 		}
+		shares = append(shares, decided)
 		total += decided
 	}
 	if total != float64(copies) {
 		t.Errorf("arrivals decided by the fleet = %v, want the %d sent", total, copies)
 	}
+	t.Logf("arrivals each instance decided, by its own series: %v, %v in all", shares, total)
 }

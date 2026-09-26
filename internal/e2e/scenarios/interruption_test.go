@@ -5,6 +5,7 @@ package scenarios
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
 )
@@ -30,15 +31,19 @@ func TestInterruption_changesNothingWhenTheRemovalNeverReachedTheBroker(t *testi
 		return refusing.Refused() >= 1
 	})
 	committed := db.wallet(ctx, t, holder.id)
+	t.Logf("the doomed instance %s committed the bet, leaving the wallet with %v, and the proxy refused %d removal of it", doomed.base, committed, refusing.Refused())
 	doomed.stop(ctx, t)
+	stopped := time.Now()
 
 	survivor := at.boot(ctx, t, nil)
 	at.queues.awaitEmpty(ctx, t)
-	if got := survivor.tally(ctx, t, "wager_duplicates_total", map[string]string{"origin": "sqs", "reason": "redelivery"}); got < 1 {
-		t.Errorf("redeliveries counted by the survivor = %v, want at least 1", got)
+	redeliveries := survivor.tally(ctx, t, "wager_duplicates_total", map[string]string{"origin": "sqs", "reason": "redelivery"})
+	if redeliveries < 1 {
+		t.Errorf("redeliveries counted by the survivor = %v, want at least 1", redeliveries)
 	}
+	t.Logf("the survivor %s took the redelivery and emptied the queue %s after the stop, counting %v redelivery", survivor.base, since(stopped), redeliveries)
 	if committed != (stored{cents: 97500, version: 2}) {
-		t.Errorf("wallet at the first commit = %+v, want 97500 cents at version 2", committed)
+		t.Errorf("wallet at the first commit = %v, want 975.00 at version 2", committed)
 	}
 	assertOneEffect(ctx, t, at, db, holder, key, message)
 }
@@ -52,7 +57,7 @@ func assertOneEffect(ctx context.Context, t *testing.T, at *scene, db store, hol
 		t.Fatalf("transactions under the key = %d, want 1", got)
 	}
 	if got := db.wallet(ctx, t, holder.id); got != (stored{cents: 97500, version: 2}) {
-		t.Errorf("wallet after every arrival = %+v, want 97500 cents at version 2", got)
+		t.Errorf("wallet after every arrival = %v, want 975.00 at version 2", got)
 	}
 	if got := db.entries(ctx, t, holder.id); got != 2 {
 		t.Errorf("entries after every arrival = %d, want the opening and the one debit", got)
@@ -64,4 +69,5 @@ func assertOneEffect(ctx context.Context, t *testing.T, at *scene, db store, hol
 		t.Errorf("messages on the dead-letter queue = %d, want 0", got)
 	}
 	assertEventsOnce(ctx, t, db, db.keyed(ctx, t, key))
+	t.Logf("one transaction under the key, one debit, one inbox row for the message, nothing on the dead-letter queue")
 }
