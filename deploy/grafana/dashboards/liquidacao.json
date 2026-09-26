@@ -1,7 +1,7 @@
 {
   "uid": "liquidacao",
   "title": "Liquidação",
-  "description": "As cinco faixas da liquidação: saúde e latência, resultado financeiro, fila e referência pendente, outbox, reconciliação. A divergência fica no topo.",
+  "description": "As cinco faixas da liquidação: saúde e latência, resultado financeiro, fila e referência pendente, outbox, reconciliação. A divergência e a reconciliação sem veredito ficam no topo.",
   "tags": [
     "wager",
     "liquidacao"
@@ -34,7 +34,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -85,6 +85,67 @@
       },
       "description": "Vermelho acima de zero. O alerta ReconciliationDivergenceFound dispara sobre esta mesma expressão; a linha de log nomeia a carteira e os tokens.",
       "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Reconciliações sem veredito do observador (15m)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(wager_reconciliation_failures_total{origin=\"watch\"}[15m]))",
+          "legendFormat": "sem veredito",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center"
+      },
+      "description": "Vermelho acima de zero. O alerta ReconciliationVerdictFailed dispara sobre esta mesma expressão: é a carteira que a divergência não enxerga, e a linha de log nomeia a carteira e traz a stack. A falha da rota está na faixa de reconciliação.",
+      "id": 25
     },
     {
       "type": "row",
@@ -1037,7 +1098,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 49
       },
@@ -1090,8 +1151,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 49
       },
       "targets": [
@@ -1131,6 +1192,58 @@
         }
       },
       "id": 24
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconciliações sem veredito por origem",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 49
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (origin) (increase(wager_reconciliation_failures_total[15m]))",
+          "legendFormat": "{{origin}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 26,
+      "description": "A leitura que falhou ou o número fora do que Money representa. A rota responde a falha a quem chamou; só a origem watch aciona o alerta."
     }
   ]
 }
