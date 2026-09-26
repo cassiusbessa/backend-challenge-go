@@ -86,6 +86,8 @@ O que duas réplicas poderiam decidir diferente é decidido pelo PostgreSQL, e n
 - O **saldo** é `SELECT … FOR UPDATE` antes de decidir, mais a versão lida como condição do `UPDATE` ([ADR 0002](docs/adr/0002-lock-pessimista-com-guarda-de-versao.md)).
 - A **máquina de estados**, o acoplamento entre tipo e quantia e a coerência do lançamento com a transação são `CHECK` e chave estrangeira composta ([03 · Dados](docs/03-dados.md)). O agregado afirma as mesmas invariantes em Go; o banco tem a palavra final.
 
+Os cenários obrigatórios do enunciado provam isso com várias instâncias independentes do processo sobre o mesmo banco, cada uma com o próprio grafo, pool e porta ([ADR 0027](docs/adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)); a morte entre o commit e a remoção da mensagem, e a contagem de cada evento publicado, acontecem na rede entre a instância e o broker ([ADR 0028](docs/adr/0028-falha-e-contagem-na-fronteira-de-rede-do-broker.md)).
+
 ### Um commit
 
 A memória da mensagem (inbox), o saldo, a linha da transação, o lançamento e os eventos (outbox) entram na mesma transação SQL, em `READ COMMITTED`. Uma rejeição de negócio **commita** a própria linha `REJECTED` e ainda assim sai como `422` — a recusa viaja ao lado do resultado, não como erro da unit of work ([ADR 0004](docs/adr/0004-rejeicao-duravel-ao-lado-do-resultado.md)). Falha transitória desfaz tudo e tenta de novo. Nada é publicado antes do commit: o relay lê a outbox depois, reivindica por lease e publica fora de qualquer transação ([ADR 0013](docs/adr/0013-publicar-fora-da-transacao-sob-lease.md)).
