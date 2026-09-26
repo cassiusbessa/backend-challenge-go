@@ -13,7 +13,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 )
 
-func TestHostPortDropsTheScheme(t *testing.T) {
+func TestHostPort_dropsTheScheme(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
 		"http://otel-collector:4317":  "otel-collector:4317",
@@ -31,7 +31,7 @@ func TestHostPortDropsTheScheme(t *testing.T) {
 	}
 }
 
-func TestSamplerFollowsTheConfiguredRatio(t *testing.T) {
+func TestSampler_followsTheConfiguredRatio(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		ratio float64
@@ -51,7 +51,7 @@ func TestSamplerFollowsTheConfiguredRatio(t *testing.T) {
 	}
 }
 
-func TestStartInstallsTheOTLPExportersWithoutReachingTheCollector(t *testing.T) {
+func TestStart_installsTheOTLPExportersWithoutReachingTheCollector(t *testing.T) {
 	t.Parallel()
 	pipe := NewPipeline(config.Config{OTELEndpoint: "http://127.0.0.1:1", SampleRatio: 1})
 	ctx := context.Background()
@@ -73,7 +73,7 @@ func TestStartInstallsTheOTLPExportersWithoutReachingTheCollector(t *testing.T) 
 	}
 }
 
-func TestReportLogsTheIncompleteFlushWithoutTheErrorText(t *testing.T) {
+func TestReport_logsTheIncompleteFlushWithoutTheErrorText(t *testing.T) {
 	t.Parallel()
 	buf := &bytes.Buffer{}
 	pipe := NewPipeline(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
@@ -88,7 +88,7 @@ func TestReportLogsTheIncompleteFlushWithoutTheErrorText(t *testing.T) {
 	}
 }
 
-func TestReportStaysSilentWithoutAnError(t *testing.T) {
+func TestReport_staysSilentWithoutAnError(t *testing.T) {
 	t.Parallel()
 	buf := &bytes.Buffer{}
 	pipe := NewPipeline(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
@@ -99,7 +99,7 @@ func TestReportStaysSilentWithoutAnError(t *testing.T) {
 	}
 }
 
-func TestFanoutDeliversAttributesToBothHandlers(t *testing.T) {
+func TestFanout_deliversAttributesToBothHandlers(t *testing.T) {
 	t.Parallel()
 	first := &bytes.Buffer{}
 	second := &bytes.Buffer{}
@@ -114,7 +114,7 @@ func TestFanoutDeliversAttributesToBothHandlers(t *testing.T) {
 	}
 }
 
-func TestFanoutCarriesTheGroupToBothHandlers(t *testing.T) {
+func TestFanout_carriesTheGroupToBothHandlers(t *testing.T) {
 	t.Parallel()
 	first := &bytes.Buffer{}
 	second := &bytes.Buffer{}
@@ -129,7 +129,7 @@ func TestFanoutCarriesTheGroupToBothHandlers(t *testing.T) {
 	}
 }
 
-func TestShutdownWithoutStartStaysSilentAndRepeatable(t *testing.T) {
+func TestShutdown_withoutStartStaysSilentAndRepeatable(t *testing.T) {
 	t.Parallel()
 	pipe := NewPipeline(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
 	ctx := context.Background()
