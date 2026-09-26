@@ -6,132 +6,137 @@ import (
 	"time"
 )
 
-func TestParseSchemaRow_readsWhatPsqlPrintsForEachState(t *testing.T) {
+// The flag arrives concatenated, so it is cast to text and reads `true` or
+// `false`. The bare-column form has a case of its own because psql prints that one
+// whenever the flag is selected on its own.
+func TestParseSchemaRow_readsACleanVersion(t *testing.T) {
 	t.Parallel()
-	// The flag arrives concatenated, so it is cast to text and reads `true` or
-	// `false`. The bare-column form is asserted below because psql prints that
-	// one whenever the flag is selected on its own.
-	t.Run("a clean version", func(t *testing.T) {
-		state, err := parseSchemaRow("junglegaming", "6|false\n")
-		if err != nil {
-			t.Fatalf("err = %v, want nil", err)
-		}
-		if state.version != "6" {
-			t.Errorf("version = %q, want 6", state.version)
-		}
-		if state.dirty {
-			t.Errorf("dirty = %v, want false", state.dirty)
-		}
-		if !state.present {
-			t.Errorf("present = %v, want true", state.present)
-		}
-	})
-
-	t.Run("a version left dirty", func(t *testing.T) {
-		state, err := parseSchemaRow("junglegaming", "6|true")
-		if err != nil {
-			t.Fatalf("parse of a dirty row: err = %v, want nil", err)
-		}
-		if !state.dirty {
-			t.Errorf("dirty on a true row = %v, want true", state.dirty)
-		}
-	})
-
-	t.Run("the flag as a bare column prints it", func(t *testing.T) {
-		dirty, err := parseSchemaRow("junglegaming", "6|t")
-		if err != nil {
-			t.Fatalf("parse of a t row: err = %v, want nil", err)
-		}
-		if !dirty.dirty {
-			t.Errorf("dirty on a t row = %v, want true", dirty.dirty)
-		}
-		clean, err := parseSchemaRow("junglegaming", "6|f")
-		if err != nil {
-			t.Fatalf("parse of an f row: err = %v, want nil", err)
-		}
-		if clean.dirty {
-			t.Errorf("dirty on an f row = %v, want false", clean.dirty)
-		}
-	})
-
-	t.Run("a dirty flag it cannot read", func(t *testing.T) {
-		if _, err := parseSchemaRow("junglegaming", "6|maybe"); err == nil {
-			t.Errorf("err on an unreadable dirty flag = %v, want one", err)
-		}
-	})
-
-	t.Run("a database with no migration applied", func(t *testing.T) {
-		state, err := parseSchemaRow("junglegaming_test", "")
-		if err != nil {
-			t.Fatalf("parse of an empty row: err = %v, want nil", err)
-		}
-		if state.version != noSchema {
-			t.Errorf("version of an empty row = %q, want %q", state.version, noSchema)
-		}
-		if !state.present {
-			t.Errorf("present on an empty row = %v, want true", state.present)
-		}
-	})
-
-	t.Run("a row it cannot read", func(t *testing.T) {
-		if _, err := parseSchemaRow("junglegaming", "6|f|extra"); err == nil {
-			t.Errorf("err on a row of three fields = %v, want one", err)
-		}
-	})
+	state, err := parseSchemaRow("junglegaming", "6|false\n")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if state.version != "6" {
+		t.Errorf("version = %q, want 6", state.version)
+	}
+	if state.dirty {
+		t.Errorf("dirty = %v, want false", state.dirty)
+	}
+	if !state.present {
+		t.Errorf("present = %v, want true", state.present)
+	}
 }
 
-func TestCompareSchema_namesTheDatabaseThatIsNotAsDeclared(t *testing.T) {
+func TestParseSchemaRow_readsAVersionLeftDirty(t *testing.T) {
 	t.Parallel()
-	t.Run("both applied at the same version", func(t *testing.T) {
-		got := compareSchema([]schemaState{
-			{name: "junglegaming", present: true, version: "6"},
-			{name: "junglegaming_test", present: true, version: "6"},
-		})
-		if len(got) != 0 {
-			t.Errorf("findings for two databases at the same version = %v, want none", got)
-		}
-	})
+	state, err := parseSchemaRow("junglegaming", "6|true")
+	if err != nil {
+		t.Fatalf("parse of a dirty row: err = %v, want nil", err)
+	}
+	if !state.dirty {
+		t.Errorf("dirty on a true row = %v, want true", state.dirty)
+	}
+}
 
-	t.Run("one of them missing", func(t *testing.T) {
-		got := compareSchema([]schemaState{
-			{name: "junglegaming", present: true, version: "6"},
-			{name: "junglegaming_test"},
-		})
-		if len(got) != 1 || !strings.Contains(got[0], "junglegaming_test does not exist") {
-			t.Errorf("findings for a missing database = %v, want one naming it", got)
-		}
-	})
+func TestParseSchemaRow_readsTheFlagInTheFormABareColumnPrints(t *testing.T) {
+	t.Parallel()
+	dirty, err := parseSchemaRow("junglegaming", "6|t")
+	if err != nil {
+		t.Fatalf("parse of a t row: err = %v, want nil", err)
+	}
+	if !dirty.dirty {
+		t.Errorf("dirty on a t row = %v, want true", dirty.dirty)
+	}
+	clean, err := parseSchemaRow("junglegaming", "6|f")
+	if err != nil {
+		t.Fatalf("parse of an f row: err = %v, want nil", err)
+	}
+	if clean.dirty {
+		t.Errorf("dirty on an f row = %v, want false", clean.dirty)
+	}
+}
 
-	t.Run("one of them left dirty", func(t *testing.T) {
-		got := compareSchema([]schemaState{
-			{name: "junglegaming_test", present: true, version: "6", dirty: true},
-		})
-		if len(got) != 1 || !strings.Contains(got[0], "dirty") {
-			t.Errorf("findings for a dirty database = %v, want one saying dirty", got)
-		}
-	})
+func TestParseSchemaRow_refusesADirtyFlagItCannotRead(t *testing.T) {
+	t.Parallel()
+	if _, err := parseSchemaRow("junglegaming", "6|maybe"); err == nil {
+		t.Errorf("err on an unreadable dirty flag = %v, want one", err)
+	}
+}
 
-	t.Run("one of them behind the other", func(t *testing.T) {
-		got := compareSchema([]schemaState{
-			{name: "junglegaming", present: true, version: "6"},
-			{name: "junglegaming_test", present: true, version: "5"},
-		})
-		if len(got) != 1 {
-			t.Fatalf("findings for two versions = %v, want exactly one", got)
-		}
-		if !strings.Contains(got[0], "junglegaming at 6") || !strings.Contains(got[0], "junglegaming_test at 5") {
-			t.Errorf("the finding for two versions = %q, want both databases and both versions", got[0])
-		}
-	})
+func TestParseSchemaRow_readsAnEmptyRowAsNoMigrationApplied(t *testing.T) {
+	t.Parallel()
+	state, err := parseSchemaRow("junglegaming_test", "")
+	if err != nil {
+		t.Fatalf("parse of an empty row: err = %v, want nil", err)
+	}
+	if state.version != noSchema {
+		t.Errorf("version of an empty row = %q, want %q", state.version, noSchema)
+	}
+	if !state.present {
+		t.Errorf("present on an empty row = %v, want true", state.present)
+	}
+}
 
-	t.Run("a database with no migration at all", func(t *testing.T) {
-		got := compareSchema([]schemaState{
-			{name: "junglegaming_test", present: true, version: noSchema},
-		})
-		if len(got) != 1 || !strings.Contains(got[0], "no migration applied") {
-			t.Errorf("findings for an empty database = %v, want one saying no migration", got)
-		}
+func TestParseSchemaRow_refusesARowOfThreeFields(t *testing.T) {
+	t.Parallel()
+	if _, err := parseSchemaRow("junglegaming", "6|f|extra"); err == nil {
+		t.Errorf("err on a row of three fields = %v, want one", err)
+	}
+}
+
+func TestCompareSchema_staysQuietWhenBothAreAtTheSameVersion(t *testing.T) {
+	t.Parallel()
+	got := compareSchema([]schemaState{
+		{name: "junglegaming", present: true, version: "6"},
+		{name: "junglegaming_test", present: true, version: "6"},
 	})
+	if len(got) != 0 {
+		t.Errorf("findings for two databases at the same version = %v, want none", got)
+	}
+}
+
+func TestCompareSchema_namesADatabaseThatIsMissing(t *testing.T) {
+	t.Parallel()
+	got := compareSchema([]schemaState{
+		{name: "junglegaming", present: true, version: "6"},
+		{name: "junglegaming_test"},
+	})
+	if len(got) != 1 || !strings.Contains(got[0], "junglegaming_test does not exist") {
+		t.Errorf("findings for a missing database = %v, want one naming it", got)
+	}
+}
+
+func TestCompareSchema_namesADatabaseLeftDirty(t *testing.T) {
+	t.Parallel()
+	got := compareSchema([]schemaState{
+		{name: "junglegaming_test", present: true, version: "6", dirty: true},
+	})
+	if len(got) != 1 || !strings.Contains(got[0], "dirty") {
+		t.Errorf("findings for a dirty database = %v, want one saying dirty", got)
+	}
+}
+
+func TestCompareSchema_namesBothDatabasesWhenOneIsBehind(t *testing.T) {
+	t.Parallel()
+	got := compareSchema([]schemaState{
+		{name: "junglegaming", present: true, version: "6"},
+		{name: "junglegaming_test", present: true, version: "5"},
+	})
+	if len(got) != 1 {
+		t.Fatalf("findings for two versions = %v, want exactly one", got)
+	}
+	if !strings.Contains(got[0], "junglegaming at 6") || !strings.Contains(got[0], "junglegaming_test at 5") {
+		t.Errorf("the finding for two versions = %q, want both databases and both versions", got[0])
+	}
+}
+
+func TestCompareSchema_namesADatabaseWithNoMigrationAtAll(t *testing.T) {
+	t.Parallel()
+	got := compareSchema([]schemaState{
+		{name: "junglegaming_test", present: true, version: noSchema},
+	})
+	if len(got) != 1 || !strings.Contains(got[0], "no migration applied") {
+		t.Errorf("findings for an empty database = %v, want one saying no migration", got)
+	}
 }
 
 func TestDisagreeingVersions_staysQuietUntilTwoAreApplied(t *testing.T) {
@@ -310,9 +315,9 @@ func TestFirstLine_answersForEveryReplicaWithTheFirstOne(t *testing.T) {
 	})
 }
 
-func TestImageSources_readsWhatTheRecipeCopiesIn(t *testing.T) {
-	t.Parallel()
-	recipe := `
+// recipeOfTheImage is the shape of the versioned recipe: a build stage that copies
+// the working tree in, and a runtime stage that copies only the binary out of it.
+const recipeOfTheImage = `
 FROM golang:1.27.1 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -324,49 +329,54 @@ FROM alpine:3.22
 COPY --from=build /out/wager /wager
 ENTRYPOINT ["/wager"]
 `
-	t.Run("every path of the working tree, minus the tests", func(t *testing.T) {
-		got := strings.Join(imageSources(recipe), " ")
-		want := "go.mod go.sum cmd internal " + notTests
-		if got != want {
-			t.Errorf("sources = %q, want %q", got, want)
-		}
-	})
 
-	t.Run("the tests are excluded, not merely absent", func(t *testing.T) {
-		got := imageSources(recipe)
-		if got[len(got)-1] != notTests {
-			t.Errorf("last pathspec = %q, want the exclusion %q: only the build stage sees a test file", got[len(got)-1], notTests)
-		}
-	})
+func TestImageSources_readsEveryPathOfTheWorkingTreeMinusTheTests(t *testing.T) {
+	t.Parallel()
+	got := strings.Join(imageSources(recipeOfTheImage), " ")
+	want := "go.mod go.sum cmd internal " + notTests
+	if got != want {
+		t.Errorf("sources = %q, want %q", got, want)
+	}
+}
 
-	t.Run("a stage of the build is not a path", func(t *testing.T) {
-		got := imageSources(recipe)
-		for _, each := range got {
-			if each == "/out/wager" {
-				t.Errorf("sources = %v, want /out/wager left out: COPY --from names a build stage", got)
-			}
-		}
-	})
+func TestImageSources_excludesTheTestsRatherThanOmittingThem(t *testing.T) {
+	t.Parallel()
+	got := imageSources(recipeOfTheImage)
+	if got[len(got)-1] != notTests {
+		t.Errorf("last pathspec = %q, want the exclusion %q: only the build stage sees a test file", got[len(got)-1], notTests)
+	}
+}
 
-	t.Run("a flag that is not a stage keeps the paths behind it", func(t *testing.T) {
-		got := strings.Join(imageSources("COPY --chown=nonroot:nonroot deploy/local /etc/wager\n"), " ")
-		want := "deploy/local " + notTests
-		if got != want {
-			t.Errorf("sources behind a --chown = %q, want %q", got, want)
+func TestImageSources_leavesOutAStageOfTheBuild(t *testing.T) {
+	t.Parallel()
+	for _, each := range imageSources(recipeOfTheImage) {
+		if each == "/out/wager" {
+			t.Errorf("sources = %v, want /out/wager left out: COPY --from names a build stage", imageSources(recipeOfTheImage))
 		}
-	})
+	}
+}
 
-	t.Run("a stage named after another flag is still a stage", func(t *testing.T) {
-		if got := imageSources("COPY --chown=root --from=build /out/wager /wager\n"); len(got) != 0 {
-			t.Errorf("sources of a flagged stage copy = %v, want none", got)
-		}
-	})
+func TestImageSources_keepsThePathsBehindAFlagThatIsNotAStage(t *testing.T) {
+	t.Parallel()
+	got := strings.Join(imageSources("COPY --chown=nonroot:nonroot deploy/local /etc/wager\n"), " ")
+	want := "deploy/local " + notTests
+	if got != want {
+		t.Errorf("sources behind a --chown = %q, want %q", got, want)
+	}
+}
 
-	t.Run("a recipe that copies nothing", func(t *testing.T) {
-		if got := imageSources("FROM alpine:3.22\nENTRYPOINT [\"/bin/sh\"]\n"); len(got) != 0 {
-			t.Errorf("sources of a recipe without COPY = %v, want none", got)
-		}
-	})
+func TestImageSources_readsAStageNamedAfterAnotherFlagAsAStage(t *testing.T) {
+	t.Parallel()
+	if got := imageSources("COPY --chown=root --from=build /out/wager /wager\n"); len(got) != 0 {
+		t.Errorf("sources of a flagged stage copy = %v, want none", got)
+	}
+}
+
+func TestImageSources_answersNothingForARecipeThatCopiesNothing(t *testing.T) {
+	t.Parallel()
+	if got := imageSources("FROM alpine:3.22\nENTRYPOINT [\"/bin/sh\"]\n"); len(got) != 0 {
+		t.Errorf("sources of a recipe without COPY = %v, want none", got)
+	}
 }
 
 func TestDeclaredMigration_readsTheHighestVersionTheFilesDeclare(t *testing.T) {
@@ -378,7 +388,7 @@ func TestDeclaredMigration_readsTheHighestVersionTheFilesDeclare(t *testing.T) {
 			"deploy/migrations/000004_outbox_publish_order.up.sql",
 		})
 		if err != nil {
-			t.Fatalf("err = %v, want nil", err)
+			t.Fatalf("err on a set of three migrations = %v, want nil", err)
 		}
 		if got != "6" {
 			t.Errorf("declared version = %q, want 6", got)

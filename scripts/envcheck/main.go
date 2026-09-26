@@ -165,7 +165,7 @@ func checkRealm(o options) []string {
 }
 
 func declaredLifespan(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // the path comes from a flag the operator controls
 	if err != nil {
 		return 0, fmt.Errorf("read the versioned realm: %w", err)
 	}
@@ -285,7 +285,7 @@ func terraformSource(dir string) (string, error) {
 	}
 	var all strings.Builder
 	for _, path := range files {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // the path comes from a flag the operator controls
 		if err != nil {
 			return "", fmt.Errorf("read the versioned provisioning: %w", err)
 		}
@@ -415,7 +415,9 @@ func commitTime(o options, paths []string) (time.Time, error) {
 func run(o options, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	// Every command here is a literal of this file; what varies is a database name
+	// or a path the operator passed on a flag. Asking the environment is the job.
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // the operator names what is asked
 	cmd.Dir = o.root
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

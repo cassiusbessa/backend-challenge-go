@@ -269,12 +269,7 @@ const notTests = ":(exclude)**/*_test.go"
 func imageSources(dockerfile string) []string {
 	var out []string
 	for _, found := range copyLine.FindAllStringSubmatch(dockerfile, -1) {
-		fields := strings.Fields(found[1])
-		fromStage := false
-		for len(fields) > 0 && strings.HasPrefix(fields[0], "--") {
-			fromStage = fromStage || strings.HasPrefix(fields[0], "--from")
-			fields = fields[1:]
-		}
+		fields, fromStage := stripCopyFlags(strings.Fields(found[1]))
 		if fromStage || len(fields) < 2 {
 			continue
 		}
@@ -284,4 +279,15 @@ func imageSources(dockerfile string) []string {
 		return nil
 	}
 	return append(out, notTests)
+}
+
+// stripCopyFlags drops the leading flags of a COPY and reports whether one of them
+// was `--from`, which makes the line name a stage of the build instead of paths.
+func stripCopyFlags(fields []string) ([]string, bool) {
+	fromStage := false
+	for len(fields) > 0 && strings.HasPrefix(fields[0], "--") {
+		fromStage = fromStage || strings.HasPrefix(fields[0], "--from")
+		fields = fields[1:]
+	}
+	return fields, fromStage
 }
