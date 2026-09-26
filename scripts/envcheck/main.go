@@ -357,14 +357,6 @@ func commitTime(o options) (time.Time, error) {
 	return at, nil
 }
 
-func firstLine(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if i := strings.IndexByte(trimmed, '\n'); i >= 0 {
-		return strings.TrimSpace(trimmed[:i])
-	}
-	return trimmed
-}
-
 // run executes one command from the repository root and returns its trimmed
 // output. Every question the verifier asks of the environment goes through here,
 // so a service that is not up produces a finding instead of a panic.

@@ -172,3 +172,17 @@ func declaredNames(resourceType, source string) []string {
 	}
 	return out
 }
+
+// firstLine is the first line of what a command printed.
+//
+// A Compose service answers with one container id per replica, and the question
+// asked of it is about the image they all share, so the first one answers for
+// them. It also trims a failure to one line: a message broken over several lines
+// is one finding read as many.
+func firstLine(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if i := strings.IndexByte(trimmed, '\n'); i >= 0 {
+		return strings.TrimSpace(trimmed[:i])
+	}
+	return trimmed
+}

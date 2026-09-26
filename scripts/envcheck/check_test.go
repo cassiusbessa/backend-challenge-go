@@ -49,7 +49,7 @@ func TestParseSchemaRow_readsWhatPsqlPrintsForEachState(t *testing.T) {
 
 	t.Run("a row it cannot read", func(t *testing.T) {
 		if _, err := parseSchemaRow("junglegaming", "6|f|extra"); err == nil {
-			t.Error("err on a row of three fields = nil, want one")
+			t.Errorf("err on a row of three fields = %v, want one", err)
 		}
 	})
 }
@@ -62,7 +62,7 @@ func TestCompareSchema_namesTheDatabaseThatIsNotAsDeclared(t *testing.T) {
 			{name: "junglegaming_test", present: true, version: "6"},
 		})
 		if len(got) != 0 {
-			t.Errorf("findings = %v, want none", got)
+			t.Errorf("findings for two databases at the same version = %v, want none", got)
 		}
 	})
 
@@ -135,7 +135,7 @@ func TestCompareLifespan_namesTheRealmAndBothValues(t *testing.T) {
 	t.Parallel()
 	t.Run("the realm issues what the file declares", func(t *testing.T) {
 		if got := compareLifespan("junglegaming", 300, 300); len(got) != 0 {
-			t.Errorf("findings = %v, want none", got)
+			t.Errorf("findings for a realm that issues what is declared = %v, want none", got)
 		}
 	})
 
@@ -161,7 +161,7 @@ func TestMissingBroker_namesOnlyWhatTheBrokerDoesNotHave(t *testing.T) {
 	t.Run("every declared queue provisioned", func(t *testing.T) {
 		want := []string{"wager-transactions.fifo", "wager-transactions-dlq.fifo"}
 		if got := missingBroker("queue", want, queues); len(got) != 0 {
-			t.Errorf("findings = %v, want none", got)
+			t.Errorf("findings for every declared queue provisioned = %v, want none", got)
 		}
 	})
 
@@ -196,7 +196,7 @@ func TestStaleImage_comparesTheBuildWithTheCommit(t *testing.T) {
 	t.Run("built after the commit", func(t *testing.T) {
 		built := commit.Add(time.Second)
 		if got := staleImage("wager", built, commit); len(got) != 0 {
-			t.Errorf("findings = %v, want none", got)
+			t.Errorf("findings for an image built after the commit = %v, want none", got)
 		}
 	})
 
@@ -258,6 +258,28 @@ resource "aws_sns_topic" "wallet_events" {
 	t.Run("a type nothing declares", func(t *testing.T) {
 		if got := declaredNames("aws_iam_role", source); len(got) != 0 {
 			t.Errorf("names for an undeclared type = %v, want none", got)
+		}
+	})
+}
+
+func TestFirstLine_answersForEveryReplicaWithTheFirstOne(t *testing.T) {
+	t.Parallel()
+	t.Run("several containers of one service", func(t *testing.T) {
+		got := firstLine("aaa111\nbbb222\nccc333\n")
+		if got != "aaa111" {
+			t.Errorf("first of three container ids = %q, want aaa111", got)
+		}
+	})
+
+	t.Run("a single container", func(t *testing.T) {
+		if got := firstLine("  aaa111  \n"); got != "aaa111" {
+			t.Errorf("a single container id = %q, want aaa111", got)
+		}
+	})
+
+	t.Run("a service that is not running", func(t *testing.T) {
+		if got := firstLine("\n  \n"); got != "" {
+			t.Errorf("what a stopped service answers = %q, want the empty string", got)
 		}
 	})
 }
