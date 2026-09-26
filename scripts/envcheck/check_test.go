@@ -314,9 +314,10 @@ ENTRYPOINT ["/wager"]
 	})
 
 	t.Run("a stage of the build is not a path", func(t *testing.T) {
-		for _, each := range imageSources(recipe) {
+		got := imageSources(recipe)
+		for _, each := range got {
 			if each == "/out/wager" {
-				t.Error("COPY --from contributed /out/wager, want it left out: it names a build stage")
+				t.Errorf("sources = %v, want /out/wager left out: COPY --from names a build stage", got)
 			}
 		}
 	})
