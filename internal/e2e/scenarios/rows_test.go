@@ -98,6 +98,12 @@ func (s store) eventsOf(ctx context.Context, t *testing.T, transactionID string)
 	return types
 }
 
+// events answers every outbox row of the wallet by its eventId.
+func (s store) events(ctx context.Context, t *testing.T, walletID string) []string {
+	t.Helper()
+	return s.eventIDs(ctx, t, "SELECT event_id::text FROM outbox_events WHERE wallet_id = $1", walletID)
+}
+
 // pendingEvents answers the outbox rows of the wallet that are neither published
 // nor dead, by their eventId.
 func (s store) pendingEvents(ctx context.Context, t *testing.T, walletID string) []string {
@@ -105,15 +111,20 @@ func (s store) pendingEvents(ctx context.Context, t *testing.T, walletID string)
 	const query = `
 SELECT event_id::text FROM outbox_events
 WHERE wallet_id = $1 AND published_at IS NULL AND dead_at IS NULL`
+	return s.eventIDs(ctx, t, query, walletID)
+}
+
+func (s store) eventIDs(ctx context.Context, t *testing.T, query, walletID string) []string {
+	t.Helper()
 	rows, err := s.conn.Query(ctx, query, walletID)
 	if err != nil {
-		t.Fatalf("read the pending outbox of the wallet = %v, want nil", err)
+		t.Fatalf("read the outbox of the wallet = %v, want nil", err)
 	}
-	pending, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("collect the pending outbox of the wallet = %v, want nil", err)
+		t.Fatalf("collect the outbox of the wallet = %v, want nil", err)
 	}
-	return pending
+	return ids
 }
 
 // decision is the recorded status of one transaction and the token it closed
