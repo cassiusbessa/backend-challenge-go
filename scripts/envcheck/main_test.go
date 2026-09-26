@@ -611,3 +611,23 @@ func TestCheckImage_namesTheImageThatCannotBeDatedOrIsStale(t *testing.T) {
 		})
 	}
 }
+
+// execute answers what the process printed as it printed it, trimming nothing,
+// and hands the command to the stand-in of a case instead of running it.
+func TestExecute_answersThePrintedStreamsOfTheStandInOrOfTheProcess(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	standIn := options{commands: func(args []string) (string, string, error) {
+		asked = args
+		return " out \n", " err \n", nil
+	}}
+	stdout, stderr, err := standIn.execute([]string{"docker", "compose", "ps"})
+	if err != nil || stdout != " out \n" || stderr != " err \n" || strings.Join(asked, " ") != "docker compose ps" {
+		t.Errorf("execute with a stand-in = %q, %q, %v after asking %v, want both streams untrimmed and the command handed over", stdout, stderr, err, asked)
+	}
+	process := options{root: t.TempDir(), timeout: 5 * time.Second}
+	stdout, stderr, err = process.execute([]string{"sh", "-c", "echo out; echo err >&2"})
+	if err != nil || stdout != "out\n" || stderr != "err\n" {
+		t.Errorf("execute of the process = %q, %q, %v, want each stream as printed", stdout, stderr, err)
+	}
+}
