@@ -19,6 +19,10 @@ volumes:
 services:
   postgres:
     image: postgres:16.15
+    # O padrão de 100 não comporta ao mesmo tempo o pool de cada réplica — o
+    # `pgxpool` abre até o número de CPUs —, as instâncias de um cenário e a
+    # suíte de jornada.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-junglegaming}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-junglegaming}
@@ -302,8 +306,10 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       AWS_REGION: ${AWS_REGION:-us-east-1}
-    ports:
-      - "8090:8090"
+    # Várias réplicas não dividem uma porta do host: quem publica `8090` é o
+    # `balancer`, e cada réplica escuta só na rede do Compose.
+    deploy:
+      replicas: ${WAGER_REPLICAS:-3}
     volumes:
       - ./deploy/local/clients.yaml:/etc/wager/clients.yaml:ro
       - ./deploy/local/queue-senders.yaml:/etc/wager/queue-senders.yaml:ro
@@ -332,4 +338,26 @@ services:
       # Sem o IdP, o processo sobe e recusa todo token: o JWKS não responde, e a
       # borda não tem como distinguir credencial inválida de emissor ausente.
       keycloak:
+        condition: service_healthy
+
+  # O endereço único das réplicas. O HAProxy as descobre pelo DNS do Docker e só
+  # encaminha para a que responde ready; sem nenhuma pronta, responde 503.
+  balancer:
+    image: haproxy:3.4.5-alpine
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - junglegaming
+    # A liveness de uma réplica, pedida através do balanceador: ele está saudável
+    # quando encaminha.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8090/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      wager:
         condition: service_healthy
