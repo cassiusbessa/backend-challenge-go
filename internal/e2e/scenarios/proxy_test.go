@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -214,5 +215,36 @@ func TestProxy_answersABadGatewayForABodyItCannotRead(t *testing.T) {
 	}
 	if got := len(broker.received()); got != 0 {
 		t.Errorf("requests that reached the broker after an unreadable body = %d, want 0", got)
+	}
+}
+
+// record notes a publication of the topic and nothing else, and every body it
+// reads goes back as it came: a request of the queue and another action of the
+// topic pass a recording proxy with nothing noted.
+func TestRecord_notesOnlyAPublicationAndPutsEveryBodyBack(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		body  string
+		noted map[string]int
+	}{
+		{name: "a publication is noted by its deduplication", body: "Action=Publish&MessageDeduplicationId=event-4", noted: map[string]int{"event-4": 1}},
+		{name: "another action of the topic is not", body: "Action=GetTopicAttributes&TopicArn=wallet-events", noted: map[string]int{}},
+		{name: "a request of the queue is not", body: `{"QueueUrl":"http://localhost:4566/000000000000/scenario.fifo"}`, noted: map[string]int{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy := NewProxy(&url.URL{Scheme: "http", Host: "broker.invalid"}, Faculties{RecordPublishes: true})
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(tc.body))
+			if err := proxy.record(req); err != nil {
+				t.Fatalf("record = %v, want nil", err)
+			}
+			if got := proxy.Published(); !maps.Equal(got, tc.noted) {
+				t.Errorf("Published = %v, want %v", got, tc.noted)
+			}
+			if again, _ := io.ReadAll(req.Body); string(again) != tc.body {
+				t.Errorf("body after record = %q, want %q as it came", again, tc.body)
+			}
+		})
 	}
 }
