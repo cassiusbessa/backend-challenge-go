@@ -176,3 +176,47 @@ func TestCheckDashboard_readsTheHitsOfTheSearch(t *testing.T) {
 		t.Errorf("findings with no Grafana = %v, want one naming the search", got)
 	}
 }
+
+// checkRules reads the names off the versioned file and asks the Prometheus
+// which it loaded: the file it cannot read, a file that declares no alert and
+// an alert the Prometheus did not load are each a finding, named.
+func TestCheckRules_comparesTheVersionedFileWithWhatThePrometheusLoaded(t *testing.T) {
+	t.Parallel()
+	declared := "groups:\n  - name: settlement\n    rules:\n      - alert: ReconciliationDivergenceFound\n      - alert: OutboxOldestPendingTooOld\n"
+	loadedOne := idpAnswering(t, `{"data":{"groups":[{"rules":[{"name":"ReconciliationDivergenceFound"}]}]}}`)
+	loadedBoth := idpAnswering(t, `{"data":{"groups":[{"rules":[{"name":"ReconciliationDivergenceFound"},{"name":"OutboxOldestPendingTooOld"}]}]}}`)
+	root := writeProvisioning(t, map[string]string{"settlement.yml": declared, "empty.yml": "groups: []\n"})
+	cases := []struct {
+		name       string
+		file       string
+		prometheus string
+		want       string
+	}{
+		{name: "both loaded", file: "settlement.yml", prometheus: loadedBoth},
+		{name: "one left behind", file: "settlement.yml", prometheus: loadedOne, want: "OutboxOldestPendingTooOld"},
+		{name: "a file that is not there", file: "absent.yml", prometheus: loadedBoth, want: "read the versioned alert rules"},
+		{name: "a file that declares no alert", file: "empty.yml", prometheus: loadedBoth, want: "declares no alert"},
+		{name: "a Prometheus that does not answer", file: "settlement.yml", prometheus: "http://127.0.0.1:1", want: "rules the Prometheus loaded"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkRules(options{root: root, rulesFile: tc.file, prometheus: tc.prometheus, timeout: time.Second})
+			assertFinding(t, got, tc.want)
+		})
+	}
+}
+
+// assertFinding demands no finding when none is wanted, and exactly one that
+// carries the words wanted otherwise.
+func assertFinding(t *testing.T, got []string, want string) {
+	t.Helper()
+	if want == "" {
+		if len(got) != 0 {
+			t.Errorf("findings = %v, want none", got)
+		}
+		return
+	}
+	if len(got) != 1 || !strings.Contains(got[0], want) {
+		t.Errorf("findings = %v, want exactly one carrying %q", got, want)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -251,20 +252,11 @@ func declaredAlerts(source string) []string {
 func missingRules(declared, loaded []string) []string {
 	var out []string
 	for _, name := range declared {
-		if !contains(loaded, name) {
+		if !slices.Contains(loaded, name) {
 			out = append(out, fmt.Sprintf("alert %s is declared in the versioned rules and the Prometheus did not load it", name))
 		}
 	}
 	return out
-}
-
-func contains(names []string, name string) bool {
-	for _, each := range names {
-		if each == name {
-			return true
-		}
-	}
-	return false
 }
 
 // compareDashboard names a dashboard the Grafana does not have as a provisioned
