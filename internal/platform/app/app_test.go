@@ -22,6 +22,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/divergencewatch"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
@@ -267,15 +268,58 @@ func TestStop_flushesTheTelemetryWhenTheLifecycleOverranItsBudget(t *testing.T) 
 // A budget under the sum of the shares is refused at startup, before the port
 // opens: the alternative is discovering it at the one shutdown that had something
 // to report, when the last stops are skipped in silence.
+//
+// The four claimants are the pool, the reference worker, the outbox relay and
+// the divergence watcher, and the sum is written out here so that a fifth one
+// added to the lifecycle has to be counted in both places.
 func TestShutdownBudget_refusesABudgetThatCannotPayEveryShare(t *testing.T) {
 	t.Parallel()
 	consumer := 10 * time.Second
-	want := serverShare + consumer + claimants*claimantShare
+	want := serverShare + consumer + 4*claimantShare
 	if err := shutdownBudget(want-time.Millisecond, consumer); err == nil {
 		t.Fatalf("shutdownBudget just under the sum of the shares = nil, want a refusal")
 	}
 	if err := shutdownBudget(want, consumer); err != nil {
 		t.Fatalf("shutdownBudget on the sum of the shares = %v, want nil", err)
+	}
+}
+
+// The watcher comes up beside the other three background components and holds
+// nothing back: a table with no wallet in it is the ordinary state of a fresh
+// process, and the port has to answer whether or not there is anything to
+// check. The case reaches the assembled watcher through the graph, so a
+// constructor this wiring forgot would fail here rather than at runtime.
+func TestNew_comesUpWithTheDivergenceWatcherBesideTheOtherThree(t *testing.T) {
+	t.Parallel()
+	cfg := loaded(t)
+	got := make(chan *divergencewatch.Worker, 1)
+	application := New(cfg, owned(t, cfg), fx.Invoke(func(watcher *divergencewatch.Worker) { got <- watcher }))
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start over an empty table = %v, want nil", err)
+	}
+	if watcher := <-got; watcher == nil {
+		t.Fatalf("watcher in the graph = %v, want one beside the other three", watcher)
+	}
+	stopping, release := context.WithTimeout(context.Background(), stepWait)
+	defer release()
+	if err := application.Stop(stopping); err != nil {
+		t.Fatalf("Stop after the watcher came up = %v, want nil", err)
+	}
+}
+
+// A batch that is not a positive integer blocks the listener the way every
+// invalid configuration does, and the watcher with it.
+func TestNew_refusesToStartWithABatchBelowOne(t *testing.T) {
+	t.Parallel()
+	cfg := loaded(t)
+	cfg.ReconciliationBatch = 0
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	var invalid config.InvalidError
+	if err := New(cfg, owned(t, cfg)).Start(ctx); !errors.As(err, &invalid) || invalid.Key != "RECONCILIATION_BATCH" {
+		t.Fatalf("Start with a batch of zero = %v, want InvalidError on RECONCILIATION_BATCH", err)
 	}
 }
 

@@ -52,6 +52,13 @@ type Config struct {
 	QueuePoll       time.Duration
 	QueueVisibility time.Duration
 	QueueTimeout    time.Duration
+
+	// ReconciliationInterval is how often the divergence watcher takes a turn,
+	// and ReconciliationBatch is how many wallets one turn reads. Both default
+	// to values that suit production; the integration suite shortens the
+	// interval so a case reads a verdict instead of waiting out the default.
+	ReconciliationInterval time.Duration
+	ReconciliationBatch    int
 }
 
 type MissingError struct {
@@ -81,6 +88,9 @@ func Load(getenv func(string) string) (Config, error) {
 func (c Config) Validate() error {
 	if err := ingressWindows(c.QueuePoll, c.QueueVisibility, c.QueueTimeout); err != nil {
 		return err
+	}
+	if c.ReconciliationBatch < 1 {
+		return InvalidError{Key: "RECONCILIATION_BATCH"}
 	}
 	return require(map[string]string{
 		"HTTP_ADDR":                   c.HTTPAddr,
@@ -121,6 +131,8 @@ func read(getenv func(string) string) map[string]string {
 		"QUEUE_POLL",
 		"QUEUE_VISIBILITY",
 		"QUEUE_TIMEOUT",
+		"RECONCILIATION_INTERVAL",
+		"RECONCILIATION_BATCH",
 	}
 	out := make(map[string]string, len(keys))
 	for _, key := range keys {
@@ -170,6 +182,10 @@ func build(raw map[string]string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	batch, err := parsePositiveInt("RECONCILIATION_BATCH", raw["RECONCILIATION_BATCH"], defaultReconciliationBatch)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		HTTPAddr:         raw["HTTP_ADDR"],
 		DatabaseURL:      raw["DATABASE_URL"],
@@ -196,6 +212,9 @@ func build(raw map[string]string) (Config, error) {
 		QueuePoll:       timing.queuePoll,
 		QueueVisibility: timing.queueVisibility,
 		QueueTimeout:    timing.queueTimeout,
+
+		ReconciliationInterval: timing.reconciliationInterval,
+		ReconciliationBatch:    batch,
 	}, nil
 }
 
@@ -210,6 +229,8 @@ type timing struct {
 	queuePoll         time.Duration
 	queueVisibility   time.Duration
 	queueTimeout      time.Duration
+
+	reconciliationInterval time.Duration
 }
 
 // knob is one duration of the configuration: the key it is set by, the default
@@ -234,6 +255,7 @@ func durations(raw map[string]string) (timing, error) {
 		{"QUEUE_POLL", defaultQueuePoll, &out.queuePoll},
 		{"QUEUE_VISIBILITY", defaultQueueVisibility, &out.queueVisibility},
 		{"QUEUE_TIMEOUT", defaultQueueTimeout, &out.queueTimeout},
+		{"RECONCILIATION_INTERVAL", defaultReconciliationInterval, &out.reconciliationInterval},
 	} {
 		value, err := parseDuration(each.key, raw[each.key], each.fallback)
 		if err != nil {
@@ -327,6 +349,15 @@ const (
 	defaultQueueTimeout    = 8 * time.Second
 )
 
+// The defaults of the divergence watcher. The cost of one turn is the batch
+// times the ledger of each wallet, and neither number has been measured under
+// load yet: five seconds and fifty wallets are the starting point, and the
+// interval moves without a deploy.
+const (
+	defaultReconciliationInterval = 5 * time.Second
+	defaultReconciliationBatch    = 50
+)
+
 // defaultShutdownTimeout is the deadline the process has to finish the request in
 // flight and stop the background work.
 //
@@ -347,6 +378,20 @@ func parseDuration(key, raw string, fallback time.Duration) (time.Duration, erro
 		return fallback, nil
 	}
 	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		return 0, InvalidError{Key: key}
+	}
+	return value, nil
+}
+
+// parsePositiveInt answers the default for a key nobody set, and refuses one
+// set to anything but a positive integer, the way parseDuration does: a batch
+// of zero would sweep nothing forever, and a negative one is not a batch.
+func parsePositiveInt(key, raw string, fallback int) (int, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
 	if err != nil || value <= 0 {
 		return 0, InvalidError{Key: key}
 	}

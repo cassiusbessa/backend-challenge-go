@@ -234,6 +234,75 @@ func TestLoad_refusesToComeUpWithoutTheAddressOfTheTopic(t *testing.T) {
 	}
 }
 
+// The two knobs of the divergence watcher: the interval the integration suite
+// shortens, and the batch that bounds one turn. Both are starting points, not
+// measured values.
+func TestLoad_defaultsTheDivergenceWatcherWhenNobodySetIt(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load with no watcher knob set = %v, want nil", err)
+	}
+	if cfg.ReconciliationInterval != 5*time.Second {
+		t.Fatalf("ReconciliationInterval = %s, want 5s", cfg.ReconciliationInterval)
+	}
+	if cfg.ReconciliationBatch != 50 {
+		t.Fatalf("ReconciliationBatch = %d, want 50", cfg.ReconciliationBatch)
+	}
+}
+
+func TestLoad_takesTheBatchTheEnvironmentSet(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("7", "RECONCILIATION_BATCH"))
+	if err != nil {
+		t.Fatalf("Load with a batch of 7 = %v, want nil", err)
+	}
+	if cfg.ReconciliationBatch != 7 {
+		t.Fatalf("ReconciliationBatch = %d, want 7", cfg.ReconciliationBatch)
+	}
+}
+
+// A batch that is not a positive integer keeps the process from coming up
+// rather than falling to the default: zero would sweep nothing forever, and a
+// negative one is not a batch.
+func TestLoad_refusesABatchThatIsNotAPositiveInteger(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"0", "-5", "fifty"} {
+		t.Run("a batch of "+raw+" is refused", func(t *testing.T) {
+			t.Parallel()
+			assertRefused(t, raw, "RECONCILIATION_BATCH")
+		})
+	}
+}
+
+// Validate is the hook that refuses the boot before the HTTP port opens, so
+// the batch is read there too: a Config assembled past Load must not come up
+// with a batch Load would have refused.
+func TestValidate_refusesABatchBelowOne(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load of the defaults the Validate case starts from = %v, want nil", err)
+	}
+	cfg.ReconciliationBatch = 0
+	var invalid InvalidError
+	if err := cfg.Validate(); !errors.As(err, &invalid) || invalid.Key != "RECONCILIATION_BATCH" {
+		t.Fatalf("Validate with a batch of zero = %v, want InvalidError on RECONCILIATION_BATCH", err)
+	}
+}
+
+func TestParsePositiveInt_answersTheDefaultOrTheValueThatWasSet(t *testing.T) {
+	t.Parallel()
+	got, err := parsePositiveInt("RECONCILIATION_BATCH", "", 50)
+	if err != nil || got != 50 {
+		t.Fatalf("parsePositiveInt of an unset key = %d with %v, want the default with nil", got, err)
+	}
+	got, err = parsePositiveInt("RECONCILIATION_BATCH", "1", 50)
+	if err != nil || got != 1 {
+		t.Fatalf("parsePositiveInt of the smallest batch = %d with %v, want 1 with nil", got, err)
+	}
+}
+
 func TestLoad_takesTheReferenceWaitTheEnvironmentSet(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(envWith("30s", "REFERENCE_TTL"))

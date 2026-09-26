@@ -26,6 +26,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/broker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/clock"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/divergencewatch"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/mint"
@@ -152,6 +153,8 @@ func business() []fx.Option {
 		fx.Provide(newOutboxQueue),
 		fx.Provide(newRelay),
 		fx.Provide(newOutboxRelay),
+		fx.Provide(newWatchReporter),
+		fx.Provide(newDivergenceWatcher),
 		fx.Provide(openwallet.New),
 		fx.Provide(readwallet.New),
 		fx.Provide(listledger.New),
@@ -206,6 +209,17 @@ func newRelay(cfg config.Config, queue storage.OutboxQueue, topic *broker.Topic,
 // publication queue and hands each candidate to the use case that relays it.
 func newOutboxRelay(cfg config.Config, queue storage.OutboxQueue, relay *relayoutbox.Service, pipe *telemetry.Pipeline, series *metrics.Settlement) *outboxrelay.Relay {
 	return outboxrelay.New(queue, relay, pipe.Logger, series, cfg.OutboxInterval)
+}
+
+func newWatchReporter(pipe *telemetry.Pipeline, series *metrics.Settlement) *divergencewatch.Reporter {
+	return divergencewatch.NewReporter(pipe.Logger, series)
+}
+
+// newDivergenceWatcher is the fourth background component of the process. It
+// sweeps the wallets a page per turn and hands each one to the same use case
+// the reconciliation route calls.
+func newDivergenceWatcher(cfg config.Config, reads storage.Reads, reconciler *reconcilewallet.Service, reporter *divergencewatch.Reporter) *divergencewatch.Worker {
+	return divergencewatch.New(reads, reconciler, reporter, cfg.ReconciliationInterval, cfg.ReconciliationBatch)
 }
 
 // newReceiver is the use case of the ingress: it authorizes the message by the
@@ -300,6 +314,7 @@ type wiring struct {
 	Reference     *referenceworker.Worker
 	Topic         *broker.Topic
 	Outbox        *outboxrelay.Relay
+	Watcher       *divergencewatch.Worker
 	Ingress       *broker.Ingress
 	Consumer      *wagerqueue.Consumer
 }
@@ -314,8 +329,8 @@ type wiring struct {
 // arithmetic belongs to the lifecycle: no component knows the total or how many
 // stops come after it.
 //
-// The server is the one that holds a request in flight. The three background
-// components only stop claiming or fetching, which is a channel close and the turn
+// The server is the one that holds a request in flight. The background components
+// only stop claiming, fetching or reading, which is a channel close and the turn
 // in hand. The consumer is the exception and it is not a number written here: it
 // answers its own budget, so the share cannot drift from the two values that decide
 // it.
@@ -323,9 +338,9 @@ const (
 	serverShare   = 4 * time.Second
 	claimantShare = time.Second
 	// claimants is how many stops take the claimant share: the pool, the reference
-	// worker and the outbox relay. A fourth one added below has to be counted here,
-	// and the sum is what the budget is checked against.
-	claimants = 3
+	// worker, the outbox relay and the divergence watcher. A fifth one added below
+	// has to be counted here, and the sum is what the budget is checked against.
+	claimants = 4
 )
 
 // shutdownBudget refuses a budget that cannot pay every share.
@@ -359,15 +374,19 @@ func register(lc fx.Lifecycle, parts wiring) {
 	lc.Append(fx.Hook{OnStart: parts.Queue.Open})
 	lc.Append(fx.Hook{OnStart: parts.Topic.Open})
 	lc.Append(fx.Hook{OnStart: parts.Ingress.Open})
-	// The three background components come up after the pool and before the
+	// The four background components come up after the pool and before the
 	// listener, so the shutdown takes them in the other order: the port stops
-	// accepting first, and each of them stops claiming or fetching after it, all
-	// inside the same deadline.
+	// accepting first, and each of them stops claiming, fetching or reading after
+	// it, all inside the same deadline.
 	//
-	// None of the three holds the startup back over an empty queue: a process that
-	// has nothing to do yet still has to answer the port.
+	// None of the four holds the startup back over an empty queue or an empty
+	// table: a process that has nothing to do yet still has to answer the port.
 	lc.Append(fx.Hook{OnStart: parts.Reference.Start, OnStop: within(claimantShare, parts.Reference.Stop)})
 	lc.Append(fx.Hook{OnStart: parts.Outbox.Start, OnStop: within(claimantShare, parts.Outbox.Stop)})
+	// The watcher takes the claimant share because its stop is the same shape: a
+	// channel close, and a read in flight that is cancelled with nothing to
+	// finish, since nothing it does is writable.
+	lc.Append(fx.Hook{OnStart: parts.Watcher.Start, OnStop: within(claimantShare, parts.Watcher.Stop)})
 	lc.Append(fx.Hook{
 		OnStart: parts.Consumer.Start,
 		OnStop:  within(parts.Consumer.StopBudget(), parts.Consumer.Stop),
