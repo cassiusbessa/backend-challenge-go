@@ -233,9 +233,63 @@ type TransactionView struct {
 	UpdatedAt       time.Time
 }
 
+// EntryView is the read model of one ledger entry: the movement as it was
+// recorded, with the balance it left.
+type EntryView struct {
+	ID            identity.LedgerEntryID
+	TransactionID identity.TransactionID
+	Direction     ledger.Direction
+	Amount        money.Money
+	BalanceBefore money.Money
+	BalanceAfter  money.Money
+	Sequence      int64
+	CreatedAt     time.Time
+}
+
+// EntryPosition is where a page of the ledger starts from: the entry after
+// this pair is the first one answered. The zero value is the position before
+// the first entry, which is what the first page asks for.
+//
+// The identity is kept beside the sequence because the order of the ledger is
+// the pair, as go-reads fixes it, even though inside one wallet the unique
+// index of the sequence never lets the identity decide.
+type EntryPosition struct {
+	Sequence int64
+	EntryID  identity.LedgerEntryID
+}
+
+// LedgerSummary is what one reconciliation reads: the wallet as it is stored
+// and the ledger of that wallet aggregated, both from a single snapshot.
+//
+// LedgerBalance is the signed sum of the entries in cents — credit adds, debit
+// subtracts — and may be negative when the ledger is broken, which is why it is
+// not Money here. FirstBreakSequence is the lowest sequence whose balance
+// before is not the balance after of the entry before it, and zero when the
+// chain holds.
+type LedgerSummary struct {
+	Wallet             WalletView
+	LedgerBalance      int64
+	EntryCount         int64
+	LastSequence       int64
+	FirstBreakSequence int64
+}
+
 // Reads answers read models outside any transaction.
 type Reads interface {
 	Wallet(ctx context.Context, id identity.WalletID) (WalletView, error)
+
+	// Ledger answers the entries of that wallet after the position, in the order
+	// of (sequence, id), up to the limit asked. It answers ErrWalletNotFound for
+	// a wallet that does not exist, which is what tells an absent wallet from a
+	// wallet with no movements.
+	Ledger(ctx context.Context, id identity.WalletID, after EntryPosition, limit int) ([]EntryView, error)
+
+	// Summary answers the stored wallet and its ledger aggregated in one
+	// statement, so the two sides come from the same snapshot, or
+	// ErrWalletNotFound. It takes no lock: a read that waited on a wallet held
+	// for writing would answer late for nothing, because the commit it waited
+	// for is one the deferred trigger already checked.
+	Summary(ctx context.Context, id identity.WalletID) (LedgerSummary, error)
 
 	// Transaction answers the recorded outcome of one transaction of that
 	// provider. The provider is part of the query and not of a check afterwards,

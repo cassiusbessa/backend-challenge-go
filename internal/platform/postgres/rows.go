@@ -8,6 +8,7 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/ledger"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 )
@@ -190,6 +191,18 @@ func (p *rowParser) playerID(text string) identity.PlayerID {
 
 func (p *rowParser) walletID(text string) identity.WalletID {
 	parsed, err := identity.ParseWalletID(text)
+	p.keep(err)
+	return parsed
+}
+
+func (p *rowParser) ledgerEntryID(text string) identity.LedgerEntryID {
+	parsed, err := identity.ParseLedgerEntryID(text)
+	p.keep(err)
+	return parsed
+}
+
+func (p *rowParser) direction(text string) ledger.Direction {
+	parsed, err := ledger.ParseDirection(text)
 	p.keep(err)
 	return parsed
 }

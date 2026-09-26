@@ -807,6 +807,16 @@ func (b *book) TransactionByKey(context.Context, identity.ProviderID, identity.I
 	return *b.outside, nil
 }
 
+// The two ledger reads are part of the same port and are never reached from a
+// submission: what reads the ledger back is a query, and a submission writes it.
+func (b *book) Ledger(context.Context, identity.WalletID, storage.EntryPosition, int) ([]storage.EntryView, error) {
+	return nil, storage.ErrWalletNotFound
+}
+
+func (b *book) Summary(context.Context, identity.WalletID) (storage.LedgerSummary, error) {
+	return storage.LedgerSummary{}, storage.ErrWalletNotFound
+}
+
 func bookWith(t *testing.T, balance string) *book {
 	t.Helper()
 	return &book{

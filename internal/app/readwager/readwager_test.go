@@ -103,6 +103,16 @@ func (r *rows) TransactionByKey(context.Context, identity.ProviderID, identity.I
 	return wager.State{}, storage.ErrTransactionNotFound
 }
 
+// The two ledger reads are part of the same port and are never reached from a
+// read of one transaction.
+func (r *rows) Ledger(context.Context, identity.WalletID, storage.EntryPosition, int) ([]storage.EntryView, error) {
+	return nil, storage.ErrWalletNotFound
+}
+
+func (r *rows) Summary(context.Context, identity.WalletID) (storage.LedgerSummary, error) {
+	return storage.LedgerSummary{}, storage.ErrWalletNotFound
+}
+
 func viewOf(t *testing.T, status wager.Status, observed string) storage.TransactionView {
 	t.Helper()
 	view := storage.TransactionView{

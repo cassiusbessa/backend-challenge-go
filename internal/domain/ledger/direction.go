@@ -30,6 +30,17 @@ func (d Direction) IsZero() bool {
 	return d == noDirection
 }
 
+// ParseDirection reads the stored token back, and answers ErrInvalidDirection
+// for anything that is neither DEBIT nor CREDIT.
+func ParseDirection(text string) (Direction, error) {
+	for direction := Debit; direction <= Credit; direction++ {
+		if direction.String() == text {
+			return direction, nil
+		}
+	}
+	return noDirection, ErrInvalidDirection
+}
+
 // Apply is the single place where the direction decides the sign of a
 // movement: credit adds and debit subtracts.
 //
