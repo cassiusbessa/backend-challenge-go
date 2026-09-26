@@ -14,6 +14,7 @@ import (
 
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 // A rule refusing the operation leaves the span ok: go-observability reserves the
@@ -128,7 +129,7 @@ func reporterOver(t *testing.T) (*Reporter, *tracetest.SpanRecorder) {
 	t.Helper()
 	spans := tracetest.NewSpanRecorder()
 	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
-	return NewReporter(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), tracer, NewMetrics(prometheus.NewRegistry())), spans
+	return NewReporter(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), tracer, metrics.New(prometheus.NewRegistry())), spans
 }
 
 // loggingReporter builds a reporter whose lines are kept, for the cases about what
@@ -136,6 +137,6 @@ func reporterOver(t *testing.T) (*Reporter, *tracetest.SpanRecorder) {
 func loggingReporter(t *testing.T) (*Reporter, *bytes.Buffer) {
 	t.Helper()
 	logs := &bytes.Buffer{}
-	reporter := NewReporter(slog.New(slog.NewJSONHandler(logs, nil)), quietTracer(), NewMetrics(prometheus.NewRegistry()))
+	reporter := NewReporter(slog.New(slog.NewJSONHandler(logs, nil)), quietTracer(), metrics.New(prometheus.NewRegistry()))
 	return reporter, logs
 }

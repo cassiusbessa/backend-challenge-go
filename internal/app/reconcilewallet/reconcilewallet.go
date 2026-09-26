@@ -49,6 +49,17 @@ func (d Divergence) String() string {
 	return divergenceTokens[d]
 }
 
+// Vocabulary lists every divergence, in declaration order. It is what lets the
+// series per token be created ahead of the first verdict, and what a test of
+// exhaustiveness walks.
+func Vocabulary() []Divergence {
+	out := make([]Divergence, 0, divergenceCount-1)
+	for token := BalanceMismatch; token < divergenceCount; token++ {
+		out = append(out, token)
+	}
+	return out
+}
+
 // Report is the verdict over one wallet. Divergences is empty and
 // FirstBreakSequence is zero when the wallet is consistent.
 //

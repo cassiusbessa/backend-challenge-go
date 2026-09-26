@@ -27,6 +27,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/platform/clock"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/mint"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
@@ -125,6 +126,7 @@ func New(cfg config.Config, opts ...fx.Option) *fx.App {
 		fx.Provide(func(q *probe.Queue) httpapi.QueueChecker { return q }),
 		fx.Provide(httpapi.NewReady),
 		fx.Provide(httpapi.NewMetrics),
+		fx.Provide(newSettlementMetrics),
 		fx.Provide(newServer),
 	}
 	return fx.New(append(append(options, business()...), opts...)...)
@@ -165,7 +167,6 @@ func business() []fx.Option {
 		fx.Provide(newGuard),
 		fx.Provide(newReporter),
 		fx.Provide(newWagerReporter),
-		fx.Provide(wagerqueue.NewMetrics),
 		fx.Provide(newQueueReporter),
 		fx.Provide(newReceiver),
 		fx.Provide(newConsumer),
@@ -214,8 +215,14 @@ func newReceiver(senders *authz.Senders, submitter *submitwager.Service) *receiv
 	return receivewager.New(senders, submitter)
 }
 
-func newQueueReporter(pipe *telemetry.Pipeline, metrics *wagerqueue.Metrics) *wagerqueue.Reporter {
-	return wagerqueue.NewReporter(pipe.Logger, pipe.Tracer, metrics)
+func newQueueReporter(pipe *telemetry.Pipeline, series *metrics.Settlement) *wagerqueue.Reporter {
+	return wagerqueue.NewReporter(pipe.Logger, pipe.Tracer, series)
+}
+
+// newSettlementMetrics registers every business series on the registry of the
+// process, which is the one /metrics serves beside the latency and the runtime.
+func newSettlementMetrics(reg *prometheus.Registry) *metrics.Settlement {
+	return metrics.New(reg)
 }
 
 // newConsumer is the third background component of the process. It polls the

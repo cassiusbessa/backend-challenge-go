@@ -25,6 +25,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 // quick is the timing of a case: short enough that nothing waits, and still
@@ -427,7 +428,7 @@ func TestMeasure_movesTheDepthOfTheDeadLetterQueueIntoTheMetric(t *testing.T) {
 	queue := &fakeQueue{depth: 4}
 	consumer, _, metrics := consumerOver(t, queue, &fakeReceiver{})
 	consumer.measure(context.Background())
-	if got := gaugeOf(t, metrics); got != 4 {
+	if got := gaugeOf(t, metrics.DeadLetterDepth); got != 4 {
 		t.Fatalf("depth = %v, want 4", got)
 	}
 }
@@ -441,7 +442,7 @@ func TestMeasure_keepsTheLastDepthWhenTheBrokerIsOut(t *testing.T) {
 	consumer.measure(context.Background())
 	queue.depthErr = errors.New("connection refused")
 	consumer.measure(context.Background())
-	if got := gaugeOf(t, metrics); got != 4 {
+	if got := gaugeOf(t, metrics.DeadLetterDepth); got != 4 {
 		t.Fatalf("depth = %v, want the 4 of the last read", got)
 	}
 }
@@ -477,12 +478,12 @@ func message(top map[string]any) []byte {
 	return envelopeWith(top, nil)
 }
 
-func consumerOver(t *testing.T, queue Queue, receiver Receiver) (*Consumer, *bytes.Buffer, *Metrics) {
+func consumerOver(t *testing.T, queue Queue, receiver Receiver) (*Consumer, *bytes.Buffer, *metrics.Settlement) {
 	t.Helper()
 	logs := &bytes.Buffer{}
-	metrics := NewMetrics(prometheus.NewRegistry())
-	reporter := NewReporter(slog.New(slog.NewJSONHandler(logs, nil)), quietTracer(), metrics)
-	return NewConsumer(queue, receiver, reporter, quick), logs, metrics
+	series := metrics.New(prometheus.NewRegistry())
+	reporter := NewReporter(slog.New(slog.NewJSONHandler(logs, nil)), quietTracer(), series)
+	return NewConsumer(queue, receiver, reporter, quick), logs, series
 }
 
 // recorded swaps the tracer of the reporter for one that keeps the spans it ended.
@@ -706,9 +707,9 @@ func assertNoSecrets(t *testing.T, line map[string]any) {
 	}
 }
 
-func assertCounted(t *testing.T, metrics *Metrics, reason string, want float64) {
+func assertCounted(t *testing.T, series *metrics.Settlement, reason string, want float64) {
 	t.Helper()
-	if got := counterOf(t, metrics, reason); got != want {
+	if got := counterOf(t, series, reason); got != want {
 		t.Fatalf("abandonments counted for %s = %v, want %v", reason, got, want)
 	}
 }
@@ -719,19 +720,19 @@ func itoa(value int64) string {
 
 // counterOf and gaugeOf read one series out of the registry, which is the only way
 // to see a Prometheus value without scraping the endpoint.
-func counterOf(t *testing.T, metrics *Metrics, reason string) float64 {
+func counterOf(t *testing.T, series *metrics.Settlement, reason string) float64 {
 	t.Helper()
 	var out dto.Metric
-	if err := metrics.Abandoned.WithLabelValues(reason).Write(&out); err != nil {
+	if err := series.Abandoned.WithLabelValues(reason).Write(&out); err != nil {
 		t.Fatalf("read the counter = %v, want nil", err)
 	}
 	return out.GetCounter().GetValue()
 }
 
-func gaugeOf(t *testing.T, metrics *Metrics) float64 {
+func gaugeOf(t *testing.T, gauge prometheus.Gauge) float64 {
 	t.Helper()
 	var out dto.Metric
-	if err := metrics.DeadLetterDepth.Write(&out); err != nil {
+	if err := gauge.Write(&out); err != nil {
 		t.Fatalf("read the gauge = %v, want nil", err)
 	}
 	return out.GetGauge().GetValue()

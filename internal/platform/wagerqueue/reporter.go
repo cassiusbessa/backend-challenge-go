@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -15,6 +14,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
@@ -25,39 +25,13 @@ import (
 // carries a body, an amount, a balance, an idempotency key, a token or a
 // credential: what it says is which message it was, what happened to it, and why.
 type Reporter struct {
-	log       *slog.Logger
-	tracer    trace.Tracer
-	abandoned *prometheus.CounterVec
-	depth     prometheus.Gauge
+	log     *slog.Logger
+	tracer  trace.Tracer
+	metrics *metrics.Settlement
 }
 
-func NewReporter(log *slog.Logger, tracer trace.Tracer, metrics *Metrics) *Reporter {
-	return &Reporter{log: log, tracer: tracer, abandoned: metrics.Abandoned, depth: metrics.DeadLetterDepth}
-}
-
-// Metrics is what the ingress adds to the registry of the process.
-//
-// Neither series carries a wallet or a provider in a label: go-observability keeps
-// both out, and the reason of an abandonment is a closed set of tokens, so the
-// cardinality is bounded by the code and not by the traffic.
-type Metrics struct {
-	Abandoned       *prometheus.CounterVec
-	DeadLetterDepth prometheus.Gauge
-}
-
-// NewMetrics registers the two series of the ingress on the registry of the
-// process.
-func NewMetrics(reg *prometheus.Registry) *Metrics {
-	abandoned := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "wager_ingress_messages_abandoned_total",
-		Help: "Messages copied to the dead-letter queue, by reason.",
-	}, []string{"reason"})
-	depth := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "wager_ingress_dead_letter_depth",
-		Help: "Messages waiting in the dead-letter queue.",
-	})
-	reg.MustRegister(abandoned, depth)
-	return &Metrics{Abandoned: abandoned, DeadLetterDepth: depth}
+func NewReporter(log *slog.Logger, tracer trace.Tracer, series *metrics.Settlement) *Reporter {
+	return &Reporter{log: log, tracer: tracer, metrics: series}
 }
 
 // propagator reads the trace the sender put in the attributes of the message. It
@@ -174,7 +148,7 @@ func (rep *Reporter) Rejected(ctx context.Context, result submitwager.Result, re
 // corrects the configuration: a map naming the wrong one sends every legitimate
 // message here, and the line is the only place the true value can be read from.
 func (rep *Reporter) Abandoned(ctx context.Context, delivery Delivery, reason string, err error) {
-	rep.abandoned.WithLabelValues(reason).Inc()
+	rep.metrics.Abandoned.WithLabelValues(reason).Inc()
 	// Every one of the four doors to the dead-letter queue names a refusal of its
 	// own, the delivery limit included, so the chain is always there to log.
 	attrs := append(rep.named(ctx),
@@ -207,7 +181,7 @@ func (rep *Reporter) Failed(ctx context.Context, message string, err error) {
 
 // Depth records how many messages the dead-letter queue is holding.
 func (rep *Reporter) Depth(messages int64) {
-	rep.depth.Set(float64(messages))
+	rep.metrics.DeadLetterDepth.Set(float64(messages))
 }
 
 // named is what every line of one operation carries: the identity of the message,

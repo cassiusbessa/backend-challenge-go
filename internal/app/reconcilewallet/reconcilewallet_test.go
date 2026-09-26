@@ -269,3 +269,24 @@ func walletOf(t *testing.T) identity.WalletID {
 	}
 	return id
 }
+
+// The vocabulary is closed, and this is the list a series per token is primed
+// from: every token, in declaration order, and nothing outside it.
+func TestVocabulary_listsEveryTokenInDeclarationOrder(t *testing.T) {
+	t.Parallel()
+	want := []Divergence{BalanceMismatch, SequenceGap, ChainBreak}
+	got := Vocabulary()
+	if len(got) != len(want) {
+		t.Fatalf("tokens = %v, want the %d of the vocabulary", got, len(want))
+	}
+	for at, token := range want {
+		if got[at] != token {
+			t.Fatalf("token %d = %s, want %s", at, got[at], token)
+		}
+	}
+	for _, token := range got {
+		if token.String() == "" {
+			t.Fatalf("token %d of the vocabulary has no text, want every token named", token)
+		}
+	}
+}
