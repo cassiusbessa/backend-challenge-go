@@ -39,7 +39,7 @@ func TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue(t *testing.T) {
 		if got := replayed.verdict(t); got != "200 PROCESSED replay=true" {
 			t.Fatalf("the same operation over HTTP after the queue = %s, want 200 PROCESSED replay=true", got)
 		}
-		if got, want := replayed.outcome(t).ID, db.keyed(ctx, t, key); got != want {
+		if got, want := replayed.outcome(t).TransactionID, db.keyed(ctx, t, key); got != want {
 			t.Errorf("replay over HTTP answered %s, want the %s the queue recorded", got, want)
 		}
 		t.Logf("HTTP answered %s with the transaction the queue recorded", replayed.verdict(t))

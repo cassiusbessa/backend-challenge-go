@@ -75,11 +75,11 @@ func assertWaits(ctx context.Context, t *testing.T, at *scene, in *instance, op 
 		t.Fatalf("the operation that waits = %d, want 202: %s", accepted.status, accepted.body)
 	}
 	waiting := accepted.outcome(t)
-	if waiting.Status != "PENDING_REFERENCE" || waiting.ObservedBalance.Amount != "" {
+	if waiting.Status != "PENDING_REFERENCE" || waiting.Balance.Amount != "" {
 		t.Fatalf("wait = %+v, want PENDING_REFERENCE with no balance observed", waiting)
 	}
-	t.Logf("%s %s recorded as PENDING_REFERENCE by %s", op["kind"], waiting.ID, in.base)
-	return waiting.ID
+	t.Logf("%s %s recorded as PENDING_REFERENCE by %s", op["kind"], waiting.TransactionID, in.base)
+	return waiting.TransactionID
 }
 
 func assertCreated(ctx context.Context, t *testing.T, at *scene, in *instance, op operation) {
@@ -88,7 +88,7 @@ func assertCreated(ctx context.Context, t *testing.T, at *scene, in *instance, o
 	if created.status != http.StatusCreated {
 		t.Fatalf("the cited operation = %d, want 201: %s", created.status, created.body)
 	}
-	t.Logf("%s %s settled by %s", op["kind"], created.outcome(t).ID, in.base)
+	t.Logf("%s %s settled by %s", op["kind"], created.outcome(t).TransactionID, in.base)
 }
 
 // assertBackWhereItOpened checks the balance is the one of the opening, at the

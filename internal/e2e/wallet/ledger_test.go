@@ -27,8 +27,8 @@ func TestListLedger_answersTheThreeMovementsInSequenceWithTheChainClosed(t *test
 		t.Fatalf("page = %d entries with cursor %q, want 3 and no cursor", len(page.Entries), page.NextCursor)
 	}
 	assertMovement(t, page.Entries[0], 1, "CREDIT", "1000.00", "0.00", "1000.00", openingTransaction(ctx, t, wallet.wallet.ID))
-	assertMovement(t, page.Entries[1], 2, "DEBIT", "25.00", "1000.00", "975.00", bet.ID)
-	assertMovement(t, page.Entries[2], 3, "CREDIT", "50.00", "975.00", "1025.00", win.ID)
+	assertMovement(t, page.Entries[1], 2, "DEBIT", "25.00", "1000.00", "975.00", bet.TransactionID)
+	assertMovement(t, page.Entries[2], 3, "CREDIT", "50.00", "975.00", "1025.00", win.TransactionID)
 }
 
 // assertMovement checks one entry of the page: where it sits, what it moved and
@@ -119,8 +119,8 @@ func TestListLedger_showsAMovementSettledBetweenTwoPagesOnTheNextOne(t *testing.
 	late := wallet.bet(ctx, t, base, "10.00")
 	second, status := listLedger(ctx, t, base, internal, wallet.wallet.ID, "limit=2&cursor="+first.NextCursor)
 	assertPage(t, second, status, "3,4", false)
-	if second.Entries[1].TransactionID != late.ID {
-		t.Fatalf("last entry names %s, want the bet settled between the pages, %s", second.Entries[1].TransactionID, late.ID)
+	if second.Entries[1].TransactionID != late.TransactionID {
+		t.Fatalf("last entry names %s, want the bet settled between the pages, %s", second.Entries[1].TransactionID, late.TransactionID)
 	}
 }
 

@@ -38,7 +38,7 @@ func TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce(t *testing.T) {
 
 	t.Logf("sent %d copies of one bet under one key at once", len(asks))
 	settled := assertOneSettledAndTheRestReplayed(t, together(ctx, t, asks))
-	t.Logf("1 settled as %s with %s observed, %d answered the replay of it", settled.ID, settled.ObservedBalance.Amount, len(asks)-1)
+	t.Logf("1 settled as %s with %s observed, %d answered the replay of it", settled.TransactionID, settled.Balance.Amount, len(asks)-1)
 	assertDebitedOnce(ctx, t, db, holder, key, settled)
 	assertEveryInstanceTookItsShare(ctx, t, instances, at.params.SameBetCopies)
 }
@@ -84,8 +84,8 @@ func byStatus(t *testing.T, answers []answer) (created, found []outcome) {
 // the transaction in the outbox once.
 func assertDebitedOnce(ctx context.Context, t *testing.T, db store, holder owner, key string, settled outcome) {
 	t.Helper()
-	if settled.ObservedBalance.Amount != "975.00" {
-		t.Errorf("observed balance = %s, want the 975.00 left by the one debit", settled.ObservedBalance.Amount)
+	if settled.Balance.Amount != "975.00" {
+		t.Errorf("observed balance = %s, want the 975.00 left by the one debit", settled.Balance.Amount)
 	}
 	if got := db.forKey(ctx, t, key); got != 1 {
 		t.Errorf("transactions under the key = %d, want 1", got)
@@ -97,7 +97,7 @@ func assertDebitedOnce(ctx context.Context, t *testing.T, db store, holder owner
 	if wallet != (stored{cents: 97500, version: 2}) {
 		t.Errorf("wallet = %v, want 975.00 at version 2", wallet)
 	}
-	assertEventsOnce(ctx, t, db, settled.ID)
+	assertEventsOnce(ctx, t, db, settled.TransactionID)
 	t.Logf("wallet: %v, with one transaction under the key and one debit", wallet)
 }
 

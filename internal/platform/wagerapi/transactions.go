@@ -36,24 +36,36 @@ type Reader interface {
 	Transaction(ctx context.Context, id identity.TransactionID, provider identity.ProviderID) (storage.TransactionView, error)
 }
 
-// transactionResponse is what both routes answer.
+// submittedResponse is what the submission answers, under the names of the
+// challenge statement.
 //
 // Money leaves as a decimal string of two places, which is what money.MarshalJSON
-// writes. ObservedBalance is a pointer so that a transaction carrying none leaves
-// the field out instead of answering a balance of zero.
-//
-// ProviderID is absent from a submission, where the provider is the caller itself,
-// and present on a read.
-type transactionResponse struct {
-	ID                    string       `json:"id"`
+// writes. Balance is a pointer so that an outcome carrying none leaves the field
+// out instead of answering a balance of zero. IdempotentReplay is always
+// written: every arrival of an operation is either the first or a replay, and
+// false says the first as plainly as true says the replay.
+type submittedResponse struct {
+	TransactionID         string       `json:"transactionId"`
 	Kind                  string       `json:"kind"`
 	Status                string       `json:"status"`
-	ProviderID            string       `json:"providerId,omitempty"`
 	ExternalTransactionID string       `json:"externalTransactionId"`
 	Money                 money.Money  `json:"money"`
-	ObservedBalance       *money.Money `json:"observedBalance,omitempty"`
+	Balance               *money.Money `json:"balance,omitempty"`
+	IdempotentReplay      bool         `json:"idempotentReplay"`
+}
+
+// recordedResponse is what a read answers: the row as it was recorded. It
+// carries no replay marker, because a read is not an arrival of the operation,
+// and the provider, which the submission leaves out because the caller is it.
+type recordedResponse struct {
+	TransactionID         string       `json:"transactionId"`
+	Kind                  string       `json:"kind"`
+	Status                string       `json:"status"`
+	ProviderID            string       `json:"providerId"`
+	ExternalTransactionID string       `json:"externalTransactionId"`
+	Money                 money.Money  `json:"money"`
+	Balance               *money.Money `json:"balance,omitempty"`
 	FailureCode           string       `json:"failureCode,omitempty"`
-	IdempotentReplay      bool         `json:"idempotentReplay,omitempty"`
 }
 
 // Submit serves POST /wagering/transactions. The operation ends PROCESSED,
@@ -162,27 +174,27 @@ func statusOf(settled submitwager.Result) int {
 	return http.StatusCreated
 }
 
-func settledResponse(settled submitwager.Result) transactionResponse {
-	return transactionResponse{
-		ID:                    settled.TransactionID.String(),
+func settledResponse(settled submitwager.Result) submittedResponse {
+	return submittedResponse{
+		TransactionID:         settled.TransactionID.String(),
 		Kind:                  settled.Kind.String(),
 		Status:                settled.Status.String(),
 		ExternalTransactionID: settled.ExternalID.String(),
 		Money:                 settled.Amount,
-		ObservedBalance:       balanceOf(settled.ObservedBalance),
+		Balance:               balanceOf(settled.ObservedBalance),
 		IdempotentReplay:      settled.IdempotentReplay,
 	}
 }
 
-func viewResponse(found storage.TransactionView) transactionResponse {
-	return transactionResponse{
-		ID:                    found.ID.String(),
+func viewResponse(found storage.TransactionView) recordedResponse {
+	return recordedResponse{
+		TransactionID:         found.ID.String(),
 		Kind:                  found.Kind.String(),
 		Status:                found.Status.String(),
 		ProviderID:            found.ProviderID.String(),
 		ExternalTransactionID: found.ExternalID.String(),
 		Money:                 found.Amount,
-		ObservedBalance:       balanceOf(found.ObservedBalance),
+		Balance:               balanceOf(found.ObservedBalance),
 		FailureCode:           found.FailureCode.String(),
 	}
 }
@@ -197,7 +209,7 @@ func balanceOf(balance money.Money) *money.Money {
 	return &balance
 }
 
-func write(w http.ResponseWriter, status int, body transactionResponse) {
+func write(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	// A client that hung up leaves nothing to answer with, and the status line

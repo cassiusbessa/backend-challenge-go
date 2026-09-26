@@ -51,8 +51,8 @@ type externalReconciliation struct {
 }
 
 type externalTransaction struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	TransactionID string `json:"transactionId"`
+	Status        string `json:"status"`
 }
 
 // funded is a wallet opened with a thousand and the provider token that moves

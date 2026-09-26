@@ -169,13 +169,13 @@ type externalMoney struct {
 }
 
 type externalTransaction struct {
-	ID                    string        `json:"id"`
+	TransactionID         string        `json:"transactionId"`
 	Kind                  string        `json:"kind"`
 	Status                string        `json:"status"`
 	ProviderID            string        `json:"providerId"`
 	ExternalTransactionID string        `json:"externalTransactionId"`
 	Money                 externalMoney `json:"money"`
-	ObservedBalance       externalMoney `json:"observedBalance"`
+	Balance               externalMoney `json:"balance"`
 	FailureCode           string        `json:"failureCode"`
 	IdempotentReplay      bool          `json:"idempotentReplay"`
 }

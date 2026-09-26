@@ -330,9 +330,9 @@ type answer struct {
 // is the problem details of a rule that refused. The contract names each field
 // of both here and nowhere else in the package.
 type outcome struct {
-	ID               string        `json:"id"`
+	TransactionID    string        `json:"transactionId"`
 	Status           string        `json:"status"`
-	ObservedBalance  externalMoney `json:"observedBalance"`
+	Balance          externalMoney `json:"balance"`
 	FailureCode      string        `json:"failureCode"`
 	IdempotentReplay bool          `json:"idempotentReplay"`
 }
@@ -570,7 +570,13 @@ func (s *scene) open(ctx context.Context, t *testing.T, at *instance, balance st
 	if opened.status != http.StatusCreated {
 		t.Fatalf("opening = %d, want 201: %s", opened.status, opened.body)
 	}
-	return owner{id: opened.outcome(t).ID, player: player}
+	var wallet struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(opened.body, &wallet); err != nil {
+		t.Fatalf("unmarshal the opened wallet = %v, want nil: %s", err, opened.body)
+	}
+	return owner{id: wallet.ID, player: player}
 }
 
 // operation is the business of one submission. Both channels carry it: it is the

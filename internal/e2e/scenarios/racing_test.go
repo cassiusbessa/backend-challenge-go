@@ -108,8 +108,8 @@ func assertSameTransactions(t *testing.T, decided, again []answer) {
 		if first.status != http.StatusCreated {
 			continue
 		}
-		if first.outcome(t).ID != again[index].outcome(t).ID {
-			t.Errorf("bet %d replayed %s, want the %s it recorded", index, again[index].outcome(t).ID, first.outcome(t).ID)
+		if first.outcome(t).TransactionID != again[index].outcome(t).TransactionID {
+			t.Errorf("bet %d replayed %s, want the %s it recorded", index, again[index].outcome(t).TransactionID, first.outcome(t).TransactionID)
 		}
 	}
 }

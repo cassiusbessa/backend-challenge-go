@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,7 +44,7 @@ func TestSubmit_answers201PointingAtTheCreatedResource(t *testing.T) {
 func assertCreated(t *testing.T, recorder *httptest.ResponseRecorder) {
 	t.Helper()
 	answered := answerOf(t, recorder)
-	if answered.ID != transactionID || answered.Status != "PROCESSED" || answered.Kind != "BET" {
+	if answered.TransactionID != transactionID || answered.Status != "PROCESSED" || answered.Kind != "BET" {
 		t.Fatalf("answered = %+v, want the created transaction", answered)
 	}
 	assertFirstCompletion(t, answered)
@@ -51,11 +52,25 @@ func assertCreated(t *testing.T, recorder *httptest.ResponseRecorder) {
 
 func assertFirstCompletion(t *testing.T, answered externalTransaction) {
 	t.Helper()
-	if answered.ObservedBalance.Amount != "975.00" {
-		t.Fatalf("observed balance = %s, want 975.00", answered.ObservedBalance.Amount)
+	if answered.Balance.Amount != "975.00" {
+		t.Fatalf("balance = %s, want 975.00", answered.Balance.Amount)
 	}
 	if answered.IdempotentReplay {
 		t.Fatalf("idempotentReplay = %t, want false on the first completion", answered.IdempotentReplay)
+	}
+}
+
+// The body is read by name, as a client following the challenge statement reads
+// it: the names are that document's, the former ones are gone, and the replay
+// marker is written even when it is false.
+func TestSubmit_answersTheNamesOfTheStatementWithTheReplayWrittenOnTheFirstCompletion(t *testing.T) {
+	t.Parallel()
+	fields := fieldsOf(t, post(t, &submitter{result: settled(t, false)}, "provider-a", submission(nil)))
+	assertFields(t, fields,
+		[]string{"transactionId", "status", "balance", "idempotentReplay"},
+		[]string{"id", "observedBalance"})
+	if got := string(fields["idempotentReplay"]); got != "false" {
+		t.Fatalf("idempotentReplay on the first completion = %s, want false written out", got)
 	}
 }
 
@@ -97,7 +112,7 @@ func assertWaitAnswered(t *testing.T, recorder *httptest.ResponseRecorder) {
 // altogether, which a decoded zero value cannot tell from a balance of zero.
 func assertNoBalance(t *testing.T, recorder *httptest.ResponseRecorder) {
 	t.Helper()
-	if strings.Contains(recorder.Body.String(), "observedBalance") {
+	if _, ok := fieldsOf(t, recorder)["balance"]; ok {
 		t.Fatalf("body = %s, want no balance for an outcome that carries none", recorder.Body.String())
 	}
 }
@@ -133,8 +148,8 @@ func TestSubmit_answers200OnTheMarkedReplay(t *testing.T) {
 	if !answered.IdempotentReplay {
 		t.Fatalf("idempotentReplay = %t, want true on the replay", answered.IdempotentReplay)
 	}
-	if answered.ObservedBalance.Amount != "975.00" {
-		t.Fatalf("observed balance = %s, want the one of the original completion", answered.ObservedBalance.Amount)
+	if answered.Balance.Amount != "975.00" {
+		t.Fatalf("balance = %s, want the one of the original completion", answered.Balance.Amount)
 	}
 }
 
@@ -246,9 +261,19 @@ func TestRead_answers200WithTheRecordedOutcome(t *testing.T) {
 		t.Fatalf("content type = %s, want application/json", got)
 	}
 	answered := answerOf(t, recorder)
-	if answered.Status != "PROCESSED" || answered.ObservedBalance.Amount != "975.00" {
+	if answered.Status != "PROCESSED" || answered.Balance.Amount != "975.00" {
 		t.Fatalf("answered = %+v, want the recorded outcome", answered)
 	}
+}
+
+// A read is not an arrival of the operation, so it says nothing about a replay:
+// the marker is left out rather than answered false.
+func TestRead_answersTheNamesOfTheStatementWithNoReplayMarker(t *testing.T) {
+	t.Parallel()
+	recorder := get(t, &reader{view: view(t, wager.Processed, "975.00")}, "provider-a", transactionID)
+	assertFields(t, fieldsOf(t, recorder),
+		[]string{"transactionId", "providerId", "balance"},
+		[]string{"id", "observedBalance", "idempotentReplay"})
 }
 
 // The read of a transaction closed by a rule answers 200 with its token: the read
@@ -268,9 +293,7 @@ func TestRead_answers200WithTheTokenOfARejectedTransaction(t *testing.T) {
 	if answered.Status != "REJECTED" || answered.FailureCode != "INSUFFICIENT_FUNDS" {
 		t.Fatalf("answered = %+v, want REJECTED with its token", answered)
 	}
-	if strings.Contains(recorder.Body.String(), "observedBalance") {
-		t.Fatalf("body = %s, want no balance for a transaction that carries none", recorder.Body.String())
-	}
+	assertNoBalance(t, recorder)
 }
 
 // A transaction still waiting reads back as itself: the read concluded, so it is
@@ -308,7 +331,7 @@ func TestRead_answersTheSameAbsenceForAnotherProviderAndForNothing(t *testing.T)
 	if alien.Body.String() != absent.Body.String() {
 		t.Fatalf("bodies = %s and %s, want them the same", alien.Body, absent.Body)
 	}
-	for _, banned := range []string{"PROCESSED", "REJECTED", "amount", "observedBalance"} {
+	for _, banned := range []string{"PROCESSED", "REJECTED", "amount", "balance"} {
 		if strings.Contains(alien.Body.String(), banned) {
 			t.Fatalf("body = %s, want it without %q", alien.Body, banned)
 		}
@@ -358,13 +381,13 @@ type externalMoney struct {
 }
 
 type externalTransaction struct {
-	ID                    string        `json:"id"`
+	TransactionID         string        `json:"transactionId"`
 	Kind                  string        `json:"kind"`
 	Status                string        `json:"status"`
 	ProviderID            string        `json:"providerId"`
 	ExternalTransactionID string        `json:"externalTransactionId"`
 	Money                 externalMoney `json:"money"`
-	ObservedBalance       externalMoney `json:"observedBalance"`
+	Balance               externalMoney `json:"balance"`
 	FailureCode           string        `json:"failureCode"`
 	IdempotentReplay      bool          `json:"idempotentReplay"`
 }
@@ -376,6 +399,41 @@ func answerOf(t *testing.T, recorder *httptest.ResponseRecorder) externalTransac
 		t.Fatalf("unmarshal of the transaction = %v, want nil: %s", err, recorder.Body)
 	}
 	return answered
+}
+
+// fieldsOf answers the top-level fields of the body as they were written, which
+// is what tells a field left out from one written with its zero value.
+func fieldsOf(t *testing.T, recorder *httptest.ResponseRecorder) map[string]json.RawMessage {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("unmarshal of the fields = %v, want nil: %s", err, recorder.Body)
+	}
+	return fields
+}
+
+// assertFields checks the names a body carries and the ones it must not.
+func assertFields(t *testing.T, fields map[string]json.RawMessage, present, absent []string) {
+	t.Helper()
+	for _, name := range present {
+		if _, ok := fields[name]; !ok {
+			t.Fatalf("fields = %v, want %q among them", keysOf(fields), name)
+		}
+	}
+	for _, name := range absent {
+		if _, ok := fields[name]; ok {
+			t.Fatalf("fields = %v, want no %q", keysOf(fields), name)
+		}
+	}
+}
+
+func keysOf(fields map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(fields))
+	for name := range fields {
+		keys = append(keys, name)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func refusalOf(t *testing.T, recorder *httptest.ResponseRecorder) problem.Details {

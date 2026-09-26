@@ -40,15 +40,33 @@ func assertBetDebits(ctx context.Context, t *testing.T, at suite, wallet owner) 
 		t.Fatalf("the bet that debits = %d, want 201: %s", placed.status, placed.body)
 	}
 	settled := placed.transaction(t)
-	if settled.Status != "PROCESSED" || settled.ObservedBalance.Amount != "975.00" {
-		t.Fatalf("bet = %s with %s observed, want PROCESSED with 975.00", settled.Status, settled.ObservedBalance.Amount)
+	if settled.Status != "PROCESSED" || settled.Balance.Amount != "975.00" {
+		t.Fatalf("bet = %s with %s observed, want PROCESSED with 975.00", settled.Status, settled.Balance.Amount)
 	}
-	if got := placed.header.Get("Location"); got != wagerRoute+"/"+settled.ID {
-		t.Fatalf("location = %s, want %s", got, wagerRoute+"/"+settled.ID)
+	if got := placed.header.Get("Location"); got != wagerRoute+"/"+settled.TransactionID {
+		t.Fatalf("location = %s, want %s", got, wagerRoute+"/"+settled.TransactionID)
 	}
+	assertStatementNames(t, placed)
 	assertWallet(ctx, t, wallet.id, 97500, 2)
 	assertEntries(ctx, t, wallet.id, 2)
-	return settled.ID
+	return settled.TransactionID
+}
+
+// assertStatementNames reads the body as bytes, the way a client following the
+// challenge statement reads it: that document's names, the former ones gone, and
+// the replay marker written even on the first completion.
+func assertStatementNames(t *testing.T, placed answer) {
+	t.Helper()
+	for _, want := range []string{`"transactionId":`, `"balance":`, `"idempotentReplay":false`} {
+		if !bytes.Contains(placed.body, []byte(want)) {
+			t.Fatalf("body of the first completion = %s, want it carrying %s", placed.body, want)
+		}
+	}
+	for _, former := range []string{`"id":`, `"observedBalance":`} {
+		if bytes.Contains(placed.body, []byte(former)) {
+			t.Fatalf("body of the first completion = %s, want no former name %s", placed.body, former)
+		}
+	}
 }
 
 // The loss closes the round without touching the wallet: no entry, no version
@@ -65,7 +83,7 @@ func assertLossRecordsTheTransactionAlone(ctx context.Context, t *testing.T, at 
 	}
 	assertWallet(ctx, t, wallet.id, 97500, 2)
 	assertEntries(ctx, t, wallet.id, 2)
-	return closed.ID
+	return closed.TransactionID
 }
 
 // A win citing no operation credits right away.
@@ -99,11 +117,11 @@ func TestSubmit_replaysTheSameKeyAndTheSameBody(t *testing.T) {
 	if !replayed.IdempotentReplay {
 		t.Fatalf("idempotentReplay = %t, want true on the second arrival", replayed.IdempotentReplay)
 	}
-	if replayed.ID != first.transaction(t).ID {
-		t.Fatalf("replay answered %s, want the recorded %s", replayed.ID, first.transaction(t).ID)
+	if replayed.TransactionID != first.transaction(t).TransactionID {
+		t.Fatalf("replay answered %s, want the recorded %s", replayed.TransactionID, first.transaction(t).TransactionID)
 	}
-	if replayed.ObservedBalance.Amount != "975.00" {
-		t.Fatalf("observed balance = %s, want the 975.00 of the original completion", replayed.ObservedBalance.Amount)
+	if replayed.Balance.Amount != "975.00" {
+		t.Fatalf("observed balance = %s, want the 975.00 of the original completion", replayed.Balance.Amount)
 	}
 	assertWallet(ctx, t, wallet.id, 97500, 2)
 	assertEntries(ctx, t, wallet.id, 2)
@@ -326,7 +344,7 @@ func TestRead_answersTheSameAbsenceForAnotherProviderAndForNothing(t *testing.T)
 	if placed.status != http.StatusCreated {
 		t.Fatalf("the bet to read back = %d, want 201: %s", placed.status, placed.body)
 	}
-	alien := read(ctx, t, at, at.other, placed.transaction(t).ID)
+	alien := read(ctx, t, at, at.other, placed.transaction(t).TransactionID)
 	if alien.status != http.StatusNotFound {
 		t.Fatalf("read of another provider = %d, want 404: %s", alien.status, alien.body)
 	}

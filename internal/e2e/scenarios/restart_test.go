@@ -85,7 +85,7 @@ func assertKeySurvives(ctx context.Context, t *testing.T, at *scene, db store, n
 	if got := db.forKey(ctx, t, key); got != 1 {
 		t.Errorf("transactions under the key after the restart = %d, want 1", got)
 	}
-	t.Logf("the key replayed %s with the %s observed before the restart, and another body was the conflict", settled.ID, settled.ObservedBalance.Amount)
+	t.Logf("the key replayed %s with the %s observed before the restart, and another body was the conflict", settled.TransactionID, settled.Balance.Amount)
 }
 
 // awaitPublished waits until the wallet has nothing left to publish, and then

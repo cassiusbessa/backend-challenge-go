@@ -192,7 +192,7 @@ func TestSubmit_replaysTheWaitAndThenTheOutcomeItEndedWith(t *testing.T) {
 	if accepted.status != http.StatusAccepted {
 		t.Fatalf("the operation that waits under a key of its own = %d, want 202: %s", accepted.status, accepted.body)
 	}
-	waiting := accepted.transaction(t).ID
+	waiting := accepted.transaction(t).TransactionID
 	before := schedule(ctx, t, waiting)
 
 	replayed := submit(ctx, t, at, at.provider, key, payload)
@@ -214,8 +214,8 @@ func assertWaitReplayed(t *testing.T, answered externalTransaction) {
 	if answered.Status != "PENDING_REFERENCE" || !answered.IdempotentReplay {
 		t.Fatalf("replayed = %+v, want the wait marked as a replay", answered)
 	}
-	if answered.ObservedBalance.Amount != "" {
-		t.Fatalf("observed balance = %s, want none while nothing has closed the wait", answered.ObservedBalance.Amount)
+	if answered.Balance.Amount != "" {
+		t.Fatalf("observed balance = %s, want none while nothing has closed the wait", answered.Balance.Amount)
 	}
 }
 
@@ -290,13 +290,13 @@ func assertWaits(ctx context.Context, t *testing.T, at suite, payload string) st
 	if answered.Status != "PENDING_REFERENCE" {
 		t.Fatalf("status = %s, want PENDING_REFERENCE", answered.Status)
 	}
-	if got := accepted.header.Get("Location"); got != wagerRoute+"/"+answered.ID {
-		t.Fatalf("location = %s, want %s", got, wagerRoute+"/"+answered.ID)
+	if got := accepted.header.Get("Location"); got != wagerRoute+"/"+answered.TransactionID {
+		t.Fatalf("location = %s, want %s", got, wagerRoute+"/"+answered.TransactionID)
 	}
-	if answered.ObservedBalance.Amount != "" {
-		t.Fatalf("observed balance = %s, want none: no commit closed the operation", answered.ObservedBalance.Amount)
+	if answered.Balance.Amount != "" {
+		t.Fatalf("observed balance = %s, want none: no commit closed the operation", answered.Balance.Amount)
 	}
-	return answered.ID
+	return answered.TransactionID
 }
 
 // assertProcessed submits the body, checks it concluded in that very commit and
@@ -308,10 +308,10 @@ func assertProcessed(ctx context.Context, t *testing.T, at suite, payload, balan
 		t.Fatalf("the operation that concludes = %d, want 201: %s", settled.status, settled.body)
 	}
 	answered := settled.transaction(t)
-	if answered.Status != "PROCESSED" || answered.ObservedBalance.Amount != balance {
-		t.Fatalf("settled %s with %s observed, want PROCESSED with %s", answered.Status, answered.ObservedBalance.Amount, balance)
+	if answered.Status != "PROCESSED" || answered.Balance.Amount != balance {
+		t.Fatalf("settled %s with %s observed, want PROCESSED with %s", answered.Status, answered.Balance.Amount, balance)
 	}
-	return answered.ID
+	return answered.TransactionID
 }
 
 // pollFor bounds how long a case waits on the worker, and pollEvery is how often
@@ -350,8 +350,8 @@ func awaitRejection(ctx context.Context, t *testing.T, at suite, id, code string
 	if decided.FailureCode != code {
 		t.Fatalf("failureCode of %s = %s, want %s", id, decided.FailureCode, code)
 	}
-	if decided.ObservedBalance.Amount != "" {
-		t.Fatalf("observed balance = %s, want none: the deadline moved nothing", decided.ObservedBalance.Amount)
+	if decided.Balance.Amount != "" {
+		t.Fatalf("observed balance = %s, want none: the deadline moved nothing", decided.Balance.Amount)
 	}
 }
 
