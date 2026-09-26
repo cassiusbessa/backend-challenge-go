@@ -213,3 +213,18 @@ func TestStarted_answersAPipelineWithItsExportersInstalled(t *testing.T) {
 		t.Fatalf("log provider of a started pipeline = %v, want one installed", pipe.logs)
 	}
 }
+
+func TestExporting_answersFalseUntilTheExportersAreInstalled(t *testing.T) {
+	t.Parallel()
+	pipe := NewPipeline(config.Config{OTELEndpoint: "127.0.0.1:1", SampleRatio: 1})
+	if pipe.Exporting() {
+		t.Fatalf("exporting straight from the constructor = %t, want false", pipe.Exporting())
+	}
+	if err := pipe.Start(context.Background()); err != nil {
+		t.Fatalf("start before asking again = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = pipe.Shutdown(context.Background()) })
+	if !pipe.Exporting() {
+		t.Fatalf("exporting once the exporters are in = %t, want true", pipe.Exporting())
+	}
+}

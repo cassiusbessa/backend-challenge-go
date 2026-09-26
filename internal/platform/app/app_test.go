@@ -497,10 +497,11 @@ type emptyReads struct {
 	storage.Reads
 }
 
-// newRelay and newQueueReporter copy pipe.Tracer while the graph is built, and
-// Pipeline.Start replaces it afterwards as an OnStart hook. What they copied has
-// to be what Start installs: the provider NewPipeline hands out carries no
-// exporter, so a span created on it never leaves the process.
+// newRelay and newQueueReporter copy pipe.Tracer while the graph is built, so
+// the pipeline has to be started by the time they run: the provider NewPipeline
+// hands out carries no exporter, and a span created on it never leaves the
+// process. Exporting is what tells a pipeline that was started from one whose
+// pair was merely never replaced — without it the case passes on both.
 func TestNew_handsTheBackgroundWorkTheTelemetryThatStartInstalls(t *testing.T) {
 	t.Parallel()
 	cfg := loaded(t)
@@ -522,6 +523,9 @@ func TestNew_handsTheBackgroundWorkTheTelemetryThatStartInstalls(t *testing.T) {
 	stopping, release := context.WithTimeout(context.Background(), stepWait)
 	defer release()
 	defer func() { _ = application.Stop(stopping) }()
+	if !pipe.Exporting() {
+		t.Fatalf("pipeline of the graph exporting = %t, want true", pipe.Exporting())
+	}
 	atBuild := <-handedOut
 	if logAtBuild := <-handedLog; logAtBuild != pipe.Logger {
 		t.Fatalf("logger given to the background work = %p, want the one Start installed, %p", logAtBuild, pipe.Logger)

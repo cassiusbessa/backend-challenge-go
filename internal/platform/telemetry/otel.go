@@ -60,6 +60,13 @@ func Started(cfg config.Config) (*Pipeline, error) {
 	return pipe, nil
 }
 
+// Exporting reports whether Start has installed the exporters. A pipeline that
+// answers false still hands out a Tracer and a Logger, and everything written
+// to them stays inside the process.
+func (p *Pipeline) Exporting() bool {
+	return p.logs != nil
+}
+
 // Start installs the trace and log exporters. Process metrics are deliberately
 // left out: they stay on /metrics so that heap and goroutines have a single
 // source instead of two that can disagree.
