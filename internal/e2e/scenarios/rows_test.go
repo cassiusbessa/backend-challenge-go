@@ -46,6 +46,12 @@ func (s store) wallet(ctx context.Context, t *testing.T, walletID string) stored
 	return read
 }
 
+// entries is every ledger entry of the wallet, the credit of its opening included.
+func (s store) entries(ctx context.Context, t *testing.T, walletID string) int64 {
+	t.Helper()
+	return s.count(ctx, t, "SELECT count(*) FROM ledger_entries WHERE wallet_id = $1", walletID)
+}
+
 func (s store) debits(ctx context.Context, t *testing.T, walletID string) int64 {
 	t.Helper()
 	return s.count(ctx, t, "SELECT count(*) FROM ledger_entries WHERE wallet_id = $1 AND direction = 'DEBIT'", walletID)

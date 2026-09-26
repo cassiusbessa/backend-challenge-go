@@ -268,15 +268,20 @@ type answer struct {
 	body   []byte
 }
 
-// outcome is an answer of the wager route read as a single shape: the
-// transaction of a success and the problem details of a refusal share the token
-// and the marker of a replay. The contract names each field once, here.
+// outcome is the transaction a success of the wager route answers, and rejection
+// is the problem details of a rule that refused. The contract names each field
+// of both here and nowhere else in the package.
 type outcome struct {
 	ID               string        `json:"id"`
 	Status           string        `json:"status"`
 	ObservedBalance  externalMoney `json:"observedBalance"`
 	FailureCode      string        `json:"failureCode"`
 	IdempotentReplay bool          `json:"idempotentReplay"`
+}
+
+type rejection struct {
+	FailureCode      string `json:"failureCode"`
+	IdempotentReplay bool   `json:"idempotentReplay"`
 }
 
 // externalMoney is money as the client reads it: two strings, never a number.
@@ -292,6 +297,28 @@ func (a answer) outcome(t *testing.T) outcome {
 		t.Fatalf("unmarshal the outcome = %v, want nil: %s", err, a.body)
 	}
 	return read
+}
+
+func (a answer) rejection(t *testing.T) rejection {
+	t.Helper()
+	var read rejection
+	if err := json.Unmarshal(a.body, &read); err != nil {
+		t.Fatalf("unmarshal the rejection = %v, want nil: %s", err, a.body)
+	}
+	return read
+}
+
+// verdict names an answer of the wager route in one token a case counts and
+// compares: the status number, the status of the transaction or the token of
+// the refusal, and whether it was a replay.
+func (a answer) verdict(t *testing.T) string {
+	t.Helper()
+	if a.status == http.StatusUnprocessableEntity {
+		refused := a.rejection(t)
+		return fmt.Sprintf("%d %s replay=%t", a.status, refused.FailureCode, refused.IdempotentReplay)
+	}
+	settled := a.outcome(t)
+	return fmt.Sprintf("%d %s replay=%t", a.status, settled.Status, settled.IdempotentReplay)
 }
 
 // exchange sends one request and reads the whole answer. It fails nothing
