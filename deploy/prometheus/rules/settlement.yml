@@ -1,0 +1,31 @@
+# As duas regras de alerta da liquidação. O Prometheus as carrega na subida,
+# e o CI as testa com o promtool da mesma imagem: `make rules-test`.
+#
+# Não há Alertmanager: o alerta vive aqui, o Grafana o lista pelo datasource de
+# métrica, e não existe canal para onde notificar num ambiente local.
+groups:
+  - name: settlement
+    rules:
+      # Uma divergência é achado, não tendência: qualquer subida da série na
+      # janela dispara, sem `for`. A série sobe de novo a cada passagem do
+      # observador enquanto a carteira continua divergente, então o alerta
+      # fica de pé até alguém corrigir o banco — que é o que "no topo" pede.
+      - alert: ReconciliationDivergenceFound
+        expr: sum(increase(wager_reconciliation_divergences_total[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: A reconciliation found the stored balance and the ledger in disagreement
+          description: The divergence series rose in the last 15 minutes. The log line names the wallet and the tokens.
+
+      # O lease de uma publicação é de 30s, e uma linha reivindicada por um
+      # envio lento é legítima por esse tempo. O `for` de um minuto é o que
+      # absorve esse lease sem esconder uma outbox parada.
+      - alert: OutboxOldestPendingTooOld
+        expr: max(wager_outbox_oldest_pending_age_seconds) > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: The oldest pending outbox row is older than 30 seconds
+          description: A committed event has not reached the topic for more than a minute. The relay log names the row and the refusal.

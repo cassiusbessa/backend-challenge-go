@@ -41,7 +41,7 @@ WRITE_PROBE := BEGIN; SET ROLE wager_app; \
 	ROLLBACK
 
 .DEFAULT_GOAL := help
-.PHONY: help up down provision migrate test test-journey cover-journey mutation verify migrate-reversibility
+.PHONY: help up down provision migrate test test-journey cover-journey mutation verify migrate-reversibility rules-test
 
 help: ## lista os alvos
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -e 's/:.*## /|/' | awk -F'|' '{printf "%-24s %s\n", $$1, $$2}'
@@ -72,6 +72,13 @@ test: ## a suíte de unidade, que não sobe Docker
 
 test-journey: ## a suíte de jornada: em série, e contra o banco dela
 	DATABASE_URL="$(SUITE_HOST_URL)" go test -race -count=1 -p 1 -tags=integration ./...
+
+# O promtool vem da mesma imagem do Prometheus que o Compose sobe, então a
+# versão que testa é a que avalia. O diretório inteiro é montado porque o teste
+# nomeia o arquivo de regras por caminho relativo a ele.
+rules-test: ## o teste de unidade das regras de alerta, com o promtool da imagem
+	docker run --rm -v "$$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool \
+		prom/prometheus:v3.13.3-busybox test rules /rules/rules/settlement_test.yml
 
 # O perfil unitário não vê `//go:build integration`, e o repositório SQL aparece
 # a 35–56% enquanto a suíte de jornada o verifica a 94–100%. `go tool covdata`

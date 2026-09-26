@@ -4,6 +4,13 @@
 
 global:
   scrape_interval: 5s
+  evaluation_interval: 15s
+
+# As regras de alerta, montadas pelo `compose.yaml` a partir de
+# `deploy/prometheus/rules/`. O arquivo é nomeado, e não um glob: o teste das
+# regras mora no mesmo diretório e não é uma regra.
+rule_files:
+  - /etc/prometheus/rules/settlement.yml
 
 scrape_configs:
   - job_name: otel-collector

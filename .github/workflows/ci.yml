@@ -10,6 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The rules are tested with the promtool of the very image the Compose
+      # runs, so the version that tests is the version that evaluates. It comes
+      # before any Go: a rule that stopped firing is red on its own.
+      - name: alert rules
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool \
+            prom/prometheus:v3.13.3-busybox test rules /rules/rules/settlement_test.yml
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.1"
