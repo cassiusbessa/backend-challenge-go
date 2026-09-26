@@ -173,7 +173,7 @@ func (c *Consumer) Stop(ctx context.Context) error {
 func (c *Consumer) run(polling, work context.Context) {
 	defer close(c.done)
 	for {
-		if c.stopping() || polling.Err() != nil {
+		if c.stopping(polling) {
 			return
 		}
 		deliveries, err := c.queue.Receive(polling, c.timing.Poll, c.timing.Visibility)
@@ -216,12 +216,18 @@ func (c *Consumer) pause(polling context.Context) bool {
 	}
 }
 
-// stopping reports whether the signal has already come. It reads the signal
-// itself and not the context derived from it: the cancellation of that context
-// lands a moment later, and one message would be taken inside that window.
-func (c *Consumer) stopping() bool {
+// stopping reports whether the consumer is on its way out.
+//
+// It asks the signal itself beside the context derived from it, because the
+// cancellation of that context lands a moment later and one message would be
+// taken inside that window. Asking both is one question and not two, and it holds
+// if the poll ever gains a cancellation of its own — which today it has not: the
+// only path to a cancelled poll goes through the signal.
+func (c *Consumer) stopping(polling context.Context) bool {
 	select {
 	case <-c.fetching:
+		return true
+	case <-polling.Done():
 		return true
 	default:
 		return false
@@ -231,7 +237,7 @@ func (c *Consumer) stopping() bool {
 // turn decides the messages one fetch answered.
 func (c *Consumer) turn(polling, work context.Context, deliveries []Delivery) {
 	for _, delivery := range deliveries {
-		if c.stopping() || polling.Err() != nil {
+		if c.stopping(polling) {
 			// The signal came mid batch. go-sqs-ingress hands a message nobody
 			// is left to process straight back: the rest of the batch was never
 			// decided, so it goes visible at once for another replica — or for
