@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
@@ -493,4 +494,38 @@ func TestNewReferenceWorker_answersAWorkerTheLifecycleStarts(t *testing.T) {
 // assembled worker is asked for here.
 type emptyReads struct {
 	storage.Reads
+}
+
+// newRelay and newQueueReporter copy pipe.Tracer while the graph is built, and
+// Pipeline.Start replaces it afterwards as an OnStart hook. What they copied has
+// to be what Start installs: the provider NewPipeline hands out carries no
+// exporter, so a span created on it never leaves the process.
+func TestNew_handsTheBackgroundWorkTheTelemetryThatStartInstalls(t *testing.T) {
+	t.Parallel()
+	cfg := loaded(t)
+	handedOut := make(chan trace.Tracer, 1)
+	handedLog := make(chan *slog.Logger, 1)
+	var pipe *telemetry.Pipeline
+	application := New(cfg,
+		fx.Populate(&pipe),
+		fx.Invoke(func(p *telemetry.Pipeline, _ *outboxrelay.Relay, _ *wagerqueue.Reporter) {
+			handedOut <- p.Tracer
+			handedLog <- p.Logger
+		}),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), stepWait)
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start for the telemetry handover = %v, want nil", err)
+	}
+	stopping, release := context.WithTimeout(context.Background(), stepWait)
+	defer release()
+	defer func() { _ = application.Stop(stopping) }()
+	atBuild := <-handedOut
+	if logAtBuild := <-handedLog; logAtBuild != pipe.Logger {
+		t.Fatalf("logger given to the background work = %p, want the one Start installed, %p", logAtBuild, pipe.Logger)
+	}
+	if atBuild != pipe.Tracer {
+		t.Fatalf("tracer given to the background work = %p, want the one Start installed, %p", atBuild, pipe.Tracer)
+	}
 }

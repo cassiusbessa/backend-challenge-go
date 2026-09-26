@@ -92,6 +92,26 @@ func stop(application *fx.App, pipe *telemetry.Pipeline, timeout time.Duration) 
 	return errors.Join(stopped, pipe.Shutdown(flushing))
 }
 
+// startedPipeline builds the telemetry pipeline and starts it here, in the
+// constructor, instead of in a lifecycle hook.
+//
+// Every constructor of the graph runs before any hook, and Start replaces the
+// Tracer and the Logger it had handed out. Started as a hook, the background
+// work keeps the provider NewPipeline built, which carries no exporter, and its
+// spans and logs never leave the process. Started here, Fx's own ordering makes
+// the handover safe: a constructor runs before anything that depends on it.
+//
+// It is not stopped here either. The flush is the one thing that must survive a
+// shutdown that overran, and a hook cannot promise that, so Run flushes it after
+// the lifecycle is done, on a budget of its own.
+func startedPipeline(cfg config.Config) (*telemetry.Pipeline, error) {
+	pipe := telemetry.NewPipeline(cfg)
+	if err := pipe.Start(context.Background()); err != nil {
+		return nil, err
+	}
+	return pipe, nil
+}
+
 func New(cfg config.Config, opts ...fx.Option) *fx.App {
 	options := []fx.Option{
 		fx.NopLogger,
@@ -103,7 +123,7 @@ func New(cfg config.Config, opts ...fx.Option) *fx.App {
 		// library instead of the budget of this process.
 		fx.StartTimeout(cfg.ShutdownTimeout),
 		fx.StopTimeout(cfg.ShutdownTimeout),
-		fx.Provide(telemetry.NewPipeline),
+		fx.Provide(startedPipeline),
 		fx.Provide(postgres.NewPool),
 		fx.Provide(probe.NewPostgres),
 		fx.Provide(probe.NewQueue),
@@ -320,11 +340,6 @@ func register(lc fx.Lifecycle, parts wiring) {
 	lc.Append(fx.Hook{OnStart: func(context.Context) error {
 		return shutdownBudget(parts.Config.ShutdownTimeout, parts.Consumer.StopBudget())
 	}})
-	// The telemetry pipeline starts here and is not stopped here. Its flush is the
-	// one thing that must survive a shutdown that overran, and a hook cannot: the
-	// lifecycle would have returned before reaching it. Run flushes it after the
-	// lifecycle is done, on a budget of its own.
-	lc.Append(fx.Hook{OnStart: parts.Pipeline.Start})
 	lc.Append(fx.Hook{OnStart: parts.Postgres.Open, OnStop: within(claimantShare, parts.Postgres.Close)})
 	lc.Append(fx.Hook{OnStart: parts.Queue.Open})
 	lc.Append(fx.Hook{OnStart: parts.Topic.Open})
