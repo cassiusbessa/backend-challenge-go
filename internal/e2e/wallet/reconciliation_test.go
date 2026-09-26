@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 	"github.com/junglegaming/backend-challenge-go/internal/suiteenv"
@@ -20,19 +23,34 @@ func TestReconcile_answersConsistentAfterThreeMovements(t *testing.T) {
 	wallet.bet(ctx, t, base, "25.00")
 	wallet.win(ctx, t, base, "50.00")
 	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
+	assertConsistent(t, report, status, "1025.00", 3, 3)
+	if report.Version != 3 {
+		t.Fatalf("version = %d, want 3 after two movements over the opening", report.Version)
+	}
+	assertNoDivergenceField(ctx, t, base, internal, wallet.wallet.ID)
+}
+
+// assertConsistent checks a report whose ledger closes with the balance: both
+// sides at the same amount in BRL, and the count and the last sequence asked.
+func assertConsistent(t *testing.T, report externalReconciliation, status int, balance string, count, last int64) {
+	t.Helper()
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", status)
 	}
 	if !report.Consistent {
 		t.Fatalf("consistent = false with %v, want true", report.Divergences)
 	}
-	if report.StoredBalance.Amount != "1025.00" || report.LedgerBalance.Amount != "1025.00" {
-		t.Fatalf("balances = %s stored and %s rebuilt, want 1025.00 on both sides", report.StoredBalance.Amount, report.LedgerBalance.Amount)
+	assertBalances(t, report, balance, balance)
+	if report.EntryCount != count || report.LastSequence != last {
+		t.Fatalf("report = %d entries up to %d, want %d up to %d", report.EntryCount, report.LastSequence, count, last)
 	}
-	if report.EntryCount != 3 || report.LastSequence != 3 || report.Version != 3 {
-		t.Fatalf("report = %d entries up to %d at version %d, want 3 up to 3 at version 3", report.EntryCount, report.LastSequence, report.Version)
+}
+
+func assertBalances(t *testing.T, report externalReconciliation, stored, rebuilt string) {
+	t.Helper()
+	if report.StoredBalance.Amount != stored || report.LedgerBalance.Amount != rebuilt || report.LedgerBalance.Currency != "BRL" {
+		t.Fatalf("balances = %+v stored and %+v rebuilt, want %s and %s in BRL", report.StoredBalance, report.LedgerBalance, stored, rebuilt)
 	}
-	assertNoDivergenceField(ctx, t, base, internal, wallet.wallet.ID)
 }
 
 func assertNoDivergenceField(ctx context.Context, t *testing.T, base, internal, walletID string) {
@@ -53,15 +71,7 @@ func TestReconcile_answersConsistentForAWalletAtZero(t *testing.T) {
 		t.Fatalf("opening at zero = %d, want 201", status)
 	}
 	report, status := reconcile(ctx, t, base, internal, opened.ID)
-	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", status)
-	}
-	if !report.Consistent || report.EntryCount != 0 || report.LastSequence != 0 {
-		t.Fatalf("report = consistent %t with %d entries up to %d, want consistent with 0 up to 0", report.Consistent, report.EntryCount, report.LastSequence)
-	}
-	if report.StoredBalance.Amount != "0.00" || report.LedgerBalance.Amount != "0.00" || report.LedgerBalance.Currency != "BRL" {
-		t.Fatalf("balances = %+v stored and %+v rebuilt, want 0.00 BRL on both sides", report.StoredBalance, report.LedgerBalance)
-	}
+	assertConsistent(t, report, status, "0.00", 0, 0)
 }
 
 func TestReconcile_answers404ForAWalletThatDoesNotExist(t *testing.T) {
@@ -86,31 +96,34 @@ func TestReconcile_doesNotWaitForALockedWallet(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	wallet := openFunded(ctx, t, base, internal)
-	holding, err := connect(ctx, t).Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the holding transaction = %v, want nil", err)
-	}
-	t.Cleanup(func() { _ = holding.Rollback(context.WithoutCancel(ctx)) })
-	if _, err := holding.Exec(ctx, "SELECT id FROM wallets WHERE id = $1 FOR UPDATE", wallet.wallet.ID); err != nil {
-		t.Fatalf("lock the wallet = %v, want nil", err)
-	}
+	holding := holdForUpdate(ctx, t, wallet.wallet.ID)
 	started := time.Now()
 	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("the read took %s behind a locked wallet, want it answered without waiting", elapsed)
 	}
-	if status != http.StatusOK || !report.Consistent {
-		t.Fatalf("read behind the lock = %d and consistent %t, want 200 and true", status, report.Consistent)
-	}
-	if report.Version != 1 {
-		t.Fatalf("version read behind the lock = %d, want 1", report.Version)
-	}
+	assertConsistent(t, report, status, "1000.00", 1, 1)
 	if err := holding.Rollback(ctx); err != nil {
 		t.Fatalf("release the wallet = %v, want nil", err)
 	}
 	if _, version := storedBalance(ctx, t, wallet.wallet.ID); version != 1 {
 		t.Fatalf("version after the read = %d, want 1: a read moves nothing", version)
 	}
+}
+
+// holdForUpdate locks the wallet the way a submission does, in a transaction the
+// case releases, so the read is asked while the row is held for writing.
+func holdForUpdate(ctx context.Context, t *testing.T, walletID string) pgx.Tx {
+	t.Helper()
+	holding, err := connect(ctx, t).Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holding transaction = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = holding.Rollback(context.WithoutCancel(ctx)) })
+	if _, err := holding.Exec(ctx, "SELECT id FROM wallets WHERE id = $1 FOR UPDATE", walletID); err != nil {
+		t.Fatalf("lock the wallet = %v, want nil", err)
+	}
+	return holding
 }
 
 // The only way to produce what the route exists to detect is a write that went
@@ -122,19 +135,22 @@ func TestReconcile_namesABalanceWrittenPastTheLedger(t *testing.T) {
 	wallet := openFunded(ctx, t, base, internal)
 	divergeBalance(ctx, t, wallet.wallet.ID, 110000)
 	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
+	assertBalanceMismatch(t, report, status)
+	if cents, _ := storedBalance(ctx, t, wallet.wallet.ID); cents != 110000 {
+		t.Fatalf("stored balance after the read = %d, want 110000: the read corrects nothing", cents)
+	}
+}
+
+func assertBalanceMismatch(t *testing.T, report externalReconciliation, status int) {
+	t.Helper()
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200: a divergence is a result, not a failure", status)
 	}
 	if report.Consistent {
 		t.Fatalf("consistent = true, want false after the balance was written past the ledger")
 	}
-	if len(report.Divergences) != 1 || report.Divergences[0] != "BALANCE_MISMATCH" {
+	if strings.Join(report.Divergences, ",") != "BALANCE_MISMATCH" {
 		t.Fatalf("divergences = %v, want exactly BALANCE_MISMATCH", report.Divergences)
 	}
-	if report.StoredBalance.Amount != "1100.00" || report.LedgerBalance.Amount != "1000.00" {
-		t.Fatalf("balances = %s stored and %s rebuilt, want 1100.00 and 1000.00", report.StoredBalance.Amount, report.LedgerBalance.Amount)
-	}
-	if cents, _ := storedBalance(ctx, t, wallet.wallet.ID); cents != 110000 {
-		t.Fatalf("stored balance after the read = %d, want 110000: the read corrects nothing", cents)
-	}
+	assertBalances(t, report, "1100.00", "1000.00")
 }

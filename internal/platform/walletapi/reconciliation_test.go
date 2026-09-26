@@ -20,17 +20,37 @@ func TestReconcile_answersTheConsistentReportWithoutTheTwoFields(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
-	body := decodeReconciliation(t, recorder)
+	assertConsistentBody(t, decodeReconciliation(t, recorder))
+	assertWithoutDivergenceFields(t, recorder.Body.String())
+}
+
+func assertConsistentBody(t *testing.T, body externalReconciliation) {
+	t.Helper()
 	if !body.Consistent {
 		t.Fatalf("consistent = false, want true")
 	}
-	if body.StoredBalance.Amount != "1025.00" || body.LedgerBalance.Amount != "1025.00" || body.StoredBalance.Currency != "BRL" {
-		t.Fatalf("balances = %+v and %+v, want 1025.00 BRL on both sides", body.StoredBalance, body.LedgerBalance)
+	assertBalances(t, body, "1025.00", "1025.00")
+	assertCounters(t, body)
+}
+
+func assertBalances(t *testing.T, body externalReconciliation, stored, rebuilt string) {
+	t.Helper()
+	if body.StoredBalance.Amount != stored || body.LedgerBalance.Amount != rebuilt || body.StoredBalance.Currency != "BRL" {
+		t.Fatalf("balances = %+v stored and %+v rebuilt, want %s and %s in BRL", body.StoredBalance, body.LedgerBalance, stored, rebuilt)
 	}
+}
+
+func assertCounters(t *testing.T, body externalReconciliation) {
+	t.Helper()
 	if body.WalletID != walletText || body.Version != 4 || body.EntryCount != 3 || body.LastSequence != 3 {
 		t.Fatalf("report = %s at version %d with %d entries up to %d, want %s at 4 with 3 up to 3", body.WalletID, body.Version, body.EntryCount, body.LastSequence, walletText)
 	}
-	raw := recorder.Body.String()
+}
+
+// assertWithoutDivergenceFields reads the raw body: a decoded struct cannot tell
+// an absent field from an empty one, and absent is what the contract promises.
+func assertWithoutDivergenceFields(t *testing.T, raw string) {
+	t.Helper()
 	for _, absent := range []string{"divergences", "firstBreakSequence"} {
 		if strings.Contains(raw, absent) {
 			t.Fatalf("body = %s, want it without %q for a consistent wallet", raw, absent)
@@ -44,19 +64,21 @@ func TestReconcile_answersTheDivergentReportWithTheTokensAndTheBreak(t *testing.
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: a divergence is a result, not a failure", recorder.Code)
 	}
-	body := decodeReconciliation(t, recorder)
+	assertDivergentBody(t, decodeReconciliation(t, recorder))
+}
+
+func assertDivergentBody(t *testing.T, body externalReconciliation) {
+	t.Helper()
 	if body.Consistent {
 		t.Fatalf("consistent = true, want false")
 	}
-	if len(body.Divergences) != 2 || body.Divergences[0] != "BALANCE_MISMATCH" || body.Divergences[1] != "CHAIN_BREAK" {
+	if strings.Join(body.Divergences, ",") != "BALANCE_MISMATCH,CHAIN_BREAK" {
 		t.Fatalf("divergences = %v, want BALANCE_MISMATCH and CHAIN_BREAK", body.Divergences)
 	}
 	if body.FirstBreakSequence != 2 {
 		t.Fatalf("firstBreakSequence = %d, want 2", body.FirstBreakSequence)
 	}
-	if body.StoredBalance.Amount != "2000.00" || body.LedgerBalance.Amount != "1025.00" {
-		t.Fatalf("balances = %+v stored and %+v rebuilt, want 2000.00 and 1025.00", body.StoredBalance, body.LedgerBalance)
-	}
+	assertBalances(t, body, "2000.00", "1025.00")
 }
 
 func TestReconcile_answers404ForAWalletThatDoesNotExist(t *testing.T) {

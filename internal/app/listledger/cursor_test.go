@@ -34,6 +34,19 @@ func TestEncodeCursor_writesTheThreePartsWithoutPadding(t *testing.T) {
 	}
 }
 
+// The first sequence of a ledger is one, and a cursor pointing at it is a
+// cursor the route issues after a page of one entry: the boundary is accepted.
+func TestDecodeCursor_acceptsTheFirstSequence(t *testing.T) {
+	t.Parallel()
+	position, err := decodeCursor(walletOf(t, walletText), raw(walletText+":1:"+entryText))
+	if err != nil {
+		t.Fatalf("decodeCursor at the first sequence = %v, want nil", err)
+	}
+	if position.Sequence != 1 {
+		t.Fatalf("sequence = %d, want 1", position.Sequence)
+	}
+}
+
 func TestDecodeCursor_refusesEveryTokenTheRouteDidNotIssue(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

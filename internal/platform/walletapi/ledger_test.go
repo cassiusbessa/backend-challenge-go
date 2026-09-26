@@ -48,6 +48,13 @@ func assertEntryBody(t *testing.T, entry externalEntry) {
 	if entry.Direction != "DEBIT" || entry.Sequence != 2 {
 		t.Fatalf("entry = %s at %d, want DEBIT at 2", entry.Direction, entry.Sequence)
 	}
+	assertEntryMoney(t, entry)
+}
+
+// assertEntryMoney checks the money of the entry as decimal strings, and the
+// instant in UTC even though the view carried another zone.
+func assertEntryMoney(t *testing.T, entry externalEntry) {
+	t.Helper()
 	if entry.Amount.Amount != "25.00" || entry.BalanceBefore.Amount != "1000.00" || entry.BalanceAfter.Amount != "975.00" {
 		t.Fatalf("money = %+v from %+v to %+v, want 25.00 from 1000.00 to 975.00", entry.Amount, entry.BalanceBefore, entry.BalanceAfter)
 	}

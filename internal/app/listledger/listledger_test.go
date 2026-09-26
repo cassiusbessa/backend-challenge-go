@@ -101,15 +101,22 @@ func TestPage_cutsTheRowPastThePageAndIssuesTheCursorOfTheLastOne(t *testing.T) 
 	if len(page.Entries) != 2 {
 		t.Fatalf("entries = %d, want the 2 of the limit", len(page.Entries))
 	}
-	if page.NextCursor == "" {
+	assertCursorPointsAt(t, page.NextCursor, page.Entries[1])
+}
+
+// assertCursorPointsAt decodes the issued cursor and checks it names the entry
+// the next page has to continue from.
+func assertCursorPointsAt(t *testing.T, cursor string, last storage.EntryView) {
+	t.Helper()
+	if cursor == "" {
 		t.Fatalf("next cursor is empty, want one for the row past the page")
 	}
-	position, err := decodeCursor(walletOf(t, walletText), page.NextCursor)
+	position, err := decodeCursor(walletOf(t, walletText), cursor)
 	if err != nil {
 		t.Fatalf("decodeCursor of the issued cursor = %v, want nil", err)
 	}
-	if position.Sequence != 2 || position.EntryID != page.Entries[1].ID {
-		t.Fatalf("cursor points at %+v, want the last entry answered", position)
+	if position.Sequence != last.Sequence || position.EntryID != last.ID {
+		t.Fatalf("cursor points at %+v, want the last entry answered, %d", position, last.Sequence)
 	}
 }
 

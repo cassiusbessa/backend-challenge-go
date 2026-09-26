@@ -31,22 +31,29 @@ func TestListLedger_answersTheThreeMovementsInSequenceWithTheChainClosed(t *test
 	assertMovement(t, page.Entries[2], 3, "CREDIT", "50.00", "975.00", "1025.00", win.ID)
 }
 
+// assertMovement checks one entry of the page: where it sits, what it moved and
+// the transaction it names.
 func assertMovement(t *testing.T, entry externalEntry, sequence int64, direction, amount, before, after, transaction string) {
 	t.Helper()
 	if entry.Sequence != sequence || entry.Direction != direction {
 		t.Fatalf("entry = %s at %d, want %s at %d", entry.Direction, entry.Sequence, direction, sequence)
 	}
-	if entry.Amount.Amount != amount || entry.Amount.Currency != "BRL" {
-		t.Fatalf("amount of the entry at %d = %+v, want %s BRL", sequence, entry.Amount, amount)
-	}
-	if entry.BalanceBefore.Amount != before || entry.BalanceAfter.Amount != after {
-		t.Fatalf("balances of the entry at %d = %s to %s, want %s to %s", sequence, entry.BalanceBefore.Amount, entry.BalanceAfter.Amount, before, after)
-	}
 	if entry.TransactionID != transaction {
 		t.Fatalf("transaction of the entry at %d = %s, want %s", sequence, entry.TransactionID, transaction)
 	}
+	assertMoved(t, entry, amount, before, after)
+}
+
+func assertMoved(t *testing.T, entry externalEntry, amount, before, after string) {
+	t.Helper()
+	if entry.Amount.Amount != amount || entry.Amount.Currency != "BRL" {
+		t.Fatalf("amount of the entry at %d = %+v, want %s BRL", entry.Sequence, entry.Amount, amount)
+	}
+	if entry.BalanceBefore.Amount != before || entry.BalanceAfter.Amount != after {
+		t.Fatalf("balances of the entry at %d = %s to %s, want %s to %s", entry.Sequence, entry.BalanceBefore.Amount, entry.BalanceAfter.Amount, before, after)
+	}
 	if !strings.HasSuffix(entry.CreatedAt, "Z") {
-		t.Fatalf("createdAt of the entry at %d = %s, want an instant in UTC", sequence, entry.CreatedAt)
+		t.Fatalf("createdAt of the entry at %d = %s, want an instant in UTC", entry.Sequence, entry.CreatedAt)
 	}
 }
 
@@ -76,18 +83,23 @@ func TestListLedger_pagesThreeEntriesInTwoWithLimitTwo(t *testing.T) {
 	wallet.bet(ctx, t, base, "25.00")
 	wallet.win(ctx, t, base, "50.00")
 	first, status := listLedger(ctx, t, base, internal, wallet.wallet.ID, "limit=2")
-	if status != http.StatusOK {
-		t.Fatalf("first page = %d, want 200", status)
-	}
-	if sequences(first) != "1,2" || first.NextCursor == "" {
-		t.Fatalf("first page = %s with cursor %q, want 1,2 and a cursor", sequences(first), first.NextCursor)
-	}
+	assertPage(t, first, status, "1,2", true)
 	second, status := listLedger(ctx, t, base, internal, wallet.wallet.ID, "limit=2&cursor="+first.NextCursor)
+	assertPage(t, second, status, "3", false)
+}
+
+// assertPage checks the sequences a page carries and whether it says there is a
+// next one.
+func assertPage(t *testing.T, page externalLedger, status int, want string, continues bool) {
+	t.Helper()
 	if status != http.StatusOK {
-		t.Fatalf("second page = %d, want 200", status)
+		t.Fatalf("page = %d, want 200", status)
 	}
-	if sequences(second) != "3" || second.NextCursor != "" {
-		t.Fatalf("second page = %s with cursor %q, want 3 and no cursor", sequences(second), second.NextCursor)
+	if got := sequences(page); got != want {
+		t.Fatalf("page = %s, want %s", got, want)
+	}
+	if (page.NextCursor != "") != continues {
+		t.Fatalf("cursor of the page %s = %q, want one present = %t", want, page.NextCursor, continues)
 	}
 }
 
@@ -106,12 +118,7 @@ func TestListLedger_showsAMovementSettledBetweenTwoPagesOnTheNextOne(t *testing.
 	}
 	late := wallet.bet(ctx, t, base, "10.00")
 	second, status := listLedger(ctx, t, base, internal, wallet.wallet.ID, "limit=2&cursor="+first.NextCursor)
-	if status != http.StatusOK {
-		t.Fatalf("second page = %d, want 200", status)
-	}
-	if sequences(second) != "3,4" || second.NextCursor != "" {
-		t.Fatalf("second page = %s with cursor %q, want 3,4 and no cursor", sequences(second), second.NextCursor)
-	}
+	assertPage(t, second, status, "3,4", false)
 	if second.Entries[1].TransactionID != late.ID {
 		t.Fatalf("last entry names %s, want the bet settled between the pages, %s", second.Entries[1].TransactionID, late.ID)
 	}
@@ -140,19 +147,26 @@ func TestListLedger_refusesEveryLimitOutsideTheContractNamingTheField(t *testing
 	for _, limit := range []string{"0", "201", "abc"} {
 		t.Run("limit "+limit+" is refused", func(t *testing.T) {
 			status, mediaType, raw := refusalOf(ctx, t, ledgerURL(base, wallet.wallet.ID, "limit="+limit), internal)
-			if status != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400", status)
-			}
-			if mediaType != problem.MediaType {
-				t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
-			}
-			if refusal := problemOf(t, raw); refusal.Detail != "limit is not valid" {
-				t.Fatalf("detail = %q, want the field named", refusal.Detail)
-			}
-			if bytes.Contains(raw, []byte("entries")) {
-				t.Fatalf("body = %s, want no entry in a refusal", raw)
-			}
+			assertInvalidField(t, status, mediaType, raw, "limit")
 		})
+	}
+}
+
+// assertInvalidField checks a refusal of the contract: 400 in problem details,
+// the field named in the detail, and no entry in the body.
+func assertInvalidField(t *testing.T, status int, mediaType string, raw []byte, field string) {
+	t.Helper()
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+	if mediaType != problem.MediaType {
+		t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
+	}
+	if refusal := problemOf(t, raw); refusal.Detail != field+" is not valid" {
+		t.Fatalf("detail = %q, want the field %s named", refusal.Detail, field)
+	}
+	if bytes.Contains(raw, []byte("entries")) {
+		t.Fatalf("body = %s, want no entry in a refusal", raw)
 	}
 }
 
@@ -160,13 +174,8 @@ func TestListLedger_refusesACursorTheRouteDidNotIssue(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	wallet := openFunded(ctx, t, base, internal)
-	status, _, raw := refusalOf(ctx, t, ledgerURL(base, wallet.wallet.ID, "cursor=bm90LW91cnM"), internal)
-	if status != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", status)
-	}
-	if refusal := problemOf(t, raw); refusal.Detail != "cursor is not valid" {
-		t.Fatalf("detail = %q, want the field named", refusal.Detail)
-	}
+	status, mediaType, raw := refusalOf(ctx, t, ledgerURL(base, wallet.wallet.ID, "cursor=bm90LW91cnM"), internal)
+	assertInvalidField(t, status, mediaType, raw, "cursor")
 	if bytes.Contains(raw, []byte("bm90LW91cnM")) {
 		t.Fatalf("body = %s, want it without the cursor", raw)
 	}
@@ -179,7 +188,7 @@ func TestListLedger_refusesTheCursorOfAnotherWalletTheSameWayAsAMalformedOne(t *
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	first := openFunded(ctx, t, base, internal)
 	first.bet(ctx, t, base, "25.00")
-	first.win(ctx, t, base, "50.00")
+	first.win(ctx, t, base, "10.00")
 	issued, _ := listLedger(ctx, t, base, internal, first.wallet.ID, "limit=2")
 	if issued.NextCursor == "" {
 		t.Fatalf("cursor of wallet A is empty, want one to present on wallet B")
@@ -208,18 +217,25 @@ func TestReadRoutes_refuseAProviderByPermissionWithoutALedgerOrABalance(t *testi
 	} {
 		t.Run(name+" refuses the provider", func(t *testing.T) {
 			status, mediaType, raw := refusalOf(ctx, t, rawURL, wallet.provider)
-			if status != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403: a provider reads neither the ledger nor the reconciliation", status)
-			}
-			if mediaType != problem.MediaType {
-				t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
-			}
-			for _, banned := range []string{"entries", "1000.00", "Balance", "consistent", "nextCursor"} {
-				if bytes.Contains(raw, []byte(banned)) {
-					t.Fatalf("body = %s, want it without %q", raw, banned)
-				}
-			}
+			assertRefusedByPermission(t, status, mediaType, raw)
 		})
+	}
+}
+
+// assertRefusedByPermission checks the 403 of a provider on a read: problem
+// details, and nothing of the ledger or the balance in the body.
+func assertRefusedByPermission(t *testing.T, status int, mediaType string, raw []byte) {
+	t.Helper()
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: a provider reads neither the ledger nor the reconciliation", status)
+	}
+	if mediaType != problem.MediaType {
+		t.Fatalf("content type = %s, want %s", mediaType, problem.MediaType)
+	}
+	for _, banned := range []string{"entries", "1000.00", "Balance", "consistent", "nextCursor"} {
+		if bytes.Contains(raw, []byte(banned)) {
+			t.Fatalf("body = %s, want it without %q", raw, banned)
+		}
 	}
 }
 

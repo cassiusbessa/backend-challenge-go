@@ -24,6 +24,12 @@ func TestView_takesTheEntryRowBackIntoDomainTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("view of the entry row = %v, want nil", err)
 	}
+	assertEntryMoney(t, view)
+	assertEntryPlacement(t, view)
+}
+
+func assertEntryMoney(t *testing.T, view storage.EntryView) {
+	t.Helper()
 	if view.Direction != ledger.Debit {
 		t.Fatalf("direction = %s, want DEBIT", view.Direction)
 	}
@@ -33,6 +39,10 @@ func TestView_takesTheEntryRowBackIntoDomainTypes(t *testing.T) {
 	if view.BalanceBefore.Amount() != "1000.00" || view.BalanceAfter.Amount() != "975.00" {
 		t.Fatalf("balances = %s and %s, want 1000.00 and 975.00", view.BalanceBefore.Amount(), view.BalanceAfter.Amount())
 	}
+}
+
+func assertEntryPlacement(t *testing.T, view storage.EntryView) {
+	t.Helper()
 	if view.Sequence != 2 {
 		t.Fatalf("sequence = %d, want 2", view.Sequence)
 	}
@@ -175,6 +185,11 @@ func TestSummaryOf_takesTheJoinedRowBackIntoTheSummary(t *testing.T) {
 	if summary.Wallet.Balance.Amount() != "1000.00" || summary.Wallet.Version != 3 {
 		t.Fatalf("wallet of the summary = %s at version %d, want 1000.00 at version 3", summary.Wallet.Balance.Amount(), summary.Wallet.Version)
 	}
+	assertAggregates(t, summary)
+}
+
+func assertAggregates(t *testing.T, summary storage.LedgerSummary) {
+	t.Helper()
 	if summary.LedgerBalance != 97500 || summary.EntryCount != 3 || summary.LastSequence != 3 {
 		t.Fatalf("ledger of the summary = %d cents over %d entries up to %d, want 97500 over 3 up to 3", summary.LedgerBalance, summary.EntryCount, summary.LastSequence)
 	}

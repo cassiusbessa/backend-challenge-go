@@ -19,14 +19,21 @@ func TestReconcile_answersConsistentWhenTheLedgerClosesWithTheBalance(t *testing
 	if err != nil {
 		t.Fatalf("Reconcile = %v, want nil", err)
 	}
+	assertConsistentReport(t, report)
+	if report.EntryCount != 3 || report.LastSequence != 3 || report.Version != 4 {
+		t.Fatalf("report = %d entries up to %d at version %d, want 3 up to 3 at version 4", report.EntryCount, report.LastSequence, report.Version)
+	}
+}
+
+// assertConsistentReport checks the verdict of a wallet whose ledger closes with
+// the balance: both sides equal, nothing named, no break.
+func assertConsistentReport(t *testing.T, report Report) {
+	t.Helper()
 	if !report.Consistent {
 		t.Fatalf("consistent = false with divergences %v, want true", report.Divergences)
 	}
-	if report.StoredBalance.Amount() != "1025.00" || report.LedgerBalance.Amount() != "1025.00" {
-		t.Fatalf("balances = %s stored and %s rebuilt, want 1025.00 and 1025.00", report.StoredBalance.Amount(), report.LedgerBalance.Amount())
-	}
-	if report.EntryCount != 3 || report.LastSequence != 3 || report.Version != 4 {
-		t.Fatalf("report = %d entries up to %d at version %d, want 3 up to 3 at version 4", report.EntryCount, report.LastSequence, report.Version)
+	if !report.StoredBalance.Equal(report.LedgerBalance) {
+		t.Fatalf("balances = %s stored and %s rebuilt, want both sides equal", report.StoredBalance.Amount(), report.LedgerBalance.Amount())
 	}
 	if len(report.Divergences) != 0 || report.FirstBreakSequence != 0 {
 		t.Fatalf("divergences = %v with a break at %d, want none", report.Divergences, report.FirstBreakSequence)

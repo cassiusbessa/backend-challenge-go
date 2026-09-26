@@ -151,8 +151,9 @@ func TestRefusalOf_namesTheFieldTheUseCaseRefused(t *testing.T) {
 func TestRefusalOf_leavesAnyOtherFailureAsItIs(t *testing.T) {
 	t.Parallel()
 	absent := fmt.Errorf("read ledger: %w", storage.ErrWalletNotFound)
-	if translated := refusalOf(absent); translated != absent {
-		t.Fatalf("refusalOf of an absence = %v, want the same error back", translated)
+	translated := refusalOf(absent)
+	if !errors.Is(translated, storage.ErrWalletNotFound) || detailOf(translated) != "" {
+		t.Fatalf("refusalOf of an absence = %v, want the absence back with no field named", translated)
 	}
 }
 
