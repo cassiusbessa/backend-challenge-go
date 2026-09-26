@@ -132,6 +132,8 @@ cluster-up: ## sobe REPLICAS réplicas num cluster Kind sobre os serviços do Co
 	$(KUBECTL) -n $(NAMESPACE) scale deployment/wager --replicas=$(REPLICAS)
 	$(KUBECTL) -n $(NAMESPACE) rollout restart deployment/wager
 	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/wager --timeout=180s
+	$(KUBECTL) apply -f deploy/k8s/metrics-agent.yaml
+	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/metrics-agent --timeout=120s
 
 # O mesmo serviço que o `up` roda antes das réplicas, e o que o CI roda: o
 # Terraform vem da imagem, na versão fixada no `compose.yaml`, e não do host.

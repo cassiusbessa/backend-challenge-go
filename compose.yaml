@@ -232,6 +232,9 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.enable-lifecycle"
       - "--enable-feature=exemplar-storage"
+      # O agente do cluster escreve aqui as séries de cada pod. Sem cluster, nada
+      # escreve, e a rota fica sem uso.
+      - "--web.enable-remote-write-receiver"
       # O teto de retenção da métrica. Três dias, o mesmo horizonte declarado nos
       # arquivos do Tempo e do Loki.
       - "--storage.tsdb.path=/prometheus"

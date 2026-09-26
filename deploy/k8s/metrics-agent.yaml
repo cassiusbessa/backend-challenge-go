@@ -1,0 +1,123 @@
+# As séries de cada réplica chegam ao Prometheus do Compose por este agente: ele
+# descobre os pods `app=wager`, raspa cada um a cada 5s com o rótulo `pod`, e
+# escreve no Prometheus do Compose, que aceita escrita remota. O painel e as
+# regras continuam os mesmos e passam a ver todas as réplicas, e o exemplar de
+# `trace_id` viaja junto.
+#
+# O Prometheus do Compose não raspa os pods direto porque o IP de pod não é
+# roteável de fora do nó. O agente não guarda nada além do WAL: é o do Compose
+# que responde às consultas.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metrics-agent
+  namespace: junglegaming
+---
+# O que a descoberta por pod pede, e nada mais.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metrics-agent
+  namespace: junglegaming
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metrics-agent
+  namespace: junglegaming
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metrics-agent
+subjects:
+  - kind: ServiceAccount
+    name: metrics-agent
+    namespace: junglegaming
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-agent
+  namespace: junglegaming
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+
+    scrape_configs:
+      # O mesmo `job` das réplicas do Compose, que o painel e as regras não
+      # filtram. O rótulo `pod` distingue as réplicas, e um pod substituto
+      # aparece como outra série em vez de sobrescrever a anterior.
+      - job_name: wager
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [junglegaming]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: wager
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: "8090"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-agent
+  namespace: junglegaming
+  labels:
+    app: metrics-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics-agent
+  template:
+    metadata:
+      labels:
+        app: metrics-agent
+    spec:
+      serviceAccountName: metrics-agent
+      containers:
+        - name: agent
+          # A mesma imagem do Prometheus do Compose, carregada no nó.
+          image: prom/prometheus:v3.13.3-busybox
+          imagePullPolicy: Never
+          args:
+            - "--agent"
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.agent.path=/prometheus"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: wal
+              mountPath: /prometheus
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: metrics-agent
+        - name: wal
+          emptyDir: {}
