@@ -45,6 +45,18 @@ func countExternal(ctx context.Context, t *testing.T, conn *pgx.Conn, walletID s
 	return count(ctx, t, conn, query, walletID)
 }
 
+// storedKey answers the idempotency key of the single operation of that wallet
+// that came from a provider, as the row keeps it.
+func storedKey(ctx context.Context, t *testing.T, conn *pgx.Conn, walletID string) string {
+	t.Helper()
+	const query = "SELECT idempotency_key FROM wager_transactions WHERE wallet_id = $1 AND kind <> 'OPENING'"
+	var key string
+	if err := conn.QueryRow(ctx, query, walletID).Scan(&key); err != nil {
+		t.Fatalf("read the recorded key = %v, want nil", err)
+	}
+	return key
+}
+
 func count(ctx context.Context, t *testing.T, conn *pgx.Conn, query, argument string) int64 {
 	t.Helper()
 	var total int64

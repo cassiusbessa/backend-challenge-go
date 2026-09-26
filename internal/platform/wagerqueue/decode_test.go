@@ -127,6 +127,65 @@ func TestDecode_refusesTheBodyItCannotTake(t *testing.T) {
 	}
 }
 
+// statementEnvelope is the message as the challenge statement writes it, with the
+// two "uuid" placeholders replaced by identifiers this border takes. The type and
+// the instant of the envelope, and a key in the provider:external form, are what
+// a message built by this suite never carries.
+const statementEnvelope = `{
+  "messageId": "msg-123",
+  "type": "WagerTransactionRequested",
+  "occurredAt": "2026-09-08T12:00:00.000Z",
+  "data": {
+    "providerId": "provider-a",
+    "externalTransactionId": "transaction-123",
+    "idempotencyKey": "provider-a:transaction-123",
+    "playerId": "` + playerID + `",
+    "walletId": "` + walletID + `",
+    "roundId": "round-987",
+    "gameId": "fortune-chimp",
+    "kind": "BET",
+    "money": {"amount": "25.00", "currency": "BRL"}
+  }
+}`
+
+// The envelope of the statement is taken as written: the type and the instant are
+// ignored, not refused, and the command is the one the same envelope without them
+// answers, with the key exactly as it arrived.
+func TestDecode_takesTheEnvelopeOfTheStatementAsWritten(t *testing.T) {
+	t.Parallel()
+	literal, err := Decode([]byte(statementEnvelope))
+	if err != nil {
+		t.Fatalf("Decode of the envelope of the statement = %v, want nil", err)
+	}
+	bare, err := Decode(without(t, statementEnvelope, "type", "occurredAt"))
+	if err != nil {
+		t.Fatalf("Decode of the envelope without type and instant = %v, want nil", err)
+	}
+	if literal.Command != bare.Command {
+		t.Fatalf("command with type and instant = %+v, want the %+v of the envelope without them", literal.Command, bare.Command)
+	}
+	if got := literal.Command.IdempotencyKey.String(); got != "provider-a:transaction-123" {
+		t.Fatalf("idempotencyKey of the statement = %q, want provider-a:transaction-123 as it arrived", got)
+	}
+}
+
+// without answers the envelope with those top-level fields removed.
+func without(t *testing.T, envelope string, names ...string) []byte {
+	t.Helper()
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(envelope), &fields); err != nil {
+		t.Fatalf("unmarshal the envelope = %v, want nil", err)
+	}
+	for _, name := range names {
+		delete(fields, name)
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal the envelope without %v = %v, want nil", names, err)
+	}
+	return raw
+}
+
 // The values a valid message carries. They are fixed so a case overrides only
 // what it is about.
 const (
