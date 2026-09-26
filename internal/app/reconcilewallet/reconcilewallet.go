@@ -65,10 +65,14 @@ func Vocabulary() []Divergence {
 //
 // LedgerBalance may be negative: a broken ledger can subtract past zero, and
 // the report says what the ledger sums rather than refusing to say it.
+// Difference is the stored balance minus the ledger balance: zero when the two
+// close, positive when the wallet stores more than the ledger sums, negative
+// when it stores less.
 type Report struct {
 	WalletID           identity.WalletID
 	StoredBalance      money.Money
 	LedgerBalance      money.Money
+	Difference         money.Money
 	Version            int64
 	EntryCount         int64
 	LastSequence       int64
@@ -103,11 +107,18 @@ func reportOf(summary storage.LedgerSummary) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("rebuild ledger balance: %w", err)
 	}
+	// A difference past int64 is a state Money does not represent, the same as a
+	// SUM past it (ADR 0022): there is no honest verdict, so it is a failure.
+	difference, err := stored.Sub(rebuilt)
+	if err != nil {
+		return Report{}, fmt.Errorf("subtract ledger balance: %w", err)
+	}
 	divergences := divergencesOf(summary, stored, rebuilt)
 	return Report{
 		WalletID:           summary.Wallet.ID,
 		StoredBalance:      stored,
 		LedgerBalance:      rebuilt,
+		Difference:         difference,
 		Version:            summary.Wallet.Version,
 		EntryCount:         summary.EntryCount,
 		LastSequence:       summary.LastSequence,

@@ -3,6 +3,7 @@ package reconcilewallet
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -118,6 +119,47 @@ func TestReconcile_carriesANegativeLedgerBalance(t *testing.T) {
 	}
 	if !reflect.DeepEqual(report.Divergences, []Divergence{BalanceMismatch}) {
 		t.Fatalf("divergences = %v, want exactly BALANCE_MISMATCH", report.Divergences)
+	}
+}
+
+// The difference is the stored balance minus what the ledger sums, with its
+// sign: zero when they close, and the direction of the drift when they do not.
+func TestReconcile_answersTheDifferenceWithItsSign(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		stored      string
+		ledgerCents int64
+		want        string
+	}{
+		{name: "the wallet that closes differs by zero", stored: "1025.00", ledgerCents: 102500, want: "0.00"},
+		{name: "a stored balance above the ledger is positive", stored: "1125.00", ledgerCents: 102500, want: "100.00"},
+		{name: "a stored balance below the ledger is negative", stored: "925.00", ledgerCents: 102500, want: "-100.00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			report, err := New(&rows{summary: summaryOf(t, tc.stored, tc.ledgerCents, 3, 3, 0)}).Reconcile(context.Background(), walletOf(t))
+			if err != nil {
+				t.Fatalf("Reconcile of %s against %d cents = %v, want nil", tc.stored, tc.ledgerCents, err)
+			}
+			if got := report.Difference; got.Amount() != tc.want || got.Currency().Code() != "BRL" {
+				t.Fatalf("difference = %s %s, want %s BRL", got.Amount(), got.Currency().Code(), tc.want)
+			}
+		})
+	}
+}
+
+// A ledger so far below zero that the difference leaves int64 has no verdict to
+// give, and the report answers the overflow instead of a wrapped-around number.
+func TestReconcile_refusesADifferencePastTheRangeOfMoney(t *testing.T) {
+	t.Parallel()
+	report, err := New(&rows{summary: summaryOf(t, "1.00", math.MinInt64, 1, 1, 0)}).Reconcile(context.Background(), walletOf(t))
+	if !errors.Is(err, money.ErrOverflow) {
+		t.Fatalf("Reconcile of a difference past int64 = %v, want %v", err, money.ErrOverflow)
+	}
+	if !reflect.DeepEqual(report, Report{}) {
+		t.Fatalf("report = %+v, want the zero value when the difference overflows", report)
 	}
 }
 
