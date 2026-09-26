@@ -280,6 +280,34 @@ func TestDiverged_countsEveryTokenOfADivergentVerdict(t *testing.T) {
 	}
 }
 
+// The failure is counted when the reconciliation produced no verdict — the
+// database out, or a number outside what Money holds — and not when the request
+// was refused.
+func TestUnreconciled_countsOnlyAReconciliationThatProducedNoVerdict(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		want float64
+	}{
+		{name: "a database that is out", err: fault.Wrap("read ledger summary", errors.New("connection refused")), want: 1},
+		{name: "a sum outside what Money holds", err: fmt.Errorf("rebuild ledger balance: %w", errors.New("money: amount overflows")), want: 1},
+		{name: "a wallet that does not exist", err: fmt.Errorf("reconcile wallet: %w", storage.ErrWalletNotFound), want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reporter, series := reporterCounting()
+			reporter.Unreconciled(httptest.NewRecorder(), reconciliationRequestOf(walletText), tc.err)
+			if got := testutil.ToFloat64(series.ReconciliationFailures.WithLabelValues("http")); got != tc.want {
+				t.Fatalf("reconciliation_failures{http} after %s = %v, want %v", tc.name, got, tc.want)
+			}
+			if got := testutil.ToFloat64(series.ReconciliationFailures.WithLabelValues("watch")); got != 0 {
+				t.Fatalf("reconciliation_failures{watch} after %s on the route = %v, want 0", tc.name, got)
+			}
+		})
+	}
+}
+
 // serveWith drives the route to a refusal of the contract — the duplicate wallet
 // — which is the refusal both routes share.
 func serveWith(reporter *Reporter, request *http.Request) {

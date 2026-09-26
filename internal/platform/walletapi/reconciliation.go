@@ -45,7 +45,7 @@ func Reconcile(reconciler Reconciler, reporter *Reporter) http.Handler {
 		}
 		report, err := reconciler.Reconcile(r.Context(), id)
 		if err != nil {
-			reporter.Refuse(w, r, err)
+			reporter.Unreconciled(w, r, err)
 			return
 		}
 		reporter.Diverged(r, report)

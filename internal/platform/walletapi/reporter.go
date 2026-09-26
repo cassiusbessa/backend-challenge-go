@@ -78,6 +78,17 @@ func (rep *Reporter) Refuse(w http.ResponseWriter, r *http.Request, err error) {
 	problem.Write(w, r, details)
 }
 
+// Unreconciled answers a reconciliation that failed, as Refuse does, and counts
+// it when no verdict could be produced: the infrastructure failed, or the sum or
+// the difference fell outside what Money holds. A missing wallet is a refusal of
+// the request and counts nothing.
+func (rep *Reporter) Unreconciled(w http.ResponseWriter, r *http.Request, err error) {
+	if problem.From(err).Broken() {
+		rep.metrics.ReconciliationFailed(metrics.OriginHTTP)
+	}
+	rep.Refuse(w, r, err)
+}
+
 // record marks the span and logs once.
 //
 // What decides it is the class and not the number: a rule that answered, a refusal

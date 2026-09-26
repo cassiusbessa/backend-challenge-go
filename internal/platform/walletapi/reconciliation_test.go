@@ -3,16 +3,20 @@ package walletapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
@@ -150,26 +154,56 @@ func assertDivergentBody(t *testing.T, body externalReconciliation) {
 	assertBalances(t, body, "2000.00", "1025.00")
 }
 
+// A wallet that does not exist is a refusal of the request and not a verdict
+// that failed, so the series of failures stays where it was.
 func TestReconcile_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 	t.Parallel()
-	recorder := serve(Reconcile(&reconciler{err: storage.ErrWalletNotFound}, quietReporter()), reconciliationRequestOf(walletText))
+	reporter, series := reporterCounting()
+	recorder := serve(Reconcile(&reconciler{err: storage.ErrWalletNotFound}, reporter), reconciliationRequestOf(walletText))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", recorder.Code)
 	}
 	if recorder.Header().Get("Content-Type") != problem.MediaType {
 		t.Fatalf("content type of the absence = %s, want %s", recorder.Header().Get("Content-Type"), problem.MediaType)
 	}
+	if got := testutil.ToFloat64(series.ReconciliationFailures.WithLabelValues("http")); got != 0 {
+		t.Fatalf("reconciliation_failures{http} after a missing wallet = %v, want 0", got)
+	}
 }
 
 func TestReconcile_refusesAnIdentityOutOfFormatWithoutAskingTheUseCase(t *testing.T) {
 	t.Parallel()
 	asked := &reconciler{report: consistentReport(t)}
-	recorder := serve(Reconcile(asked, quietReporter()), reconciliationRequestOf("not-a-uuid"))
+	reporter, series := reporterCounting()
+	recorder := serve(Reconcile(asked, reporter), reconciliationRequestOf("not-a-uuid"))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status of an identity out of format = %d, want 400", recorder.Code)
 	}
 	if asked.calls != 0 {
 		t.Fatalf("use case calls = %d, want 0", asked.calls)
+	}
+	if got := testutil.ToFloat64(series.ReconciliationFailures.WithLabelValues("http")); got != 0 {
+		t.Fatalf("reconciliation_failures{http} after an identity out of format = %v, want 0", got)
+	}
+}
+
+// A reconciliation the infrastructure could not answer counts one failure of
+// the route, and the caller receives the same body the refusal always gave.
+func TestReconcile_countsAFailureOfTheInfrastructureAndAnswersTheSameBody(t *testing.T) {
+	t.Parallel()
+	broken := fault.Wrap("acquire connection", errors.New("connection refused"))
+	reporter, series := reporterCounting()
+	recorder := serve(Reconcile(&reconciler{err: broken}, reporter), reconciliationRequestOf(walletText))
+	refused := httptest.NewRecorder()
+	quietReporter().Refuse(refused, reconciliationRequestOf(walletText), broken)
+	if recorder.Code != refused.Code || recorder.Body.String() != refused.Body.String() {
+		t.Fatalf("failed reconciliation = %d %s, want the %d %s of the refusal", recorder.Code, recorder.Body, refused.Code, refused.Body)
+	}
+	if got := testutil.ToFloat64(series.ReconciliationFailures.WithLabelValues("http")); got != 1 {
+		t.Fatalf("reconciliation_failures{http} after an outage = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.WalletsChecked.WithLabelValues("http")); got != 0 {
+		t.Fatalf("wallets_checked{http} after an outage = %v, want 0: no verdict was produced", got)
 	}
 }
 
