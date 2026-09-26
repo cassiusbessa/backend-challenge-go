@@ -25,7 +25,7 @@ func TestNew_registersEverySeriesOfTheSpecificationOnce(t *testing.T) {
 	New(reg)
 	gathered, err := reg.Gather()
 	if err != nil {
-		t.Fatalf("Gather = %v, want nil", err)
+		t.Fatalf("Gather of a fresh registry = %v, want nil", err)
 	}
 	var names []string
 	for _, family := range gathered {
@@ -57,12 +57,16 @@ func TestNew_refusesASecondRegistrationOnTheSameRegistry(t *testing.T) {
 	t.Parallel()
 	reg := prometheus.NewRegistry()
 	New(reg)
-	defer func() {
-		if recovered := recover(); recovered == nil {
-			t.Fatalf("second New on one registry = no panic, want the duplicate registration refused")
-		}
-	}()
-	New(reg)
+	if refused := panicOf(func() { New(reg) }); refused == nil {
+		t.Fatalf("panic of a second New on one registry = %v, want the duplicate registration refused", refused)
+	}
+}
+
+// panicOf runs the call and answers what it panicked with, or nil.
+func panicOf(call func()) (recovered any) {
+	defer func() { recovered = recover() }()
+	call()
+	return nil
 }
 
 // go-observability keeps every identity out of a label, and the identity of a
@@ -74,7 +78,7 @@ func TestNew_putsNoIdentityInALabel(t *testing.T) {
 	moveEverything(s)
 	gathered, err := reg.Gather()
 	if err != nil {
-		t.Fatalf("Gather = %v, want nil", err)
+		t.Fatalf("Gather after every series moved = %v, want nil", err)
 	}
 	for _, name := range labelNames(gathered) {
 		if slices.Contains(forbiddenLabels, name) {
@@ -169,19 +173,43 @@ func TestNew_primesTheReconciliationSeriesAtZeroForEveryOriginAndToken(t *testin
 	}
 }
 
-func TestChecked_andDiverged_moveTheReconciliationSeries(t *testing.T) {
+func TestChecked_movesTheVerdictsOfTheOrigin(t *testing.T) {
 	t.Parallel()
 	s := New(prometheus.NewRegistry())
 	s.Checked(OriginHTTP)
-	s.Diverged(OriginHTTP, reconcilewallet.SequenceGap)
 	if got := testutil.ToFloat64(s.WalletsChecked.WithLabelValues("http")); got != 1 {
 		t.Fatalf("wallets_checked{http} = %v, want 1", got)
 	}
+	if got := testutil.ToFloat64(s.WalletsChecked.WithLabelValues("watch")); got != 0 {
+		t.Fatalf("wallets_checked{watch} after a verdict of the route = %v, want 0", got)
+	}
+}
+
+func TestDiverged_movesTheChildOfTheOriginAndToken(t *testing.T) {
+	t.Parallel()
+	s := New(prometheus.NewRegistry())
+	s.Diverged(OriginHTTP, reconcilewallet.SequenceGap)
 	if got := testutil.ToFloat64(s.Divergences.WithLabelValues("http", "SEQUENCE_GAP")); got != 1 {
 		t.Fatalf("divergences{http,SEQUENCE_GAP} = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(s.Divergences.WithLabelValues("watch", "SEQUENCE_GAP")); got != 0 {
 		t.Fatalf("divergences{watch,SEQUENCE_GAP} = %v, want 0: another origin", got)
+	}
+}
+
+// Priming creates every origin and every token at zero on the vectors it is
+// given, and moves nothing: the series exist so the first rise is a rise.
+func TestPrimeReconciliation_createsEveryOriginAndTokenAtZero(t *testing.T) {
+	t.Parallel()
+	s := New(prometheus.NewRegistry())
+	s.WalletsChecked.Reset()
+	s.Divergences.Reset()
+	s.primeReconciliation()
+	if got := testutil.CollectAndCount(s.Divergences); got != 2*len(reconcilewallet.Vocabulary()) {
+		t.Fatalf("divergence series after priming = %d, want one per origin and token", got)
+	}
+	if got := testutil.ToFloat64(s.Divergences.WithLabelValues("watch", "BALANCE_MISMATCH")) + testutil.ToFloat64(s.WalletsChecked.WithLabelValues("http")); got != 0 {
+		t.Fatalf("sum of the primed series = %v, want 0: priming moves nothing", got)
 	}
 }
 

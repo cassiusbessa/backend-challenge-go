@@ -265,7 +265,7 @@ func TestDiverged_countsEveryTokenOfADivergentVerdict(t *testing.T) {
 	reporter, series := reporterCounting()
 	reporter.Diverged(reconciliationRequestOf(walletText), divergentReport(t))
 	if got := testutil.ToFloat64(series.WalletsChecked.WithLabelValues("http")); got != 1 {
-		t.Fatalf("wallets_checked{http} = %v, want 1", got)
+		t.Fatalf("wallets_checked{http} after a divergent verdict = %v, want 1", got)
 	}
 	for _, token := range []string{"BALANCE_MISMATCH", "CHAIN_BREAK"} {
 		if got := testutil.ToFloat64(series.Divergences.WithLabelValues("http", token)); got != 1 {
@@ -284,4 +284,19 @@ func TestDiverged_countsEveryTokenOfADivergentVerdict(t *testing.T) {
 // — which is the refusal both routes share.
 func serveWith(reporter *Reporter, request *http.Request) {
 	Open(&opener{err: storage.ErrWalletExists}, reporter).ServeHTTP(httptest.NewRecorder(), request)
+}
+
+// The reporter writes through the handler it was given and moves the series it
+// was given, and nothing else of the process.
+func TestNewReporter_logsAndCountsThroughWhatItWasGiven(t *testing.T) {
+	t.Parallel()
+	var written bytes.Buffer
+	series := metrics.New(prometheus.NewRegistry())
+	NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), series).Diverged(reconciliationRequestOf(walletText), divergentReport(t))
+	if !strings.Contains(written.String(), "BALANCE_MISMATCH") {
+		t.Fatalf("log of the reporter = %q, want the line in the handler it was given", written.String())
+	}
+	if got := testutil.ToFloat64(series.WalletsChecked.WithLabelValues("http")); got != 1 {
+		t.Fatalf("wallets_checked{http} on the series it was given = %v, want 1", got)
+	}
 }

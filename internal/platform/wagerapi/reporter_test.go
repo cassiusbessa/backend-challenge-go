@@ -330,7 +330,7 @@ func TestRejected_countsAReplayedRefusalAsADuplicate(t *testing.T) {
 	replayed := fmt.Errorf("submit wager: %w", replayedRefusal())
 	reporter.Rejected(httptest.NewRecorder(), requestOf(t), rejectedRow(transactionOf(t)), replayed)
 	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", "replay")); got != 1 {
-		t.Fatalf("duplicates{http,replay} = %v, want 1", got)
+		t.Fatalf("duplicates{http,replay} after a replayed refusal = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("http", "INSUFFICIENT_FUNDS")); got != 0 {
 		t.Fatalf("rejections{http,INSUFFICIENT_FUNDS} after a replay = %v, want 0", got)
@@ -414,5 +414,67 @@ func TestRefuse_movesNoSeriesForInvalidInputOrADefect(t *testing.T) {
 		if moved != 0 {
 			t.Fatalf("series moved by %v = %d, want none", err, moved)
 		}
+	}
+}
+
+// countSettled tells the first outcome from the replay: the first is a
+// settlement by kind and status, the replay a duplicate and nothing else.
+func TestCountSettled_separatesTheFirstOutcomeFromTheReplay(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	reporter.countSettled(settled(t, false))
+	reporter.countSettled(settled(t, true))
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("http", "BET", "PROCESSED")); got != 1 {
+		t.Fatalf("settlements{http,BET,PROCESSED} of one outcome and one replay = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", "replay")); got != 1 {
+		t.Fatalf("duplicates{http,replay} of one outcome and one replay = %v, want 1", got)
+	}
+}
+
+// count reads the class and never the number: the two classes behind a 503
+// retry, a replayed rule is a duplicate, and every other class moves nothing.
+func TestCount_movesTheSeriesOfTheClassAndNoOther(t *testing.T) {
+	t.Parallel()
+	broken := fault.Wrap("acquire connection", errors.New("connection refused"))
+	for _, class := range []problem.Class{problem.Retryable, problem.Unavailable} {
+		reporter, series := reporterCounting()
+		reporter.count(submitwager.Result{}, broken, problem.Of(class))
+		if got := testutil.ToFloat64(series.Retries.WithLabelValues("http", "transient")); got != 1 {
+			t.Fatalf("retries{http,transient} for class %d = %v, want 1", class, got)
+		}
+	}
+	replayed, series := reporterCounting()
+	details := problem.Of(problem.BusinessRejection)
+	details.IdempotentReplay = true
+	replayed.count(rejectedRow(transactionOf(t)), replayedRefusal(), details)
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", "replay")); got != 1 {
+		t.Fatalf("duplicates{http,replay} of a replayed rule = %v, want 1", got)
+	}
+	quiet, untouched := reporterCounting()
+	quiet.count(submitwager.Result{}, broken, problem.Of(problem.InvalidInput))
+	if got := testutil.CollectAndCount(untouched.Retries) + testutil.CollectAndCount(untouched.Duplicates); got != 0 {
+		t.Fatalf("series moved by invalid input = %d, want none", got)
+	}
+}
+
+// countRejection moves the two conflicts as duplicates, a rule with a row as a
+// settlement that ended REJECTED and by its token, and nothing for a token it
+// cannot read or a rule that wrote no row.
+func TestCountRejection_movesTheSeriesTheTokenAndTheRowCallFor(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	reporter.countRejection(submitwager.Result{}, "IDEMPOTENCY_CONFLICT")
+	reporter.countRejection(rejectedRow(transactionOf(t)), "INSUFFICIENT_FUNDS")
+	reporter.countRejection(submitwager.Result{}, "WALLET_NOT_FOUND")
+	reporter.countRejection(rejectedRow(transactionOf(t)), "NOT_A_TOKEN")
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", "key_conflict")); got != 1 {
+		t.Fatalf("duplicates{http,key_conflict} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("http", "INSUFFICIENT_FUNDS")); got != 1 {
+		t.Fatalf("rejections{http,INSUFFICIENT_FUNDS} = %v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(series.Rejections); got != 1 {
+		t.Fatalf("rejection series = %d, want only the one of the rule that wrote a row", got)
 	}
 }

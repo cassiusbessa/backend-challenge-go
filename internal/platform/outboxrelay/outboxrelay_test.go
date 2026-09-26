@@ -114,6 +114,33 @@ func TestStart_comesUpOverAnEmptyOutboxAndScansOnTheTicker(t *testing.T) {
 	}
 }
 
+// A relay that was only assembled holds no run and has scanned nothing: the
+// lifecycle is what starts it.
+func TestNew_answersARelayThatHasNotStarted(t *testing.T) {
+	t.Parallel()
+	scanner := &queue{due: candidates(t, 1)}
+	relayer := &sends{}
+	relay := New(scanner, relayer, quiet(), series(), tick)
+	if err := relay.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop of a relay that was only assembled = %v, want nil", err)
+	}
+	if scanner.scans != 0 || len(relayer.seen) != 0 {
+		t.Fatalf("scans = %d and relays = %d, want neither before the lifecycle starts it", scanner.scans, len(relayer.seen))
+	}
+}
+
+// One turn measures the backlog after the candidates it relayed, so the gauges
+// read the queue as the turn left it.
+func TestTurn_measuresTheBacklogAfterRelayingItsCandidates(t *testing.T) {
+	t.Parallel()
+	scanner := &queue{due: candidates(t, 2), backlog: storage.Backlog{Pending: 1, OldestAge: time.Second}}
+	moved := series()
+	New(scanner, &sends{}, quiet(), moved, tick).turn(context.Background(), context.Background())
+	if got := testutil.ToFloat64(moved.OutboxPending); got != 1 {
+		t.Fatalf("pending events after a turn = %v, want the 1 the backlog answered", got)
+	}
+}
+
 func TestStop_answersNilForARelayThatNeverStarted(t *testing.T) {
 	t.Parallel()
 	if err := New(&queue{}, &sends{}, quiet(), series(), tick).Stop(context.Background()); err != nil {
@@ -240,14 +267,14 @@ func series() *metrics.Settlement {
 	return metrics.New(prometheus.NewRegistry())
 }
 
-// The backlog is read once per turn, after the candidates were published, and
-// zero on both gauges is what an empty queue answers.
-func TestTurn_readsTheBacklogIntoTheTwoGauges(t *testing.T) {
+// The backlog is read into the two gauges, and zero on both is what an empty
+// queue answers.
+func TestMeasure_readsTheBacklogIntoTheTwoGauges(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{backlog: storage.Backlog{Pending: 3, OldestAge: 45 * time.Second}}
 	moved := series()
 	relay := New(scanner, &sends{}, quiet(), moved, tick)
-	relay.turn(context.Background(), context.Background())
+	relay.measure(context.Background())
 	if got := testutil.ToFloat64(moved.OutboxPending); got != 3 {
 		t.Fatalf("pending events = %v, want 3", got)
 	}
@@ -255,7 +282,7 @@ func TestTurn_readsTheBacklogIntoTheTwoGauges(t *testing.T) {
 		t.Fatalf("oldest pending age = %v, want 45", got)
 	}
 	scanner.backlog = storage.Backlog{}
-	relay.turn(context.Background(), context.Background())
+	relay.measure(context.Background())
 	if got := testutil.ToFloat64(moved.OutboxPending) + testutil.ToFloat64(moved.OutboxOldestAge); got != 0 {
 		t.Fatalf("gauges with nothing pending = %v, want both 0", got)
 	}
@@ -263,15 +290,15 @@ func TestTurn_readsTheBacklogIntoTheTwoGauges(t *testing.T) {
 
 // A read that fails leaves the last values: a gauge that fell to zero because
 // the database was out would read as a queue that emptied.
-func TestTurn_keepsTheLastBacklogWhenTheReadFails(t *testing.T) {
+func TestMeasure_keepsTheLastBacklogWhenTheReadFails(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	scanner := &queue{backlog: storage.Backlog{Pending: 3, OldestAge: 45 * time.Second}}
 	moved := series()
 	relay := New(scanner, &sends{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
-	relay.turn(context.Background(), context.Background())
+	relay.measure(context.Background())
 	scanner.backlog, scanner.backlogErr = storage.Backlog{}, errors.New("postgres: connection reset by peer")
-	relay.turn(context.Background(), context.Background())
+	relay.measure(context.Background())
 	if got := testutil.ToFloat64(moved.OutboxPending); got != 3 {
 		t.Fatalf("pending events after a read that failed = %v, want the 3 of the last read", got)
 	}

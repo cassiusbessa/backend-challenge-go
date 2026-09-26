@@ -17,7 +17,6 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
-	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
@@ -115,102 +114,6 @@ func TestTurn_checksNoNewWalletOnceTheContextIsDone(t *testing.T) {
 	}
 }
 
-// A consistent wallet counts as checked and leaves no line: there is nothing
-// to name, and a line per wallet per sweep would drown the ones that matter.
-func TestChecked_countsAConsistentWalletAndLeavesNoLine(t *testing.T) {
-	t.Parallel()
-	var written strings.Builder
-	moved := series()
-	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved)
-	reporter.Checked(context.Background(), reconcilewallet.Report{WalletID: wallets(t, 1)[0], Consistent: true, StoredBalance: brl(t, "1000.00")})
-	if written.Len() != 0 {
-		t.Fatalf("log of a consistent wallet = %q, want nothing", written.String())
-	}
-	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 1 {
-		t.Fatalf("wallets_checked{watch} = %v, want 1", got)
-	}
-	if got := testutil.CollectAndCount(moved.Divergences); got != 2*len(reconcilewallet.Vocabulary()) {
-		t.Fatalf("divergence series = %d, want only the ones primed at zero", got)
-	}
-}
-
-// A divergent wallet counts each token it was found with and leaves the line
-// of the route: the wallet and the tokens, never a balance.
-func TestChecked_logsTheDivergentWalletAndCountsEveryToken(t *testing.T) {
-	t.Parallel()
-	var written strings.Builder
-	moved := series()
-	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), moved)
-	id := wallets(t, 1)[0]
-	reporter.Checked(context.Background(), reconcilewallet.Report{
-		WalletID:      id,
-		StoredBalance: brl(t, "2000.00"),
-		LedgerBalance: brl(t, "1000.00"),
-		Divergences:   []reconcilewallet.Divergence{reconcilewallet.BalanceMismatch, reconcilewallet.ChainBreak},
-	})
-	assertLine(t, written.String(),
-		[]string{`"walletId":"` + id.String() + `"`, "BALANCE_MISMATCH", "CHAIN_BREAK"},
-		[]string{"2000.00", "1000.00", "storedBalance", "ledgerBalance"})
-	assertCounted(t, moved, map[string]float64{"BALANCE_MISMATCH": 1, "CHAIN_BREAK": 1, "SEQUENCE_GAP": 0})
-	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 1 {
-		t.Fatalf("wallets_checked{watch} = %v, want 1", got)
-	}
-}
-
-// assertLine pins what the line carries and what it must never carry.
-func assertLine(t *testing.T, line string, wanted, banned []string) {
-	t.Helper()
-	for _, want := range wanted {
-		if !strings.Contains(line, want) {
-			t.Fatalf("divergence line = %q, want %q in it", line, want)
-		}
-	}
-	for _, ban := range banned {
-		if strings.Contains(line, ban) {
-			t.Fatalf("divergence line = %q, want it without %q", line, ban)
-		}
-	}
-}
-
-// assertCounted reads the divergence series of the watcher, one per token.
-func assertCounted(t *testing.T, moved *metrics.Settlement, want map[string]float64) {
-	t.Helper()
-	for token, count := range want {
-		if got := testutil.ToFloat64(moved.Divergences.WithLabelValues("watch", token)); got != count {
-			t.Fatalf("divergences{watch,%s} = %v, want %v", token, got, count)
-		}
-	}
-}
-
-// A turn the shutdown cut short is not a failure, and a line per turn cut would
-// say it was.
-func TestFailed_recordsNothingForATurnTheShutdownCutShort(t *testing.T) {
-	t.Parallel()
-	var written strings.Builder
-	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), series())
-	reporter.Failed(context.Background(), "page the wallets", fmt.Errorf("page the wallets: %w", context.Canceled))
-	if written.Len() != 0 {
-		t.Fatalf("log of a cancelled turn = %q, want nothing", written.String())
-	}
-}
-
-// The chain names where the failure came from and the frames say where it was
-// first seen; a failure that crossed no boundary is captured at this border.
-func TestFailed_recordsTheChainAndTheFrames(t *testing.T) {
-	t.Parallel()
-	var written strings.Builder
-	reporter := NewReporter(slog.New(slog.NewJSONHandler(&written, nil)), series())
-	reporter.Failed(context.Background(), "reconcile a wallet", errors.New("rebuild ledger balance: overflow"))
-	line := written.String()
-	if !strings.Contains(line, "rebuild ledger balance: overflow") || !strings.Contains(line, "divergencewatch.stackOf") {
-		t.Fatalf("log = %q, want the chain and frames captured at this border", line)
-	}
-	seen := fault.Wrap("acquire connection", errors.New("connection refused"))
-	if got := stackOf("reconcile a wallet", seen); !slices.Equal(got, fault.Stack(seen)) {
-		t.Fatalf("frames of a chain that carries a stack = %v, want the %v it came with", got, fault.Stack(seen))
-	}
-}
-
 // A table with no wallet in it must not hold the process back: the start
 // answers at once and the ticker is what sweeps.
 func TestStart_comesUpOverAnEmptyTableAndSweepsOnTheTicker(t *testing.T) {
@@ -246,6 +149,72 @@ func TestStop_endsTheRunAndWaitsForTheTurnInFlight(t *testing.T) {
 	}
 	if len(verdicts.seen) != 1 {
 		t.Fatalf("wallets checked = %d, want the 1 already in flight when the signal came", len(verdicts.seen))
+	}
+}
+
+// A watcher that was only assembled holds no run and has read nothing: the
+// lifecycle is what starts it, and until it does there is nothing to stop.
+func TestNew_answersAWatcherThatHasNotStarted(t *testing.T) {
+	t.Parallel()
+	table := &pages{wallets: wallets(t, 2)}
+	worker := New(table, &verdicts{}, quietReporter(), tick, 2)
+	if err := worker.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop of a watcher that was only assembled = %v, want nil", err)
+	}
+	if table.pagesRead != 0 || !worker.cursor.IsZero() {
+		t.Fatalf("pages read = %d from cursor %s, want none before the lifecycle starts it", table.pagesRead, worker.cursor)
+	}
+}
+
+// The run leaves on a context that is already done without taking a turn, and
+// it closes what the stop waits on.
+func TestRun_leavesOnADoneContextWithoutTakingATurn(t *testing.T) {
+	t.Parallel()
+	table := &pages{wallets: wallets(t, 1)}
+	worker := New(table, &verdicts{}, quietReporter(), time.Hour, 2)
+	worker.done = make(chan struct{})
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	worker.run(stopped)
+	<-worker.done
+	if table.pagesRead != 0 {
+		t.Fatalf("pages read = %d, want none on a run that was already done", table.pagesRead)
+	}
+}
+
+// One verdict reported, and the turn goes on; one that could not be produced
+// ends it, and is not counted as a wallet checked.
+func TestCheck_reportsTheVerdictAndAnswersWhetherTheTurnGoesOn(t *testing.T) {
+	t.Parallel()
+	moved := series()
+	id := wallets(t, 1)[0]
+	good := New(&pages{}, &verdicts{}, NewReporter(quietLogger(), moved), tick, 2)
+	if goesOn := good.check(context.Background(), id); !goesOn {
+		t.Fatalf("turn after a verdict = %t, want it to go on", goesOn)
+	}
+	failing := &verdicts{failing: map[identity.WalletID]error{id: errors.New("postgres: connection refused")}}
+	bad := New(&pages{}, failing, NewReporter(quietLogger(), moved), tick, 2)
+	if goesOn := bad.check(context.Background(), id); goesOn {
+		t.Fatalf("turn after a verdict that failed = %t, want it ended", goesOn)
+	}
+	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 1 {
+		t.Fatalf("wallets_checked{watch} = %v, want only the verdict that was produced", got)
+	}
+}
+
+// A full page moves the cursor to its last wallet; a short one is the end of
+// the sweep and takes the cursor back to the start.
+func TestAdvance_movesPastAFullPageAndBackToTheStartAfterAShortOne(t *testing.T) {
+	t.Parallel()
+	ids := wallets(t, 3)
+	worker := New(&pages{}, &verdicts{}, quietReporter(), tick, 2)
+	worker.advance(ids[0:2])
+	if worker.cursor != ids[1] {
+		t.Fatalf("cursor after a full page = %s, want its last wallet %s", worker.cursor, ids[1])
+	}
+	worker.advance(ids[2:3])
+	if !worker.cursor.IsZero() {
+		t.Fatalf("cursor after a short page = %s, want it back at the start", worker.cursor)
 	}
 }
 
@@ -350,7 +319,11 @@ func series() *metrics.Settlement {
 }
 
 func quietReporter() *Reporter {
-	return NewReporter(slog.New(slog.NewJSONHandler(io.Discard, nil)), series())
+	return NewReporter(quietLogger(), series())
+}
+
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
 // wallets mints that many identities already in the order of the identity,

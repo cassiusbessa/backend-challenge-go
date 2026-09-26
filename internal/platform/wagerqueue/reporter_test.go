@@ -249,7 +249,7 @@ func TestRejected_countsTheConflictsAsDuplicatesAndNothingForARefusalWithoutARow
 			reporter, series := countingReporter()
 			reporter.Rejected(context.Background(), submitwager.Result{}, refusalOf(t, tc.code))
 			if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", tc.reason)); got != 1 {
-				t.Fatalf("duplicates{sqs,%s} = %v, want 1", tc.reason, got)
+				t.Fatalf("duplicates{sqs,%s} after a refusal without a row = %v, want 1", tc.reason, got)
 			}
 		})
 	}
@@ -285,5 +285,56 @@ func TestDepth_movesBothGauges(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(series.DeadLetterDepth); got != 2 {
 		t.Fatalf("dead-letter depth = %v, want 2", got)
+	}
+}
+
+// The reporter writes through the handler it was given and moves the series it
+// was given, and nothing else of the process.
+func TestNewReporter_logsAndCountsThroughWhatItWasGiven(t *testing.T) {
+	t.Parallel()
+	logs := &bytes.Buffer{}
+	series := metrics.New(prometheus.NewRegistry())
+	reporter := NewReporter(slog.New(slog.NewJSONHandler(logs, nil)), quietTracer(), series)
+	reporter.Settled(context.Background(), processedBet(t))
+	if logs.Len() == 0 {
+		t.Fatalf("log of the reporter = %q, want the line in the handler it was given", logs.String())
+	}
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("sqs", "BET", "PROCESSED")); got != 1 {
+		t.Fatalf("settlements{sqs,BET,PROCESSED} on the series it was given = %v, want 1", got)
+	}
+}
+
+// countDuplicate answers whether the arrival was one, and a redelivery is told
+// apart from a replay even though both are replays under the key.
+func TestCountDuplicate_answersWhetherTheArrivalWasOneAndUnderWhichReason(t *testing.T) {
+	t.Parallel()
+	reporter, series := countingReporter()
+	if reporter.countDuplicate(processedBet(t)) {
+		t.Fatalf("countDuplicate of a first outcome = true, want false")
+	}
+	if !reporter.countDuplicate(submitwager.Result{IdempotentReplay: true, Redelivered: true}) {
+		t.Fatalf("countDuplicate of a redelivery = false, want true")
+	}
+	if !reporter.countDuplicate(submitwager.Result{IdempotentReplay: true}) {
+		t.Fatalf("countDuplicate of a replay = false, want true")
+	}
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", "redelivery")) + testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", "replay")); got != 2 {
+		t.Fatalf("duplicates{sqs,redelivery} plus duplicates{sqs,replay} = %v, want one of each", got)
+	}
+}
+
+// countRejected counts the row a rule wrote as a settlement that ended
+// REJECTED and by its token, and nothing for a rule that wrote no row.
+func TestCountRejected_countsTheRowTheRuleWroteAndNothingElse(t *testing.T) {
+	t.Parallel()
+	reporter, series := countingReporter()
+	row := submitwager.Result{TransactionID: transactionOf(t), Kind: wager.KindBet, Status: wager.Rejected}
+	reporter.countRejected(row, wager.CurrencyMismatch)
+	reporter.countRejected(submitwager.Result{}, wager.OpeningNotAllowed)
+	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("sqs", "CURRENCY_MISMATCH")); got != 1 {
+		t.Fatalf("rejections{sqs,CURRENCY_MISMATCH} = %v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(series.Rejections) + testutil.CollectAndCount(series.Settlements); got != 2 {
+		t.Fatalf("series moved = %d, want the settlement and the rejection of the row alone", got)
 	}
 }

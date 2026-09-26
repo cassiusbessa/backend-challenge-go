@@ -177,7 +177,7 @@ func TestDepth_answersWhatTheIngressQueueIsHolding(t *testing.T) {
 		t.Fatalf("depth of the ingress queue = %d, want 9", waiting)
 	}
 	if aws.ToString(fake.asked.QueueUrl) != ingressURL {
-		t.Fatalf("queue = %q, want the ingress one", aws.ToString(fake.asked.QueueUrl))
+		t.Fatalf("queue asked for its depth = %q, want the ingress one", aws.ToString(fake.asked.QueueUrl))
 	}
 }
 
@@ -332,4 +332,24 @@ func (f *fakeMessenger) GetQueueAttributes(_ context.Context, in *sqs.GetQueueAt
 		return nil, f.refuse
 	}
 	return &sqs.GetQueueAttributesOutput{Attributes: f.attributes}, nil
+}
+
+// depthOf asks the queue it is given for its visible messages, and names the
+// operation it was given in a failure: a count the broker answers that is not
+// a number is as much a failure of the read as the broker being out.
+func TestDepthOf_readsTheQueueItIsGivenAndNamesTheOperationInAFailure(t *testing.T) {
+	t.Parallel()
+	fake := &fakeMessenger{attributes: map[string]string{"ApproximateNumberOfMessages": "7"}}
+	waiting, err := ingress(fake).depthOf(context.Background(), "http://queue-of-the-case", "read the depth of the case")
+	if err != nil || waiting != 7 {
+		t.Fatalf("depthOf = %d with %v, want 7 and nil", waiting, err)
+	}
+	if got := aws.ToString(fake.asked.QueueUrl); got != "http://queue-of-the-case" {
+		t.Fatalf("queue depthOf asked = %q, want the one it was given", got)
+	}
+	garbled := &fakeMessenger{attributes: map[string]string{"ApproximateNumberOfMessages": "many"}}
+	_, err = ingress(garbled).depthOf(context.Background(), "http://queue-of-the-case", "read the depth of the case")
+	if err == nil || !strings.Contains(err.Error(), "read the depth of the case") {
+		t.Fatalf("depthOf of a count that is not a number = %v, want the operation named in the failure", err)
+	}
 }

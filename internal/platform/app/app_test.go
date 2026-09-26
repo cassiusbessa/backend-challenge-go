@@ -6,26 +6,35 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/fx"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/resolvereference"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/config"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/divergencewatch"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/httpapi"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/outboxrelay"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/postgres"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/referenceworker"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/wagerqueue"
@@ -630,4 +639,126 @@ func TestNew_handsTheBackgroundWorkTheTelemetryThatStartInstalls(t *testing.T) {
 	if atBuild != pipe.Tracer {
 		t.Fatalf("tracer given to the background work = %p, want the one Start installed, %p", atBuild, pipe.Tracer)
 	}
+}
+
+// The graph hands the business series and the saturation of the pool to the
+// one registry /metrics serves, beside the latency and the runtime.
+func TestNewSettlementMetrics_registersTheSeriesAndThePoolOnTheRegistry(t *testing.T) {
+	t.Parallel()
+	pool := postgres.NewPool(config.Config{DatabaseURL: "postgres://junglegaming:junglegaming@127.0.0.1:1/junglegaming?sslmode=disable"})
+	if err := pool.Open(context.Background()); err != nil {
+		t.Fatalf("Open of the pool the registry reads = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = pool.Close(context.Background()) })
+	reg := prometheus.NewRegistry()
+	series := newSettlementMetrics(reg, pool)
+	series.OutboxPending.Set(2)
+	names := gatheredNames(t, reg)
+	for _, want := range []string{"wager_outbox_pending_events", "wager_db_pool_max_connections"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("families on the registry = %v, want %s among them", names, want)
+		}
+	}
+}
+
+func gatheredNames(t *testing.T, reg *prometheus.Registry) []string {
+	t.Helper()
+	gathered, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather of the registry of the process = %v, want nil", err)
+	}
+	var names []string
+	for _, family := range gathered {
+		names = append(names, family.GetName())
+	}
+	return names
+}
+
+// Each reporter the graph builds moves the series the graph gave it: the
+// border of the wallet, the border of the wager, the queue and the watcher.
+func TestNewReporter_countsTheVerdictsOfTheRouteOnTheSeriesOfTheGraph(t *testing.T) {
+	t.Parallel()
+	series := metrics.New(prometheus.NewRegistry())
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/wallets/x/reconciliation", nil)
+	newReporter(quietPipeline(), series).Diverged(request, reconcilewallet.Report{Consistent: true})
+	if got := testutil.ToFloat64(series.WalletsChecked.WithLabelValues("http")); got != 1 {
+		t.Fatalf("wallets_checked{http} of the wallet reporter = %v, want 1", got)
+	}
+}
+
+func TestNewWagerReporter_countsTheOutcomesOfTheRouteOnTheSeriesOfTheGraph(t *testing.T) {
+	t.Parallel()
+	series := metrics.New(prometheus.NewRegistry())
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/wagering/transactions", nil)
+	newWagerReporter(quietPipeline(), series).Settled(request, submitwager.Result{Kind: wager.KindLoss, Status: wager.Processed})
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("http", "LOSS", "PROCESSED")); got != 1 {
+		t.Fatalf("settlements{http,LOSS,PROCESSED} of the wager reporter = %v, want 1", got)
+	}
+}
+
+func TestNewQueueReporter_readsTheDepthsIntoTheSeriesOfTheGraph(t *testing.T) {
+	t.Parallel()
+	series := metrics.New(prometheus.NewRegistry())
+	newQueueReporter(quietPipeline(), series).Depth(4, 1)
+	if got := testutil.ToFloat64(series.IngressDepth) + testutil.ToFloat64(series.DeadLetterDepth); got != 5 {
+		t.Fatalf("ingress plus dead-letter depth of the queue reporter = %v, want the 5 it was told", got)
+	}
+}
+
+func TestNewWatchReporter_countsTheVerdictsOfTheWatcherOnTheSeriesOfTheGraph(t *testing.T) {
+	t.Parallel()
+	series := metrics.New(prometheus.NewRegistry())
+	newWatchReporter(quietPipeline(), series).Checked(context.Background(), reconcilewallet.Report{Consistent: true})
+	if got := testutil.ToFloat64(series.WalletsChecked.WithLabelValues("watch")); got != 1 {
+		t.Fatalf("wallets_checked{watch} of the watch reporter = %v, want 1", got)
+	}
+}
+
+// The watcher and the relay come back assembled and not started: the lifecycle
+// is what starts them, and until it does a stop has nothing to end.
+func TestNewDivergenceWatcher_answersAWatcherTheLifecycleStarts(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{ReconciliationInterval: time.Millisecond, ReconciliationBatch: 1}
+	reporter := newWatchReporter(quietPipeline(), metrics.New(prometheus.NewRegistry()))
+	watcher := newDivergenceWatcher(cfg, emptyReads{}, reconcilewallet.New(emptyReads{}), reporter)
+	if err := watcher.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop of a watcher the lifecycle never started = %v, want nil", err)
+	}
+}
+
+func TestNewOutboxRelay_answersARelayTheLifecycleStarts(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{OutboxInterval: time.Millisecond}
+	relay := newOutboxRelay(cfg, refusingQueue{}, nil, quietPipeline(), metrics.New(prometheus.NewRegistry()))
+	if err := relay.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop of a relay the lifecycle never started = %v, want nil", err)
+	}
+}
+
+// The use case the graph builds claims through the queue it was given and
+// names itself in the failure of that claim.
+func TestNewRelay_answersTheUseCaseThatRelaysOneRow(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{OutboxLease: time.Second}
+	relay := newRelay(cfg, refusingQueue{}, nil, quietPipeline(), metrics.New(prometheus.NewRegistry()))
+	err := relay.Relay(context.Background(), storage.OutboxCandidate{})
+	if !errors.Is(err, errClaimRefused) || !strings.Contains(err.Error(), "relay outbox") {
+		t.Fatalf("Relay over a queue that refuses the claim = %v, want the refusal named by the use case", err)
+	}
+}
+
+// refusingQueue is a publication queue whose claim fails, which is the one
+// call a relay makes before it reaches the broker.
+type refusingQueue struct {
+	storage.OutboxQueue
+}
+
+var errClaimRefused = errors.New("claim refused by the queue of the case")
+
+func (refusingQueue) Claim(context.Context, identity.EventID, time.Duration) (storage.OutboxRow, error) {
+	return storage.OutboxRow{}, errClaimRefused
+}
+
+func quietPipeline() *telemetry.Pipeline {
+	return &telemetry.Pipeline{Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)), Tracer: noop.NewTracerProvider().Tracer("app")}
 }

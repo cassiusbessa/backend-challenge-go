@@ -282,7 +282,7 @@ func TestValidate_refusesABatchBelowOne(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(envWith("", ""))
 	if err != nil {
-		t.Fatalf("Load of the defaults the Validate case starts from = %v, want nil", err)
+		t.Fatalf("Load of the defaults before the batch is set = %v, want nil", err)
 	}
 	cfg.ReconciliationBatch = 0
 	var invalid InvalidError

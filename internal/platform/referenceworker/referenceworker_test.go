@@ -278,6 +278,18 @@ func TestRun_leavesOnADoneContextWithoutTakingATurn(t *testing.T) {
 	}
 }
 
+// One turn measures the age after the waits it decided, so the gauge reads the
+// queue as the turn left it.
+func TestTurn_measuresTheOldestWaitAfterDecidingItsCandidates(t *testing.T) {
+	t.Parallel()
+	scanner := &queue{due: candidates(t, 2), age: 30 * time.Second}
+	moved := series()
+	New(scanner, &decisions{}, frozen{}, quiet(), moved, tick).turn(context.Background())
+	if got := testutil.ToFloat64(moved.ReferenceWaitOldestAge); got != 30 {
+		t.Fatalf("oldest wait age after a turn = %v, want the 30 the queue answered", got)
+	}
+}
+
 // queue is the scan of one case: what it answers, the limit it was asked for, and
 // a first answer that fails.
 type queue struct {
@@ -366,7 +378,7 @@ func TestDecide_logsAndCountsTheWaitTheAttemptCarriedOut(t *testing.T) {
 	line := written.String()
 	for _, want := range []string{"reference wait closed", transactionIDs[0], `"kind":"WIN"`, `"status":"PROCESSED"`} {
 		if !strings.Contains(line, want) {
-			t.Fatalf("log = %q, want %q in it", line, want)
+			t.Fatalf("line of the carried-out wait = %q, want %q in it", line, want)
 		}
 	}
 	for _, banned := range []string{"failureCode", "amount", "balance", "50.00"} {
@@ -381,13 +393,12 @@ func TestDecide_logsAndCountsTheWaitTheAttemptCarriedOut(t *testing.T) {
 
 // A wait the clock or a rule closed is a rejection: it logs its token and
 // counts under it, because every rejection does.
-func TestDecide_logsTheTokenOfTheWaitTheAttemptRefused(t *testing.T) {
+func TestClosed_logsAndCountsTheTokenOfARefusedWait(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
-	resolver := &decisions{outcome: closedWait(t, wager.Rejected, wager.ReferenceNotFound)}
 	moved := series()
-	worker := New(&queue{}, resolver, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
-	worker.decide(context.Background(), candidates(t, 1)[0])
+	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	worker.closed(context.Background(), closedWait(t, wager.Rejected, wager.ReferenceNotFound))
 	if line := written.String(); !strings.Contains(line, `"failureCode":"REFERENCE_NOT_FOUND"`) || !strings.Contains(line, `"status":"REJECTED"`) {
 		t.Fatalf("log = %q, want the token and the status of the refusal", line)
 	}
@@ -401,14 +412,14 @@ func TestDecide_logsTheTokenOfTheWaitTheAttemptRefused(t *testing.T) {
 
 // A wait scheduled again is counted and not logged: one line per backoff would
 // drown the log of a long wait.
-func TestDecide_countsARescheduledWaitWithoutALine(t *testing.T) {
+func TestReport_countsARescheduledWaitWithoutALine(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	rescheduled := closedWait(t, wager.PendingReference, 0)
 	rescheduled.Rescheduled = true
 	moved := series()
-	worker := New(&queue{}, &decisions{outcome: rescheduled}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
-	worker.decide(context.Background(), candidates(t, 1)[0])
+	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
+	worker.report(context.Background(), rescheduled)
 	if written.Len() != 0 {
 		t.Fatalf("log of a rescheduled wait = %q, want nothing", written.String())
 	}
@@ -420,14 +431,14 @@ func TestDecide_countsARescheduledWaitWithoutALine(t *testing.T) {
 	}
 }
 
-// A candidate the claim did not hand over decided nothing, and nothing is
-// reported for it: no line, no series.
-func TestDecide_reportsNothingForAWaitThatWasNotDecided(t *testing.T) {
+// An outcome that decided nothing — a candidate the claim did not hand over —
+// is reported as nothing: no line, no series.
+func TestReport_reportsNothingForAnOutcomeThatDecidedNothing(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	moved := series()
 	worker := New(&queue{}, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
-	worker.decide(context.Background(), candidates(t, 1)[0])
+	worker.report(context.Background(), resolvereference.Outcome{})
 	if written.Len() != 0 {
 		t.Fatalf("log of a wait nobody decided = %q, want nothing", written.String())
 	}
@@ -437,19 +448,19 @@ func TestDecide_reportsNothingForAWaitThatWasNotDecided(t *testing.T) {
 	}
 }
 
-// The age of the oldest wait is read once per turn, after the candidates were
-// decided, and zero is what an empty queue answers.
-func TestTurn_readsTheAgeOfTheOldestWaitIntoTheGauge(t *testing.T) {
+// The age of the oldest wait is read into the gauge, and zero is what an empty
+// queue answers.
+func TestMeasure_readsTheAgeOfTheOldestWaitIntoTheGauge(t *testing.T) {
 	t.Parallel()
 	scanner := &queue{age: 90 * time.Second}
 	moved := series()
 	worker := New(scanner, &decisions{}, frozen{}, quiet(), moved, tick)
-	worker.turn(context.Background())
+	worker.measure(context.Background(), frozen{}.Now())
 	if got := testutil.ToFloat64(moved.ReferenceWaitOldestAge); got != 90 {
 		t.Fatalf("oldest wait age = %v, want 90", got)
 	}
 	scanner.age = 0
-	worker.turn(context.Background())
+	worker.measure(context.Background(), frozen{}.Now())
 	if got := testutil.ToFloat64(moved.ReferenceWaitOldestAge); got != 0 {
 		t.Fatalf("oldest wait age with nothing waiting = %v, want 0", got)
 	}
@@ -457,15 +468,15 @@ func TestTurn_readsTheAgeOfTheOldestWaitIntoTheGauge(t *testing.T) {
 
 // A read that fails leaves the last value: a gauge that fell to zero because
 // the database was out would read as a queue that emptied.
-func TestTurn_keepsTheLastAgeWhenTheReadFails(t *testing.T) {
+func TestMeasure_keepsTheLastAgeWhenTheReadFails(t *testing.T) {
 	t.Parallel()
 	var written strings.Builder
 	scanner := &queue{age: 90 * time.Second}
 	moved := series()
 	worker := New(scanner, &decisions{}, frozen{}, slog.New(slog.NewJSONHandler(&written, nil)), moved, tick)
-	worker.turn(context.Background())
+	worker.measure(context.Background(), frozen{}.Now())
 	scanner.age, scanner.ageErr = 0, errors.New("postgres: connection reset by peer")
-	worker.turn(context.Background())
+	worker.measure(context.Background(), frozen{}.Now())
 	if got := testutil.ToFloat64(moved.ReferenceWaitOldestAge); got != 90 {
 		t.Fatalf("oldest wait age after a read that failed = %v, want the 90 of the last read", got)
 	}

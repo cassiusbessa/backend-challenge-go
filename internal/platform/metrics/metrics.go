@@ -85,26 +85,58 @@ type Settlement struct {
 // a name registered twice: one process, one registry, one call.
 func New(reg prometheus.Registerer) *Settlement {
 	s := &Settlement{
-		Settlements: counterVec("wager_settlements_total",
-			"Operations that reached a recorded outcome, by origin, kind and status.", "origin", "kind", "status"),
-		Rejections: counterVec("wager_rejections_total",
-			"Operations recorded as REJECTED, by origin and failure code.", "origin", "failure_code"),
-		Duplicates: counterVec("wager_duplicates_total",
-			"Arrivals of an operation already decided, by origin and reason.", "origin", "reason"),
-		Retries: counterVec("wager_retries_total",
-			"Work sent back for another attempt, by component and reason.", "component", "reason"),
-		Abandoned: counterVec("wager_ingress_messages_abandoned_total",
-			"Messages copied to the dead-letter queue, by reason.", "reason"),
-		IngressDepth:           gauge("wager_ingress_queue_depth", "Messages waiting in the ingress queue."),
-		DeadLetterDepth:        gauge("wager_ingress_dead_letter_depth", "Messages waiting in the dead-letter queue."),
-		OutboxPending:          gauge("wager_outbox_pending_events", "Outbox rows neither published nor dead."),
-		OutboxOldestAge:        gauge("wager_outbox_oldest_pending_age_seconds", "Age of the oldest pending outbox row, by the clock of the database."),
-		OutboxDead:             counter("wager_outbox_dead_events_total", "Outbox rows given up on after repeated permanent refusals."),
-		ReferenceWaitOldestAge: gauge("wager_reference_wait_oldest_age_seconds", "Age of the oldest transaction waiting for the operation it cites."),
-		WalletsChecked: counterVec("wager_reconciliation_wallets_checked_total",
-			"Reconciliation verdicts produced, by origin.", "origin"),
-		Divergences: counterVec("wager_reconciliation_divergences_total",
-			"Divergences found by a reconciliation verdict, by origin and token.", "origin", "divergence"),
+		Settlements: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_settlements_total",
+			Help: "Operations that reached a recorded outcome, by origin, kind and status.",
+		}, []string{"origin", "kind", "status"}),
+		Rejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_rejections_total",
+			Help: "Operations recorded as REJECTED, by origin and failure code.",
+		}, []string{"origin", "failure_code"}),
+		Duplicates: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_duplicates_total",
+			Help: "Arrivals of an operation already decided, by origin and reason.",
+		}, []string{"origin", "reason"}),
+		Retries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_retries_total",
+			Help: "Work sent back for another attempt, by component and reason.",
+		}, []string{"component", "reason"}),
+		Abandoned: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_ingress_messages_abandoned_total",
+			Help: "Messages copied to the dead-letter queue, by reason.",
+		}, []string{"reason"}),
+		IngressDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "wager_ingress_queue_depth",
+			Help: "Messages waiting in the ingress queue.",
+		}),
+		DeadLetterDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "wager_ingress_dead_letter_depth",
+			Help: "Messages waiting in the dead-letter queue.",
+		}),
+		OutboxPending: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "wager_outbox_pending_events",
+			Help: "Outbox rows neither published nor dead.",
+		}),
+		OutboxOldestAge: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "wager_outbox_oldest_pending_age_seconds",
+			Help: "Age of the oldest pending outbox row, by the clock of the database.",
+		}),
+		OutboxDead: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "wager_outbox_dead_events_total",
+			Help: "Outbox rows given up on after repeated permanent refusals.",
+		}),
+		ReferenceWaitOldestAge: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "wager_reference_wait_oldest_age_seconds",
+			Help: "Age of the oldest transaction waiting for the operation it cites.",
+		}),
+		WalletsChecked: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_reconciliation_wallets_checked_total",
+			Help: "Reconciliation verdicts produced, by origin.",
+		}, []string{"origin"}),
+		Divergences: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "wager_reconciliation_divergences_total",
+			Help: "Divergences found by a reconciliation verdict, by origin and token.",
+		}, []string{"origin", "divergence"}),
 	}
 	s.primeReconciliation()
 	reg.MustRegister(
@@ -193,16 +225,4 @@ func DuplicateReason(code wager.FailureCode) (string, bool) {
 		return ReasonExternalDuplicate, true
 	}
 	return "", false
-}
-
-func counterVec(name, help string, labels ...string) *prometheus.CounterVec {
-	return prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: help}, labels)
-}
-
-func counter(name, help string) prometheus.Counter {
-	return prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: help})
-}
-
-func gauge(name, help string) prometheus.Gauge {
-	return prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: help})
 }

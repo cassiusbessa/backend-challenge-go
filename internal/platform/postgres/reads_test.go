@@ -287,3 +287,39 @@ func TestWalletIDsAfter_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
 		t.Fatalf("WalletIDsAfter = %v, want %v", err, ErrPoolClosed)
 	}
 }
+
+// The page is read row by row into identities, in the order the driver hands
+// them over.
+func TestScanWalletIDs_readsThePageInTheOrderOfTheRows(t *testing.T) {
+	t.Parallel()
+	first, second := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	page, err := scanWalletIDs(&entryStubRows{rows: [][]any{{first}, {second}}})
+	if err != nil {
+		t.Fatalf("scanWalletIDs of two rows = %v, want nil", err)
+	}
+	if len(page) != 2 || page[0].String() != first || page[1].String() != second {
+		t.Fatalf("page = %v, want the two identities in the order of the rows", page)
+	}
+}
+
+// A row out of format, a scan that fails and a walk that fails are each a
+// failure of the page, named, and no page at all.
+func TestScanWalletIDs_refusesThePageItCannotRead(t *testing.T) {
+	t.Parallel()
+	failures := map[string]*entryStubRows{
+		"a row out of format": {rows: [][]any{{"not-a-uuid"}}},
+		"a scan that fails":   {rows: [][]any{{"11111111-1111-4111-8111-111111111111"}}, scan: errors.New("conn closed")},
+		"a walk that fails":   {walk: errors.New("conn closed")},
+	}
+	for name, rows := range failures {
+		t.Run(name, func(t *testing.T) {
+			refused, err := scanWalletIDs(rows)
+			if err == nil || refused != nil {
+				t.Fatalf("scanWalletIDs = %v with %v, want no page and a failure", refused, err)
+			}
+			if !strings.Contains(err.Error(), "wallet") {
+				t.Fatalf("failure = %q, want the page of wallets named in the chain", err.Error())
+			}
+		})
+	}
+}
