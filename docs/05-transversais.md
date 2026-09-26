@@ -92,7 +92,7 @@ Na fila não há token: a identidade vem do broker junto da mensagem, e a recusa
 
 **Log** em JSON com lista branca de campos: `correlationId`, `trace_id`, `span_id`, `messageId`, `eventId`, `transactionId`, `walletId`, `providerId`, `kind`, `status`, `failureCode`, e `divergences`, os tokens de uma reconciliação que não fechou. O filtro é do handler, não da chamada: atributo fora da lista é descartado antes da saída, então header de autorização, token, corpo, quantia e saldo não vazam nem por engano. Sucesso loga só ids; rejeição, conflito, DLQ e divergência sempre logam.
 
-**Correlação**: no HTTP, `X-Correlation-Id` vale se for token opaco curto, senão o `trace_id`; na fila sem correlação, o `messageId`. Decidida uma vez na borda, antes do handler, e carregada no contexto — o que a operação grava a leva.
+**Correlação**: no HTTP, `X-Correlation-Id` vale se for token opaco curto, senão o `trace_id`; na fila, o `correlationId` do envelope pela mesma regra, senão o `messageId`. Decidida uma vez na borda, antes do handler, e carregada no contexto — o que a operação grava a leva.
 
 **Trace** por OTLP, com propagação W3C no header HTTP e em atributo da mensagem. Um span da entrada, um do caso de uso, um da unit of work fechado no commit; sem span por query. O nome do span é o padrão da rota, nunca o path com identidade. `REJECTED` deixa o span ok; erro de span é infraestrutura, conflito de versão ou DLQ. A outbox grava `trace_id` e `span_id` do commit, e o relay abre span próprio ligado a eles por *link*, não por paternidade — aquele span fechou no commit, e depois de um restart nem existe.
 

@@ -6,6 +6,7 @@ package ingress
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,30 @@ func TestIngress_settlesABetThatArrivedOnTheQueue(t *testing.T) {
 
 	assertSettled(ctx, t, conn, holder, identity)
 	assertCausedBy(t, recorded, identity)
+}
+
+// A correlation that is not a short opaque token is not taken, as over HTTP: the
+// commit is correlated by the message instead. Kept as it came, the long one would
+// reach the log and the outbox, and the one with a NUL would fail every delivery.
+func TestIngress_correlatesByTheMessageWhenTheEnvelopeCarriesNoToken(t *testing.T) {
+	ctx, at := start(t)
+	conn := connect(ctx, t)
+	for name, carried := range map[string]string{"one past 64 characters": strings.Repeat("c", 65), "one with a NUL": "correlation-\x00"} {
+		t.Run(name, func(t *testing.T) {
+			holder := openWallet(ctx, t, at)
+			identity := suiteenv.NewID()
+			data := map[string]any{"playerId": holder.player, "walletId": holder.id}
+			at.queues.send(ctx, t, mappedSender, holder.id, message(identity, data, map[string]any{"correlationId": carried}))
+
+			at.queues.awaitEmpty(ctx, t)
+			recorded := awaitEvents(ctx, t, conn, holder.id, openingEvents+2)
+			for _, each := range recorded[openingEvents:] {
+				if each.correlationID != identity {
+					t.Fatalf("correlationId of %s after %s = %q, want the message %s", each.eventType, name, each.correlationID, identity)
+				}
+			}
+		})
+	}
 }
 
 func assertSettled(ctx context.Context, t *testing.T, conn *pgx.Conn, holder owner, identity string) {
@@ -138,6 +163,29 @@ func TestIngress_abandonsABodyItCouldNotRead(t *testing.T) {
 
 	at.queues.awaitDeadLetter(ctx, t)
 	at.queues.awaitEmpty(ctx, t)
+	assertUntouched(ctx, t, conn, holder, identity)
+}
+
+// The identity of the message goes to the inbox, whose text column refuses NUL. It
+// is an invalid body at the border, and not a failure that exhausts the deliveries
+// before the message reaches the dead-letter queue by the other reason.
+func TestIngress_abandonsAnIdentityTheInboxCannotStore(t *testing.T) {
+	ctx, at := start(t)
+	conn := connect(ctx, t)
+	holder := openWallet(ctx, t, at)
+	identity := suiteenv.NewID()
+	at.queues.send(ctx, t, mappedSender, holder.id, holder.bet(identity+"\x00", "25.00", nil))
+
+	at.queues.awaitDeadLetter(ctx, t)
+	// The consumer counts the reason before it deletes the message, so a drained
+	// ingress queue is a count already made.
+	at.queues.awaitEmpty(ctx, t)
+	if got := seriesOf(ctx, t, at, "wager_ingress_messages_abandoned_total", map[string]string{"reason": "invalid_body"}); got != 1 {
+		t.Fatalf("abandoned{invalid_body} for an identity with a NUL = %v, want 1", got)
+	}
+	if got := seriesOf(ctx, t, at, "wager_ingress_messages_abandoned_total", map[string]string{"reason": "delivery_limit"}); got != 0 {
+		t.Fatalf("abandoned{delivery_limit} for an identity with a NUL = %v, want 0", got)
+	}
 	assertUntouched(ctx, t, conn, holder, identity)
 }
 

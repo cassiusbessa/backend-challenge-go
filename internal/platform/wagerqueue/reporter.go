@@ -41,17 +41,18 @@ var propagator = propagation.TraceContext{}
 
 // Receiving opens the span of one message and carries its identity down the call.
 //
-// The correlation is the one the envelope brought, and a message that brought none
-// is correlated by its own identity: an operation of the queue always has a
-// correlation, and the identity of the message is the one value that is always
-// there. That identity also travels as the cause, so every event the commit writes
+// The correlation is the one the envelope brought when it is a short opaque token,
+// the rule of the header over HTTP, and a message that brought none, or brought
+// anything else, is correlated by its own identity: an operation of the queue
+// always has a correlation, and the identity of the message is the one value that
+// is always there. That identity also travels as the cause, so every event the commit writes
 // names the message that caused it.
 //
 // The span continues the trace the sender propagated when there is one, rather than
 // opening a new one cut off from the origin.
 func (rep *Reporter) Receiving(ctx context.Context, delivery Delivery, decoded Message) (context.Context, func(error)) {
 	message := identityOf(delivery, decoded)
-	ctx = telemetry.WithCorrelation(ctx, correlationOf(decoded, message))
+	ctx = telemetry.WithCorrelation(ctx, telemetry.CorrelationID(decoded.CorrelationID, message))
 	ctx = telemetry.WithCausation(ctx, message)
 	ctx = propagator.Extract(ctx, propagation.MapCarrier(delivery.Trace))
 	ctx, span := rep.tracer.Start(ctx, "receive wager message", trace.WithSpanKind(trace.SpanKindConsumer))
@@ -73,13 +74,6 @@ func identityOf(delivery Delivery, decoded Message) string {
 		return decoded.MessageID
 	}
 	return delivery.Deduplication
-}
-
-func correlationOf(decoded Message, message string) string {
-	if decoded.CorrelationID != "" {
-		return decoded.CorrelationID
-	}
-	return message
 }
 
 // mark records only what failed. A rule refusing the operation leaves the span ok:

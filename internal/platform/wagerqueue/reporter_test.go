@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,6 +20,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // A rule refusing the operation leaves the span ok: go-observability reserves the
@@ -103,6 +105,36 @@ func TestFailed_namesNoMessageForALineOutsideAnyOperation(t *testing.T) {
 	line := lineWith(t, logs, "receive from the ingress queue")
 	if _, named := line["messageId"]; named {
 		t.Fatalf("line carries a messageId, want none: %v", line)
+	}
+}
+
+// The correlation of the envelope is taken only when it is a short opaque token,
+// the rule of the header over HTTP: anything else reaches the log and the outbox,
+// whose text column refuses NUL, so the message correlates the operation instead.
+func TestReceiving_takesTheCorrelationOnlyWhenItIsAShortOpaqueToken(t *testing.T) {
+	t.Parallel()
+	const identity = "message-of-the-envelope"
+	cases := map[string]struct {
+		carried string
+		want    string
+	}{
+		"a short opaque token is kept":             {carried: "request-7.a_b:c", want: "request-7.a_b:c"},
+		"no correlation falls back to the message": {carried: "", want: identity},
+		"one past 64 characters falls back":        {carried: strings.Repeat("c", 65), want: identity},
+		"one with a space falls back":              {carried: "request 7", want: identity},
+		"one with a NUL falls back":                {carried: "request-\x00", want: identity},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			reporter, _ := loggingReporter(t)
+			decoded := Message{MessageID: identity, CorrelationID: tc.carried}
+			ctx, closeSpan := reporter.Receiving(context.Background(), arrived(1), decoded)
+			defer closeSpan(nil)
+			if got := telemetry.Correlation(ctx); got != tc.want {
+				t.Fatalf("correlation of %q = %q, want %q", tc.carried, got, tc.want)
+			}
+		})
 	}
 }
 

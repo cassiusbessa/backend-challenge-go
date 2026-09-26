@@ -96,6 +96,7 @@ func TestDecode_refusesTheBodyItCannotTake(t *testing.T) {
 	}{
 		{name: "a body that is not json is refused", raw: []byte("{this is not json"), field: "body"},
 		{name: "an envelope with no message identifier is refused", raw: envelopeWith(map[string]any{"messageId": ""}, nil), field: "messageId"},
+		{name: "a message identifier with a NUL is refused", raw: envelopeWith(map[string]any{"messageId": "message-\x00-1"}, nil), field: "messageId"},
 		{name: "a missing provider is refused", raw: envelopeWith(nil, map[string]any{"providerId": ""}), field: "providerId"},
 		{name: "a missing external identifier is refused", raw: envelopeWith(nil, map[string]any{"externalTransactionId": ""}), field: "externalTransactionId"},
 		{name: "a missing idempotency key is refused", raw: envelopeWith(nil, map[string]any{"idempotencyKey": ""}), field: "idempotencyKey"},

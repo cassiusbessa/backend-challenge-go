@@ -10,6 +10,7 @@ package wagerqueue
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
@@ -50,8 +51,9 @@ func invalid(name string) error {
 // Message is one decoded message: the identity of the envelope, the correlation
 // it carried, and the operation its body asked for.
 //
-// CorrelationID keeps its zero value when the envelope carried none, and the
-// consumer then correlates the operation by the identity of the message itself.
+// CorrelationID is what the envelope carried, zero when it carried none. The
+// consumer takes it only when it is a short opaque token, as over HTTP, and
+// otherwise correlates the operation by the identity of the message itself.
 type Message struct {
 	MessageID     string
 	CorrelationID string
@@ -102,7 +104,9 @@ func Decode(raw []byte) (Message, error) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return Message{}, invalid("body")
 	}
-	if body.MessageID == "" {
+	// The identity is written to the inbox, whose text column refuses NUL. JSON
+	// already replaced any byte outside UTF-8, so NUL is the one left to refuse.
+	if body.MessageID == "" || strings.ContainsRune(body.MessageID, 0) {
 		return Message{}, invalid("messageId")
 	}
 	cmd, err := body.Data.command()

@@ -359,7 +359,7 @@ O tópico é provisionado sem subscription, então não há de onde ler as mensa
 
 O consumidor da fila é o terceiro componente de fundo do binário. Ele busca em long poll, decide cada mensagem pelo mesmo caso de uso da rota HTTP, e responde ao broker: apaga a mensagem cujo desfecho commitou, devolve com backoff a que falhou de forma transitória, e copia para a DLQ a que nenhuma repetição resolveria.
 
-O envelope leva o `messageId` e, opcionalmente, o `correlationId`; a operação vai em `data`, com o mesmo corpo da rota HTTP mais a chave de idempotência em `data.idempotencyKey`. O grupo da mensagem é o id da carteira em minúsculas, e a deduplicação é o `messageId` do envelope. O envelope do enunciado é aceito como está escrito: `type` e `occurredAt` são ignorados — não levam a mensagem à DLQ nem entram no hash, então a mesma operação enviada antes por HTTP é replay na fila —, e a chave no formato `provider:externo` é gravada como chegou.
+O envelope leva o `messageId` e, opcionalmente, o `correlationId`, que vale pela mesma regra do `X-Correlation-Id` do HTTP — token opaco de até 64 caracteres —, e sem o qual a operação é correlacionada pelo `messageId`; a operação vai em `data`, com o mesmo corpo da rota HTTP mais a chave de idempotência em `data.idempotencyKey`. O grupo da mensagem é o id da carteira em minúsculas, e a deduplicação é o `messageId` do envelope. O envelope do enunciado é aceito como está escrito: `type` e `occurredAt` são ignorados — não levam a mensagem à DLQ nem entram no hash, então a mesma operação enviada antes por HTTP é replay na fila —, e a chave no formato `provider:externo` é gravada como chegou.
 
 ```bash
 # a access key do apply está em deploy/terraform/localstack/wager-sender.keys
