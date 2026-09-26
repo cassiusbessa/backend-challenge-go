@@ -1,9 +1,10 @@
--- As duas colunas saem, e o índice volta à ordem anterior. A tabela e as linhas
--- permanecem: o que esta reversão desfaz é a ordem da varredura e a contagem
--- das recusas, não a outbox.
+-- A coluna `publish_seq` sai, o índice da varredura volta à ordem anterior e o
+-- gatilho volta a não guardá-la. A tabela e as linhas permanecem: o que esta
+-- reversão desfaz é a ordem da publicação, não a outbox.
 --
 -- Desfeita, a publicação volta a ser ordenada por `created_at` — com a inversão
--- que a subida descreve — e a morte da linha volta a contar tentativas.
+-- que a subida descreve. A contagem que mata a linha é da 000005 e não é tocada
+-- aqui.
 
 DROP INDEX IF EXISTS outbox_events_publish_queue;
 

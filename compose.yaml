@@ -141,10 +141,19 @@ services:
   # O schema é aplicado uma vez, antes de qualquer réplica. O binário da
   # aplicação não carrega código de migration.
   #
-  # MIGRATE_DB escolhe o banco que recebe o schema, e o padrão é o da aplicação.
   # A suíte de integração aponta para um banco próprio, porque a aplicação de pé
   # tem os próprios workers: o relay de outbox dela varre a tabela inteira a cada
   # segundo, sem filtrar carteira, e publica a linha que um caso espera ver morta.
+  #
+  # MIGRATE_DB escolhe o banco, e o padrão é o da aplicação. Ela é interpolada na
+  # leitura deste arquivo, com o ambiente do shell, e não dentro do container:
+  # `docker compose run --rm -e MIGRATE_DB=x migrate` define a variável depois de
+  # o comando já estar montado, aplica no banco errado e imprime `no change` com
+  # código zero — indistinguível de uma migration já aplicada. Por isso o caminho
+  # publicado no README nomeia o destino nos argumentos do próprio migrate, onde
+  # um destino que não existe falha:
+  #
+  #   docker compose run --rm migrate -path=/migrations -database "<url>" up
   migrate:
     image: migrate/migrate:v4.19.0
     command:
