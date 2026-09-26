@@ -9,7 +9,6 @@ O que não está nesta tabela está implementado, e cada rota, worker e invarian
 | O quê | Estado | Nota |
 | --- | --- | --- |
 | Consumidor dos eventos | não existe | O tópico `wallet-events.fifo` é provisionado sem subscription, de propósito. A suíte de jornada anexa um assinante só pelo tempo do caso. |
-| Rota de consulta pelo provedor e o contrato de campos do enunciado | não existe | A consulta é `GET /wagering/transactions/{id}`, pelo identificador do serviço, e não `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}`. A submissão responde `id` e `observedBalance`, onde o enunciado pede `transactionId` e `balance`; a reconciliação é `GET` com `ledgerBalance` e `entryCount`, onde ele pede `POST` com `calculatedBalance`, `difference` e `checkedEntries`. |
 | Réplicas como processos, e o guia de operá-las | não existe | Os cenários com várias instâncias e com a morte entre o commit e a remoção rodam por `make scenarios`, dentro do binário de teste. Falta subir réplicas como processos separados, para operar e para o teste de carga. |
 | Notificação dos alertas | não existe, de propósito | As duas regras vivem no Prometheus e aparecem no Grafana; não há Alertmanager, porque num ambiente local não há para onde notificar ([ADR 0025](adr/0025-alertas-como-regras-do-prometheus-testadas.md)). |
 

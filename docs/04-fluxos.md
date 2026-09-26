@@ -56,7 +56,7 @@ sequenceDiagram
     alt hash igual
         U->>U: Rehydrate → Replay() → Outcome
         U->>PG: COMMIT (nada escrito)
-        U-->>P: 200 · idempotentReplay: true<br/>saldo observado da época, não o atual
+        U-->>P: 200 · idempotentReplay: true<br/>balance observado na época, não o atual
     else hash diferente
         U->>U: settlement{rejection: IDEMPOTENCY_CONFLICT}
         U->>PG: COMMIT (nada escrito)
@@ -258,12 +258,12 @@ sequenceDiagram
     participant R as reconcilewallet
     participant PG as PostgreSQL
 
-    I->>B: GET /wallets/{walletId}/reconciliation
+    I->>B: POST /wallets/{walletId}/reconciliation
     B->>R: Reconcile(walletId)
     R->>PG: uma SELECT: wallets ⋈ (soma, contagem, última sequência, primeira quebra) do ledger
     Note over R,PG: sem transação, sem FOR UPDATE:<br/>uma sentença é um snapshot, e não espera a aposta em curso
     PG-->>R: LedgerSummary
-    R->>R: divergencesOf: BALANCE_MISMATCH · SEQUENCE_GAP · CHAIN_BREAK
+    R->>R: difference = armazenado − calculado (Money.Sub)<br/>divergencesOf: BALANCE_MISMATCH · SEQUENCE_GAP · CHAIN_BREAK
     R-->>B: Report
     alt consistent
         B-->>I: 200 sem divergences
@@ -273,4 +273,4 @@ sequenceDiagram
     end
 ```
 
-O extrato segue o mesmo molde com duas idas ao banco — existe a carteira; a página keyset de `limit + 1` linhas sobre `(sequence_number, id)` — porque nada apaga carteira, e a linha excedente é o que diz que há próxima página sem contar a tabela. O cursor decodifica antes de qualquer consulta, e é recusado se foi emitido para outra carteira ([ADR 0023](adr/0023-cursor-opaco-amarrado-a-carteira.md)). A reconciliação lê tudo numa sentença e decide fora dela: o SQL devolve números, e o veredito é regra testável sem banco, que o observador de divergência chama sem passar pela rota ([ADR 0022](adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md), [ADR 0024](adr/0024-observador-de-divergencia-por-cursor-em-memoria.md)). Nenhuma das duas escreve, e a divergência não marca o span: é um resultado que a leitura relata, não uma falha do serviço.
+O extrato segue o mesmo molde com duas idas ao banco — existe a carteira; a página keyset de `limit + 1` linhas sobre `(sequence_number, id)` — porque nada apaga carteira, e a linha excedente é o que diz que há próxima página sem contar a tabela. O cursor decodifica antes de qualquer consulta, e é recusado se foi emitido para outra carteira ([ADR 0023](adr/0023-cursor-opaco-amarrado-a-carteira.md)). A reconciliação lê tudo numa sentença e decide fora dela: o SQL devolve números, e o veredito — com a diferença, cujo overflow é falha e não um número dado a volta — é regra testável sem banco, que o observador de divergência chama sem passar pela rota ([ADR 0022](adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md), [ADR 0024](adr/0024-observador-de-divergencia-por-cursor-em-memoria.md)). Nenhuma das duas escreve, e a divergência não marca o span: é um resultado que a leitura relata, não uma falha do serviço. A reconciliação é `POST` porque é o verbo do enunciado; o efeito é o de uma leitura, e o handler não lê corpo ([ADR 0029](adr/0029-contrato-http-segue-o-enunciado.md)).

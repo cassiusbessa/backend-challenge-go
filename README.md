@@ -117,7 +117,7 @@ A segunda carteira do mesmo jogador na mesma moeda responde 409, decidido pela u
 
 ## Leituras da carteira
 
-`GET /wallets/{walletId}/ledger` devolve o extrato paginado e `GET /wallets/{walletId}/reconciliation` compara o saldo gravado com o que o ledger soma. As duas exigem o mesmo token do cliente interno das rotas de carteira; o provedor recebe 403 sem lançamento nem saldo no corpo. Nenhuma das duas grava linha, move saldo ou toma lock.
+`GET /wallets/{walletId}/ledger` devolve o extrato paginado e `POST /wallets/{walletId}/reconciliation` compara o saldo gravado com o que o ledger soma. As duas exigem o mesmo token do cliente interno das rotas de carteira; o provedor recebe 403 sem lançamento nem saldo no corpo. Nenhuma das duas grava linha, move saldo ou toma lock: a reconciliação é `POST` porque é o verbo do enunciado, e não lê corpo — um corpo enviado não muda a resposta, e o `GET` no mesmo caminho responde 404 como qualquer rota inexistente.
 
 ```bash
 curl -s "http://localhost:8090/wallets/<id da carteira>/ledger?limit=2" \
@@ -142,7 +142,7 @@ curl -s "http://localhost:8090/wallets/<id da carteira>/ledger?limit=2" \
 Os lançamentos saem em ordem de sequência, cada um com o saldo anterior e o posterior, e `limit` é o tamanho da página — 50 por padrão, no máximo 200; `nextCursor` é um token opaco que só aparece quando há página seguinte, e é passado de volta em `cursor` para continuar exatamente do lançamento seguinte ao último devolvido, mesmo que outro tenha sido gravado no meio. `limit` fora da faixa ou não inteiro, cursor que a rota não emitiu e cursor emitido para outra carteira respondem 400 nomeando o campo, sem consultar o ledger — e os dois últimos com o mesmo corpo, para a recusa não dizer nada sobre a outra carteira.
 
 ```bash
-curl -s "http://localhost:8090/wallets/<id da carteira>/reconciliation" \
+curl -s -X POST "http://localhost:8090/wallets/<id da carteira>/reconciliation" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -150,20 +150,21 @@ curl -s "http://localhost:8090/wallets/<id da carteira>/reconciliation" \
 {
   "walletId": "<id da carteira>",
   "storedBalance": {"amount":"1100.00","currency":"BRL"},
-  "ledgerBalance": {"amount":"1000.00","currency":"BRL"},
-  "version": 1, "entryCount": 1, "lastSequence": 1,
+  "calculatedBalance": {"amount":"1000.00","currency":"BRL"},
+  "difference": {"amount":"100.00","currency":"BRL"},
+  "version": 1, "checkedEntries": 1, "lastSequence": 1,
   "consistent": false,
   "divergences": ["BALANCE_MISMATCH"]
 }
 ```
 
-Os dois saldos saem da mesma sentença SQL, então um commit entre as leituras não inventa desvio, e a leitura não espera uma aposta que esteja com a carteira travada. `consistent` é verdadeiro quando o ledger fecha com o saldo; senão `divergences` lista o que desviou, de um vocabulário fechado: `BALANCE_MISMATCH` quando a soma difere do saldo gravado, `SEQUENCE_GAP` quando a contagem de lançamentos difere da última sequência, e `CHAIN_BREAK` quando um lançamento não começa onde o anterior terminou — este com `firstBreakSequence` apontando o primeiro. Uma carteira consistente omite os dois campos. A rota informa e não corrige; toda divergência deixa uma linha de log com o `walletId` e os tokens, sem saldo.
+Os dois saldos saem da mesma sentença SQL, então um commit entre as leituras não inventa desvio, e a leitura não espera uma aposta que esteja com a carteira travada. `difference` é o saldo gravado menos o calculado, com sinal: `0.00` quando fecham, positivo quando a carteira guarda mais do que o ledger soma, negativo quando guarda menos. `consistent` é verdadeiro quando o ledger fecha com o saldo; senão `divergences` lista o que desviou, de um vocabulário fechado: `BALANCE_MISMATCH` quando a soma difere do saldo gravado, `SEQUENCE_GAP` quando a contagem de lançamentos difere da última sequência, e `CHAIN_BREAK` quando um lançamento não começa onde o anterior terminou — este com `firstBreakSequence` apontando o primeiro. Uma carteira consistente omite os dois campos. A rota informa e não corrige; toda divergência deixa uma linha de log com o `walletId` e os tokens, sem saldo.
 
 Ninguém precisa chamar a rota para uma divergência aparecer. O observador de divergência, o quarto componente de fundo do binário, varre todas as carteiras em páginas de `RECONCILIATION_BATCH` a cada `RECONCILIATION_INTERVAL`, e produz o mesmo veredito pela mesma sentença. Ele só lê: não toma lock, não abre transação e não corrige nada, então uma carteira divergente reaparece a cada passagem até alguém corrigir o banco. A divergência que ele encontra deixa a mesma linha de log e move `wager_reconciliation_divergences_total` com a origem `watch`, e é essa série que o alerta observa.
 
 ## Rotas de aposta
 
-`POST /wagering/transactions` liquida a operação do provedor e `GET /wagering/transactions/{transactionId}` devolve o resultado gravado. As duas exigem token de provedor: o cliente interno recebe 403 nelas, e o provedor continua recebendo 403 nas rotas de carteira.
+`POST /wagering/transactions` liquida a operação do provedor; `GET /wagering/transactions/{transactionId}` e `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` devolvem o resultado gravado, pela identidade do serviço ou pelo identificador que o provedor escolheu. As três exigem token de provedor: o cliente interno recebe 403 nelas, e o provedor continua recebendo 403 nas rotas de carteira.
 
 A rota aceita `BET`, `LOSS`, `WIN`, `REFUND` e `ROLLBACK`. O corpo leva `referenceExternalTransactionId` quando a operação cita outra: as duas reversões sempre o exigem, e um `WIN` pode trazê-lo. O campo presente e fora de formato responde 400 sem gravar linha; ausente, a operação se decide sozinha.
 
@@ -181,13 +182,42 @@ curl -i -X POST http://localhost:8090/wagering/transactions \
        "money":{"amount":"25.00","currency":"BRL"}}'
 ```
 
+```json
+{
+  "transactionId": "<id da transação>",
+  "kind": "BET",
+  "status": "PROCESSED",
+  "externalTransactionId": "ext-0001",
+  "money": {"amount":"25.00","currency":"BRL"},
+  "balance": {"amount":"975.00","currency":"BRL"},
+  "idempotentReplay": false
+}
+```
+
+Os nomes são os do enunciado: `transactionId`, `status`, `balance` — o saldo observado no commit — e `idempotentReplay`, sempre presente, `false` na primeira conclusão. Tipo, identificador externo e quantia vão ao lado, como extensão.
+
 O `providerId` do corpo não autoriza: vale o cliente do token, e um corpo declarando outro provedor responde 403 sem gravar linha. A chave de idempotência vem no cabeçalho `Idempotency-Key`; sem ela a resposta é 400 e nada é gravado.
 
-A primeira conclusão responde 201, com `Location` apontando o recurso criado e o saldo observado no commit. `BET` debita e grava o lançamento no mesmo commit da transação; `WIN` sem operação citada credita; `LOSS` termina `PROCESSED` com quantia zero, sem lançamento e sem mudar a versão da carteira.
+A primeira conclusão responde 201, com `Location` apontando o recurso criado e o saldo observado no commit em `balance`. `BET` debita e grava o lançamento no mesmo commit da transação; `WIN` sem operação citada credita; `LOSS` termina `PROCESSED` com quantia zero, sem lançamento e sem mudar a versão da carteira.
 
-A mesma chave com o mesmo corpo responde 200 com `idempotentReplay: true` e o saldo observado na conclusão original — não o saldo atual. A mesma chave com outro corpo responde 422 `IDEMPOTENCY_CONFLICT`, e o mesmo `externalTransactionId` com outra chave responde 422 `DUPLICATE_EXTERNAL_TRANSACTION`. Nenhuma das duas grava segunda linha: quem decide a duplicidade é o índice único do banco, não uma consulta prévia que duas réplicas vencem ao mesmo tempo.
+A mesma chave com o mesmo corpo responde 200 com `idempotentReplay: true` e o `balance` observado na conclusão original — não o saldo atual. A mesma chave com outro corpo responde 422 `IDEMPOTENCY_CONFLICT`, e o mesmo `externalTransactionId` com outra chave responde 422 `DUPLICATE_EXTERNAL_TRANSACTION`. Nenhuma das duas grava segunda linha: quem decide a duplicidade é o índice único do banco, não uma consulta prévia que duas réplicas vencem ao mesmo tempo.
 
 `INSUFFICIENT_FUNDS`, `PLAYER_WALLET_MISMATCH` e `CURRENCY_MISMATCH` gravam a transação `REJECTED` com o token, sem lançamento e sem mexer no saldo, e o mesmo vale para os tokens decididos sobre a carteira travada: `REVERSAL_INSUFFICIENT_FUNDS`, `REVERSAL_AMOUNT_MISMATCH`, `REFERENCE_MISMATCH`, `REFERENCE_UNSUCCESSFUL` e `ALREADY_REVERSED`. **A rejeição durável ocupa a chave de idempotência**: reenviar a mesma chave com o mesmo corpo devolve a mesma recusa, agora marcada como replay, e tentar de novo de verdade exige chave nova. `WALLET_NOT_FOUND`, `OPENING_NOT_ALLOWED`, `AMOUNT_NOT_ALLOWED_FOR_KIND` e `REFERENCE_REQUIRED` recusam sem gravar linha, porque a linha correspondente violaria as invariantes da tabela.
+
+A recusa que gravou linha sai em problem details com a identidade dessa linha na extensão `transactionId`, na primeira recusa e no replay dela; a que não gravou linha sai sem ela:
+
+```json
+{
+  "type": "urn:junglegaming:problem:business-rejection",
+  "title": "Wager rejected",
+  "status": 422,
+  "instance": "/wagering/transactions",
+  "failureCode": "INSUFFICIENT_FUNDS",
+  "transactionId": "<id da transação rejeitada>"
+}
+```
+
+`status` aqui é o código HTTP, como a RFC 9457 define, e por isso a recusa não traz o estado `REJECTED` do enunciado: ele fica legível na consulta, pela identidade que a extensão entrega. É a única divergência deliberada do contrato do enunciado ([ADR 0029](docs/adr/0029-contrato-http-segue-o-enunciado.md)).
 
 Duas apostas simultâneas na mesma carteira se serializam pelo lock da linha: a segunda lê o saldo já commitado e, se não couber, sai com `INSUFFICIENT_FUNDS`. Carteiras diferentes não esperam uma pela outra.
 
@@ -222,14 +252,17 @@ O prazo é gravado uma vez, na entrada, como `agora + REFERENCE_TTL` — 15 minu
 
 Enquanto a espera dura, a mesma chave com o mesmo corpo responde 200 com `PENDING_REFERENCE` e `idempotentReplay: true`, sem saldo observado — o reenvio não antecipa o prazo nem mexe no agendamento. Depois do encerramento, ela devolve o desfecho gravado.
 
-A consulta devolve o resultado gravado ao provedor dono:
+A consulta devolve o resultado gravado ao provedor dono, pela identidade do serviço ou pelo identificador externo:
 
 ```bash
 curl -s http://localhost:8090/wagering/transactions/<transactionId> \
   -H "Authorization: Bearer $TOKEN"
+
+curl -s http://localhost:8090/providers/provider-a/wagering/transactions/ext-0001 \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Ela responde 200 com estado, quantia, saldo observado quando houver e `failureCode` quando o estado é `REJECTED` — a leitura concluiu, então não é problem details. Uma transação em `PENDING_REFERENCE` responde 200 com esse estado e sem saldo observado; a leitura não tenta a espera, não antecipa o prazo e não mexe no agendamento. Transação de outro provedor responde 404 igual a uma inexistente: nem o corpo nem o status revelam que o registro existe.
+As duas respondem 200 com a mesma representação: `transactionId`, estado, provedor, quantia, `balance` quando houver saldo observado e `failureCode` quando o estado é `REJECTED` — a leitura concluiu, então não é problem details. Nenhuma traz `idempotentReplay`, porque uma leitura não é uma chegada da operação. Uma transação em `PENDING_REFERENCE` responde 200 com esse estado e sem `balance`; a leitura não tenta a espera, não antecipa o prazo e não mexe no agendamento. Transação de outro provedor responde 404 igual a uma inexistente: nem o corpo nem o status revelam que o registro existe. O `providerId` da URL não autoriza — um que não seja o do token responde esse mesmo 404, antes de qualquer consulta.
 
 ## Broker
 
@@ -302,7 +335,7 @@ Todos saem no mesmo envelope, com dinheiro em string decimal de duas casas, igua
 }
 ```
 
-`causationId` é o `messageId` da mensagem que causou o commit, e sai omitido em todo commit que nenhuma mensagem causou: por HTTP a operação não tem mensagem que a cause, e o commit que o worker de referência conclui por prazo vencido é disparado pelo relógio. Emprestar ali o identificador da mensagem que abriu a espera diria que ela causou um evento que ela não causou; quem liga os dois commits é o identificador da transação, que o primeiro evento carrega e o segundo usa como correlação. O construtor fixa o tipo e a `version`; nenhum chamador escolhe os dois.
+`causationId` é o `messageId` da mensagem que causou o commit — o `transactionId-optional` do exemplo do enunciado é ilustrativo, porque a transação já está em `data` ([ADR 0030](docs/adr/0030-causation-id-e-a-mensagem-que-causou-o-commit.md)) —, e sai omitido em todo commit que nenhuma mensagem causou: por HTTP a operação não tem mensagem que a cause, e o commit que o worker de referência conclui por prazo vencido é disparado pelo relógio. Emprestar ali o identificador da mensagem que abriu a espera diria que ela causou um evento que ela não causou; quem liga os dois commits é o identificador da transação, que o primeiro evento carrega e o segundo usa como correlação. O construtor fixa o tipo e a `version`; nenhum chamador escolhe os dois.
 
 ### Como o evento sai
 
@@ -326,15 +359,17 @@ O tópico é provisionado sem subscription, então não há de onde ler as mensa
 
 O consumidor da fila é o terceiro componente de fundo do binário. Ele busca em long poll, decide cada mensagem pelo mesmo caso de uso da rota HTTP, e responde ao broker: apaga a mensagem cujo desfecho commitou, devolve com backoff a que falhou de forma transitória, e copia para a DLQ a que nenhuma repetição resolveria.
 
-O envelope leva o `messageId` e, opcionalmente, o `correlationId`; a operação vai em `data`, com o mesmo corpo da rota HTTP mais a chave de idempotência em `data.idempotencyKey`. O grupo da mensagem é o id da carteira em minúsculas, e a deduplicação é o `messageId` do envelope.
+O envelope leva o `messageId` e, opcionalmente, o `correlationId`; a operação vai em `data`, com o mesmo corpo da rota HTTP mais a chave de idempotência em `data.idempotencyKey`. O grupo da mensagem é o id da carteira em minúsculas, e a deduplicação é o `messageId` do envelope. O envelope do enunciado é aceito como está escrito: `type` e `occurredAt` são ignorados — não levam a mensagem à DLQ nem entram no hash, então a mesma operação enviada antes por HTTP é replay na fila —, e a chave no formato `provider:externo` é gravada como chegou.
 
 ```bash
 # a access key do apply está em deploy/terraform/localstack/wager-sender.keys
 BODY=$(cat <<JSON
-{"messageId":"$MESSAGE_ID","data":{
-  "providerId":"provider-a","externalTransactionId":"external-1",
-  "idempotencyKey":"key-1","playerId":"$PLAYER_ID","walletId":"$WALLET_ID",
-  "roundId":"round-1","gameId":"game-1","kind":"BET",
+{"messageId":"$MESSAGE_ID",
+ "type":"WagerTransactionRequested","occurredAt":"2026-09-08T12:00:00.000Z",
+ "data":{
+  "providerId":"provider-a","externalTransactionId":"transaction-123",
+  "idempotencyKey":"provider-a:transaction-123","playerId":"$PLAYER_ID","walletId":"$WALLET_ID",
+  "roundId":"round-987","gameId":"fortune-chimp","kind":"BET",
   "money":{"amount":"25.00","currency":"BRL"}}}
 JSON
 )

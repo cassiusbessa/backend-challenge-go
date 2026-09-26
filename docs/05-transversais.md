@@ -52,7 +52,7 @@ Os três marcadores — `retryable`, `defective`, `replayed` — são interfaces
 
 | Pergunta | Quem faz | Consequência |
 | --- | --- | --- |
-| tem linha? | `submitwager.reject` | commit ou rollback |
+| tem linha? | `submitwager.reject` | commit ou rollback; com linha, `transactionId` na extensão |
 | tem token? | `problem.From` | `422` com `failureCode`, ou outra classe |
 | já foi respondido antes? | `problem.isReplay` | `idempotentReplay: true` |
 
@@ -72,6 +72,7 @@ Esse `client_id` é uma **credencial**. O `providerId` é uma **entidade de neg�
 Bearer eyJ…  →  azp = "provider-a"  →  mapa  →  Client{Provider, providerId: "provider-a"}
                                                         ↓
                                     speaksFor: providerId do token == providerId do corpo
+                                    ownedExternal: providerId do token == providerId da URL
 ```
 
 Um provedor pode ter vários clientes — dois datacenters, uma rotação de segredo — e todos operam as mesmas transações. Localmente o `client_id` e o `providerId` são a mesma string, o que esconde a diferença; em produção não são.
@@ -79,9 +80,9 @@ Um provedor pode ter vários clientes — dois datacenters, uma rotação de seg
 | Papel | Pode | Não pode |
 | --- | --- | --- |
 | **Interno** | abrir carteira, ler carteira, listar o ledger, reconciliar | enviar aposta |
-| **Provedor** | enviar aposta, ler a própria transação (inclusive no replay) | abrir carteira, ler saldo, ledger ou reconciliação, ler transação alheia |
+| **Provedor** | enviar aposta, ler a própria transação pela identidade ou pelo identificador externo (inclusive no replay) | abrir carteira, ler saldo, ledger ou reconciliação, ler transação alheia |
 
-Corpo de outro provedor recusa com `403`, sem movimento e sem revelar se a transação existe — uma transação alheia e uma inexistente saem pelo mesmo `404`, porque o provedor é parte da consulta e não de uma checagem depois. `playerId` que não é o dono da carteira rejeita com `PLAYER_WALLET_MISMATCH`, sem movimento.
+Corpo de outro provedor recusa com `403`, sem movimento e sem revelar se a transação existe — uma transação alheia e uma inexistente saem pelo mesmo `404`, porque o provedor é parte da consulta e não de uma checagem depois. O `providerId` da URL da consulta por identificador externo segue a mesma regra: não autoriza, e um que não seja o do token responde a mesma ausência antes de qualquer consulta. `playerId` que não é o dono da carteira rejeita com `PLAYER_WALLET_MISMATCH`, sem movimento.
 
 Credencial ausente, inválida ou expirada é `401`; identidade válida sem permissão é `403`. As duas em problem details, sem dado financeiro. `/health/*` e `/metrics` são públicos.
 

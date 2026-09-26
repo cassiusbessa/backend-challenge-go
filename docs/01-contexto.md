@@ -130,24 +130,25 @@ flowchart TB
 
 ## Contratos de fronteira
 
-**HTTP.** Nove rotas, e a lista fecha aqui:
+**HTTP.** Dez rotas, e a lista fecha aqui:
 
 | Rota | Papel | Responde |
 | --- | --- | --- |
 | `POST /wallets` | interno | `201` |
 | `GET /wallets/{walletId}` | interno | `200` |
 | `GET /wallets/{walletId}/ledger` | interno | `200`, página com `nextCursor` quando há próxima |
-| `GET /wallets/{walletId}/reconciliation` | interno | `200`, `consistent` e o vocabulário de divergência |
+| `POST /wallets/{walletId}/reconciliation` | interno | `200`, `consistent`, `difference` e o vocabulário de divergência |
 | `POST /wagering/transactions` | provedor | `201` decidida · `202` esperando · `200` replay |
 | `GET /wagering/transactions/{transactionId}` | provedor, só a própria | `200` |
+| `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` | provedor, só a própria | `200` |
 | `GET /health/live` · `GET /health/ready` | público | `200` / `503` |
 | `GET /metrics` | público | Prometheus |
 
-Dinheiro entra e sai como `{"amount":"25.00","currency":"BRL"}` — string decimal de duas casas, nunca número JSON. Toda recusa sai como `application/problem+json` (RFC 9457), com `type` nomeando a classe do problema e `failureCode` numa extensão nomeando a regra. A chave de idempotência chega em `Idempotency-Key`.
+Dinheiro entra e sai como `{"amount":"25.00","currency":"BRL"}` — string decimal de duas casas, nunca número JSON. Os nomes são os do enunciado: a submissão e as duas consultas respondem `transactionId`, `status` e `balance`, e só a submissão traz `idempotentReplay`, sempre; a reconciliação responde `calculatedBalance`, `difference` e `checkedEntries`. Toda recusa sai como `application/problem+json` (RFC 9457), com `type` nomeando a classe do problema e `failureCode` numa extensão nomeando a regra; a rejeição que gravou linha leva também `transactionId`, e é a única divergência deliberada do enunciado ([ADR 0029](adr/0029-contrato-http-segue-o-enunciado.md)). A chave de idempotência chega em `Idempotency-Key`.
 
-**Fila.** O mesmo negócio chega em `data`, com a chave em `data.idempotencyKey`; `MessageGroupId` é a carteira em minúsculas e `MessageDeduplicationId` é o `messageId` do envelope. HTTP e fila produzem o mesmo hash do corpo de negócio.
+**Fila.** O mesmo negócio chega em `data`, com a chave em `data.idempotencyKey`; `MessageGroupId` é a carteira em minúsculas e `MessageDeduplicationId` é o `messageId` do envelope. HTTP e fila produzem o mesmo hash do corpo de negócio. O envelope do enunciado é aceito como está escrito: `type` e `occurredAt` são ignorados e ficam fora do hash.
 
-**Eventos.** Quatro, e só estes: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`, `WalletBalanceChanged`. O envelope leva `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` quando houver, `occurredAt` em UTC e `data`, com `version` 1. Republicação reutiliza o `eventId`, e o payload não muda.
+**Eventos.** Quatro, e só estes: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`, `WalletBalanceChanged`. O envelope leva `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` quando houver — a mensagem que causou o commit ([ADR 0030](adr/0030-causation-id-e-a-mensagem-que-causou-o-commit.md)) —, `occurredAt` em UTC e `data`, com `version` 1. Republicação reutiliza o `eventId`, e o payload não muda.
 
 ## Configuração
 
