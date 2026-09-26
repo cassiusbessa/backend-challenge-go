@@ -471,6 +471,31 @@ groups:
 	}
 }
 
+// The Prometheus reads the name as a YAML scalar, so a name in quotes is the
+// same name without them, and a comment after it is not part of it. Reading
+// the quotes into the name would report a loaded rule as missing.
+func TestDeclaredAlerts_readsTheNameAsTheScalarThePrometheusReads(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		line string
+	}{
+		{name: "plain", line: "  - alert: OutboxOldestPendingTooOld"},
+		{name: "double quoted", line: `  - alert: "OutboxOldestPendingTooOld"`},
+		{name: "single quoted", line: "  - alert: 'OutboxOldestPendingTooOld'"},
+		{name: "followed by a comment", line: "  - alert: OutboxOldestPendingTooOld # the lease absorbs 30s"},
+		{name: "quoted and followed by a comment", line: `  - alert: "OutboxOldestPendingTooOld"  # quoted`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := declaredAlerts("groups:\n  - name: settlement\n    rules:\n" + tc.line + "\n")
+			if len(got) != 1 || got[0] != "OutboxOldestPendingTooOld" {
+				t.Errorf("alerts of %q = %q, want the name alone", tc.line, got)
+			}
+		})
+	}
+}
+
 func TestMissingRules_namesOnlyWhatThePrometheusDidNotLoad(t *testing.T) {
 	t.Parallel()
 	declared := []string{"ReconciliationDivergenceFound", "OutboxOldestPendingTooOld"}

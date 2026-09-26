@@ -231,9 +231,9 @@ func declaredNames(resourceType, source string) []string {
 
 // alertLine matches the name of one alert rule in the versioned file. The file
 // is YAML and this reads it with the standard library alone, which the rest of
-// the verifier already commits to: an `alert:` key is one rule, and the name
-// is the rest of the line.
-var alertLine = regexp.MustCompile(`(?m)^\s*-\s*alert:\s*(\S+)\s*$`)
+// the verifier already commits to: an `alert:` key is one rule, and the name is
+// the scalar after it, plain or in either quote, before an optional comment.
+var alertLine = regexp.MustCompile(`(?m)^[ \t]*-[ \t]*alert:[ \t]*(?:"([^"]+)"|'([^']+)'|([^\s"'#]+))[ \t]*(?:#.*)?$`)
 
 // declaredAlerts reads the name of every alert rule the versioned file
 // declares, in the order of the file, so the expected set stays in the file
@@ -241,7 +241,9 @@ var alertLine = regexp.MustCompile(`(?m)^\s*-\s*alert:\s*(\S+)\s*$`)
 func declaredAlerts(source string) []string {
 	var out []string
 	for _, found := range alertLine.FindAllStringSubmatch(source, -1) {
-		out = append(out, found[1])
+		// Exactly one of the three forms matched, and the other two groups are
+		// empty: the name never keeps the quotes the Prometheus drops.
+		out = append(out, found[1]+found[2]+found[3])
 	}
 	return out
 }
