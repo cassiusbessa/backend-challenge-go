@@ -416,8 +416,9 @@ func routes(parts wiring) http.Handler {
 		// which checks the provider of the body against it.
 		SubmitWager:     parts.Guard.Only(authz.Provider, wagerapi.Submit(parts.Submitter, parts.WagerReporter)),
 		ReadTransaction: parts.Guard.Only(authz.Provider, wagerapi.Read(parts.WagerReader, parts.WagerReporter)),
-		// The provider in the URL is checked against the client of the token by the
-		// border, the same way the provider of a body is.
+		// The provider in the URL authorizes nothing either, but a mismatch answers
+		// the 404 of an identifier nobody sent, not the 403 of a body: a read must
+		// not tell that a record of somebody else exists.
 		ReadExternalTransaction: parts.Guard.Only(authz.Provider, wagerapi.ReadByExternal(parts.WagerReader, parts.WagerReporter)),
 		Logger:                  parts.Pipeline.Logger,
 		Tracer:                  parts.Pipeline.Tracer,
