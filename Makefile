@@ -35,6 +35,17 @@ REPLICAS_REFUSED = echo "REPLICAS must be an integer of at least 1, got '$(REPLI
 CHECK_REPLICAS = case '$(REPLICAS)' in ''|*[!0-9]*) $(REPLICAS_REFUSED);; esac; \
 	if [ '$(REPLICAS)' -lt 1 ]; then $(REPLICAS_REFUSED); fi
 
+# A carga. `TARGET` escolhe as réplicas: as do Compose, atrás do balanceador em
+# `localhost:8090`, ou as do cluster, no NodePort em `localhost:8091`. O número de
+# réplicas é o mesmo `REPLICAS` da subida, e o veredito exige chegadas decididas
+# em cada uma. Sem `LOAD_KILL`, nenhuma réplica morre; com `graceful` ou `forced`,
+# uma morre no meio da janela.
+TARGET ?= compose
+LOAD_DURATION ?= 60s
+LOAD_CONCURRENCY ?= 32
+LOAD_WALLETS ?= 100
+LOAD_KILL ?=
+
 # O cluster das réplicas. O Kind roda pela versão fixada aqui, sem instalação no
 # host; `KIND=kind` usa um binário instalado. O contexto vai explícito em toda
 # chamada, para o `kubectl` nunca agir sobre o cluster que o operador deixou
@@ -74,7 +85,7 @@ WRITE_PROBE := BEGIN; SET ROLE wager_app; \
 	ROLLBACK
 
 .DEFAULT_GOAL := help
-.PHONY: help up down cluster-up cluster-down provision migrate test test-journey scenarios cover-journey mutation verify migrate-reversibility rules-test
+.PHONY: help up down cluster-up cluster-down load provision migrate test test-journey scenarios cover-journey mutation verify migrate-reversibility rules-test
 
 help: ## lista os alvos
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -e 's/:.*## /|/' | awk -F'|' '{printf "%-24s %s\n", $$1, $$2}'
@@ -139,6 +150,20 @@ cluster-up: ## sobe REPLICAS réplicas num cluster Kind sobre os serviços do Co
 	$(KUBECTL) apply -f deploy/k8s/metrics-agent.yaml
 	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/metrics-agent --timeout=120s
 
+# A subida é a do alvo: `make up` devolve com `--scale` as réplicas do Compose
+# que uma execução anterior parou, antes de a carga começar. O relatório vai para
+# `.quality/load/report.json`, e o código de saída é o veredito.
+load: ## carga de LOAD_DURATION sobre REPLICAS réplicas do TARGET (compose ou cluster), com veredito de consistência
+	@$(CHECK_REPLICAS)
+	@case '$(TARGET)' in \
+		compose) $(MAKE) --no-print-directory up;; \
+		cluster) $(MAKE) --no-print-directory cluster-up;; \
+		*) echo "TARGET must be compose or cluster, got '$(TARGET)'" >&2; exit 2;; \
+	esac
+	go run -C scripts/loadtest . -root "$$PWD" -target '$(TARGET)' -replicas '$(REPLICAS)' \
+		-duration '$(LOAD_DURATION)' -concurrency '$(LOAD_CONCURRENCY)' -wallets '$(LOAD_WALLETS)' -kill '$(LOAD_KILL)' \
+		-context 'kind-$(CLUSTER)' -namespace '$(NAMESPACE)'
+
 # O caminho de volta ao Compose. Um `docker compose up` à mão com o cluster de pé
 # devolveria as réplicas do Compose em silêncio, disputando a outbox e a fila com
 # os pods.
@@ -159,12 +184,13 @@ migrate: ## aplica o schema nos dois bancos, cada um nomeado no comando
 	$(MIGRATE) "$(SUITE_URL)" up
 
 # Os módulos de `scripts/` entram por nome: o `./...` do módulo raiz para na
-# fronteira de módulo, e sem estas duas linhas os testes do verificador não
-# rodam em lugar nenhum. O `-C` tem de ser o primeiro flag.
+# fronteira de módulo, e sem estas linhas os testes deles não rodam em lugar
+# nenhum. O `-C` tem de ser o primeiro flag.
 test: ## a suíte de unidade, que não sobe Docker
 	go test -race -count=1 ./...
 	go test -C scripts/envcheck -race -count=1 ./...
 	go test -C scripts/testgates -race -count=1 ./...
+	go test -C scripts/loadtest -race -count=1 ./...
 
 test-journey: ## a suíte de jornada: em série, e contra o banco dela
 	DATABASE_URL="$(SUITE_HOST_URL)" go test -race -count=1 -p 1 -tags=integration ./...

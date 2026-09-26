@@ -58,6 +58,12 @@ jobs:
           version: v2.14.0
           working-directory: scripts/testgates
 
+      - name: lint the nested module of the load test
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.14.0
+          working-directory: scripts/loadtest
+
       - name: unit tests
         run: go test -race -count=1 -coverprofile=cover.out ./...
 
@@ -68,6 +74,7 @@ jobs:
         run: |
           go test -C scripts/envcheck -race -count=1 ./...
           go test -C scripts/testgates -race -count=1 ./...
+          go test -C scripts/loadtest -race -count=1 ./...
 
       - name: coverage floors
         run: go run -C scripts/testgates . -root "$PWD" -cover "$PWD/cover.out"
@@ -107,3 +114,19 @@ jobs:
           AWS_SECRET_ACCESS_KEY: test
           AWS_REGION: us-east-1
         run: go test -race -count=1 -p 1 -tags=integration ./...
+
+      # The load runs against the Compose replicas, the path any evaluator has,
+      # with one of them killed by force halfway. The verdict is the exit code:
+      # a wallet that does not close, a version conflict or an outbox that does
+      # not drain fails the step.
+      - name: load the Compose replicas
+        run: make load LOAD_DURATION=30s LOAD_KILL=forced
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.37.1
+
+      # The same load against the replicas of the Kind cluster, which proves the
+      # cluster without repeating the forced kill.
+      - name: load the cluster replicas
+        run: make load TARGET=cluster LOAD_DURATION=20s
