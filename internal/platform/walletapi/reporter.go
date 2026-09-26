@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
@@ -33,6 +34,29 @@ func (rep *Reporter) Opened(r *http.Request, id identity.WalletID) {
 	trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("wallet.id", id.String()))
 	rep.log.LogAttrs(r.Context(), slog.LevelInfo, "wallet opened",
 		slog.String("walletId", id.String()),
+	)
+}
+
+// Diverged records a reconciliation whose verdict found the ledger and the
+// balance in disagreement, and records nothing for a consistent one.
+//
+// go-observability asks every divergence to log, and this is the line: the
+// wallet and the tokens, never a balance. The span is not marked, because a
+// divergence is a result the read reports and not a failure of the service —
+// marking it would count what the next change measures as a series of its own
+// inside the error rate of the dashboard.
+func (rep *Reporter) Diverged(r *http.Request, report reconcilewallet.Report) {
+	if report.Consistent {
+		return
+	}
+	tokens := tokensOf(report.Divergences)
+	trace.SpanFromContext(r.Context()).SetAttributes(
+		attribute.String("wallet.id", report.WalletID.String()),
+		attribute.StringSlice("wallet.reconciliation.divergences", tokens),
+	)
+	rep.log.LogAttrs(r.Context(), slog.LevelWarn, "wallet reconciliation diverged",
+		slog.String("walletId", report.WalletID.String()),
+		slog.Any("divergences", tokens),
 	)
 }
 

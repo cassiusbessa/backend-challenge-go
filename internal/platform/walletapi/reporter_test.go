@@ -89,6 +89,61 @@ func TestOpened_logsTheWalletIdentityAlone(t *testing.T) {
 	}
 }
 
+// go-observability asks every divergence to log, and the line carries the wallet
+// and the tokens: never the stored balance, never the rebuilt one.
+func TestDiverged_logsTheWalletAndTheTokensWithoutABalance(t *testing.T) {
+	t.Parallel()
+	var written bytes.Buffer
+	reporterWriting(&written).Diverged(reconciliationRequestOf(walletText), divergentReport(t))
+	line := written.String()
+	if !strings.Contains(line, `"walletId":"`+walletText+`"`) {
+		t.Fatalf("log line = %s, want the wallet identity", line)
+	}
+	if !strings.Contains(line, "BALANCE_MISMATCH") || !strings.Contains(line, "CHAIN_BREAK") {
+		t.Fatalf("log line = %s, want the two tokens of the divergence", line)
+	}
+	for _, banned := range []string{"2000.00", "1025.00", "storedBalance", "ledgerBalance"} {
+		if strings.Contains(line, banned) {
+			t.Fatalf("log line = %s, want it without %q", line, banned)
+		}
+	}
+}
+
+// A consistent wallet leaves no line beyond the access log: there is nothing to
+// name, and a line per read would drown the ones that matter.
+func TestDiverged_leavesNoLineForAConsistentWallet(t *testing.T) {
+	t.Parallel()
+	var written bytes.Buffer
+	reporterWriting(&written).Diverged(reconciliationRequestOf(walletText), consistentReport(t))
+	if written.Len() != 0 {
+		t.Fatalf("log line = %s, want none for a consistent wallet", written.String())
+	}
+}
+
+// A divergence is a result the read reports and not a failure of the service:
+// the span carries the tokens and stays ok, so the error rate of the dashboard
+// does not count what the next change measures as a series of its own.
+func TestDiverged_leavesTheSpanOk(t *testing.T) {
+	t.Parallel()
+	spans := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+	t.Cleanup(func() {
+		if closed := provider.Shutdown(context.Background()); closed != nil {
+			t.Fatalf("shutdown tracer = %v, want nil", closed)
+		}
+	})
+	ctx, span := provider.Tracer("test").Start(context.Background(), "answer")
+	quietReporter().Diverged(reconciliationRequestOf(walletText).WithContext(ctx), divergentReport(t))
+	span.End()
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("ended spans = %d, want exactly 1", len(ended))
+	}
+	if ended[0].Status().Code == codes.Error {
+		t.Fatalf("span marked as an error by a divergence, want it left ok")
+	}
+}
+
 // The class decides the span and the stack, and not the number: a retryable answer
 // shares its number with an outage, so reading the number would mark the span of a
 // request that only has to be sent again.

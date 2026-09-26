@@ -55,6 +55,11 @@ var allowedKeys = map[string]struct{}{
 	// identity is what the broker observed, not what the sender presented.
 	"reason": {},
 	"sender": {},
+	// The tokens of a reconciliation that found the ledger and the balance in
+	// disagreement, from the closed vocabulary of the use case. The line names
+	// the wallet and the tokens and never a balance, which is what makes it
+	// safe to let through.
+	"divergences": {},
 	// The stack of an infrastructure failure, captured once. A business
 	// rejection never carries one.
 	"stack": {},

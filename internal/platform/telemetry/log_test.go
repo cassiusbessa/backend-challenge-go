@@ -66,6 +66,7 @@ func TestAllowed_answersOnlyForTheListedKeys(t *testing.T) {
 	cases := map[string]bool{
 		"walletId":      true,
 		"failureCode":   true,
+		"divergences":   true,
 		"stack":         true,
 		"error":         true,
 		"authorization": false,
