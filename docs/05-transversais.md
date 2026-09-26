@@ -103,7 +103,9 @@ Na fila não há token: a identidade vem do broker junto da mensagem, e a recusa
 
 O Uber Fx compõe o processo, e `internal/platform/app` é o único pacote que o conhece. A configuração é lida e validada antes de qualquer porta abrir.
 
-Subida, nesta ordem: validação da configuração → telemetria → pool do PostgreSQL → sonda da fila → sonda do tópico → fila de entrada → worker de referência → relay da outbox → consumidor da fila → servidor HTTP. Nenhum componente de fundo segura a subida com fila vazia.
+A telemetria é a exceção e sobe **antes** de todo o resto, no construtor dela, porque o Fx roda todo construtor antes de todo hook: um start registrado como hook entregaria aos componentes um provider que ele mesmo substituiria depois ([ADR 0021](adr/0021-telemetria-iniciada-no-construtor-antes-dos-hooks.md)).
+
+Subida, nesta ordem: validação da configuração → pool do PostgreSQL → sonda da fila → sonda do tópico → fila de entrada → worker de referência → relay da outbox → consumidor da fila → servidor HTTP. Nenhum componente de fundo segura a subida com fila vazia.
 
 Descida, na ordem inversa, e cada parada com uma **fatia** de `SHUTDOWN_TIMEOUT` (20 s por padrão). O Fx entrega a todos os hooks o mesmo contexto e retorna quando ele vence, pulando o que não alcançou — uma parada que consome o orçamento inteiro leva as de trás consigo. As fatias moram ao lado do registro, e a subida é recusada se o orçamento não paga a soma delas ([ADR 0012](adr/0012-flush-de-telemetria-fora-do-lifecycle.md)).
 
@@ -115,7 +117,7 @@ No `SIGTERM`:
 | Worker de referência | para de reivindicar espera nova | não corta a decisão em curso |
 | Relay | para de reivindicar linha; conclui o envio em curso dentro do lease | o sinal não cancela um envio já reivindicado — quem corta é o prazo do processo |
 | Consumidor | para de buscar; conclui a decisão em curso no prazo dela | a mensagem cortada pelo prazo volta com visibilidade zero |
-| Telemetria | descarrega o buffer **depois** do ciclo de vida, com 3 s próprios | não falha o processo se não conseguir |
+| Telemetria | descarrega o buffer **depois** do ciclo de vida, com 3 s próprios; uma subida que falhou também descarrega | não falha o processo se não conseguir |
 
 ## Dinheiro
 
