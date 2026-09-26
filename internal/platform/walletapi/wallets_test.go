@@ -12,11 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
@@ -194,7 +197,7 @@ func readRequestOf(walletID string) *http.Request {
 }
 
 func quietReporter() *Reporter {
-	return NewReporter(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	return NewReporter(slog.New(slog.NewJSONHandler(io.Discard, nil)), metrics.New(prometheus.NewRegistry()))
 }
 
 // assertWalletBody checks the contract both routes answer: the identities, the

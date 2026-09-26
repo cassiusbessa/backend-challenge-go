@@ -262,8 +262,8 @@ func newGuard(cfg config.Config, clients *authz.Clients) *authz.Guard {
 	return authz.NewGuard(authz.NewVerifier(cfg), clients)
 }
 
-func newReporter(pipe *telemetry.Pipeline) *walletapi.Reporter {
-	return walletapi.NewReporter(pipe.Logger)
+func newReporter(pipe *telemetry.Pipeline, series *metrics.Settlement) *walletapi.Reporter {
+	return walletapi.NewReporter(pipe.Logger, series)
 }
 
 func newWagerReporter(pipe *telemetry.Pipeline, series *metrics.Settlement) *wagerapi.Reporter {

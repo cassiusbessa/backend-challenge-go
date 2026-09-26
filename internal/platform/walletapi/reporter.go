@@ -12,20 +12,23 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
-// Reporter is the only place in this package that logs and marks the span.
+// Reporter is the only place in this package that logs, marks the span and
+// moves a counter.
 //
-// Whoever decides the outcome logs it, and logs it once: a handler that both
-// logged and returned would turn one refusal into several lines, and the search
-// would then count it several times.
+// Whoever decides the outcome reports it, and reports it once: a handler that
+// both logged and returned would turn one refusal into several lines, and the
+// search would then count it several times.
 type Reporter struct {
-	log *slog.Logger
+	log     *slog.Logger
+	metrics *metrics.Settlement
 }
 
-func NewReporter(log *slog.Logger) *Reporter {
-	return &Reporter{log: log}
+func NewReporter(log *slog.Logger, series *metrics.Settlement) *Reporter {
+	return &Reporter{log: log, metrics: series}
 }
 
 // Opened records the success. A successful line carries identifiers only — no
@@ -40,14 +43,20 @@ func (rep *Reporter) Opened(r *http.Request, id identity.WalletID) {
 // Diverged records a reconciliation whose verdict found the ledger and the
 // balance in disagreement, and records nothing for a consistent one.
 //
-// go-observability asks every divergence to log, and this is the line: the
-// wallet and the tokens, never a balance. The span is not marked, because a
-// divergence is a result the read reports and not a failure of the service —
-// marking it would count what the next change measures as a series of its own
-// inside the error rate of the dashboard.
+// Every verdict counts as a wallet checked, and every token found counts as a
+// divergence, so the two series say how many were found and not how many
+// exist now. go-observability asks every divergence to log, and this is the
+// line: the wallet and the tokens, never a balance. The span is not marked,
+// because a divergence is a result the read reports and not a failure of the
+// service — marking it would count the divergence inside the error rate of the
+// dashboard, where it has a series of its own.
 func (rep *Reporter) Diverged(r *http.Request, report reconcilewallet.Report) {
+	rep.metrics.Checked(metrics.OriginHTTP)
 	if report.Consistent {
 		return
+	}
+	for _, token := range report.Divergences {
+		rep.metrics.Diverged(metrics.OriginHTTP, token)
 	}
 	tokens := tokensOf(report.Divergences)
 	trace.SpanFromContext(r.Context()).SetAttributes(

@@ -11,13 +11,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
@@ -228,7 +232,52 @@ func TestStackOf_keepsTheStackTheChainAlreadyCarries(t *testing.T) {
 // reporterWriting logs through the same allow list the process uses, so what the
 // test reads is what Loki would receive.
 func reporterWriting(sink *bytes.Buffer) *Reporter {
-	return NewReporter(slog.New(telemetry.Allow(slog.NewJSONHandler(sink, nil))))
+	return NewReporter(slog.New(telemetry.Allow(slog.NewJSONHandler(sink, nil))), metrics.New(prometheus.NewRegistry()))
+}
+
+// reporterCounting builds a reporter over a registry of its own, so a case
+// reads the series it moved and nothing another case moved.
+func reporterCounting() (*Reporter, *metrics.Settlement) {
+	series := metrics.New(prometheus.NewRegistry())
+	return NewReporter(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), series), series
+}
+
+// A consistent wallet counts as checked and as nothing else: the series of
+// divergences is what was found, and nothing was.
+func TestDiverged_countsAConsistentVerdictAsCheckedOnly(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	reporter.Diverged(reconciliationRequestOf(walletText), consistentReport(t))
+	if got := testutil.ToFloat64(series.WalletsChecked.WithLabelValues("http")); got != 1 {
+		t.Fatalf("wallets_checked{http} = %v, want 1", got)
+	}
+	for _, token := range reconcilewallet.Vocabulary() {
+		if got := testutil.ToFloat64(series.Divergences.WithLabelValues("http", token.String())); got != 0 {
+			t.Fatalf("divergences{http,%s} after a consistent verdict = %v, want 0", token, got)
+		}
+	}
+}
+
+// One verdict with two tokens moves two series, one per token, and counts as
+// one wallet checked.
+func TestDiverged_countsEveryTokenOfADivergentVerdict(t *testing.T) {
+	t.Parallel()
+	reporter, series := reporterCounting()
+	reporter.Diverged(reconciliationRequestOf(walletText), divergentReport(t))
+	if got := testutil.ToFloat64(series.WalletsChecked.WithLabelValues("http")); got != 1 {
+		t.Fatalf("wallets_checked{http} = %v, want 1", got)
+	}
+	for _, token := range []string{"BALANCE_MISMATCH", "CHAIN_BREAK"} {
+		if got := testutil.ToFloat64(series.Divergences.WithLabelValues("http", token)); got != 1 {
+			t.Fatalf("divergences{http,%s} = %v, want 1", token, got)
+		}
+	}
+	if got := testutil.ToFloat64(series.Divergences.WithLabelValues("http", "SEQUENCE_GAP")); got != 0 {
+		t.Fatalf("divergences{http,SEQUENCE_GAP} = %v, want 0: the verdict did not name it", got)
+	}
+	if got := testutil.ToFloat64(series.Divergences.WithLabelValues("watch", "BALANCE_MISMATCH")); got != 0 {
+		t.Fatalf("divergences{watch,BALANCE_MISMATCH} = %v, want 0: another origin", got)
+	}
 }
 
 // serveWith drives the route to a refusal of the contract — the duplicate wallet
