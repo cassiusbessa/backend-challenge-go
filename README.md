@@ -22,19 +22,22 @@ make provision   # o apply do Terraform contra o LocalStack
 make migrate     # o schema nos dois bancos, cada um nomeado no comando
 make test        # a suíte de unidade
 make test-journey  # a suíte de jornada, em série e no banco dela
+make rules-test  # o teste de unidade das duas regras de alerta, com o promtool da imagem
 make verify      # o ambiente está no estado que os arquivos versionados declaram?
 make down        # derruba a stack e descarta os volumes dela
 ```
 
 `make verify` é o único que não aparece em outra seção. Ele não altera nada e
-responde por quatro coisas: os dois bancos existem, estão na mesma versão de
+responde por seis coisas: os dois bancos existem, estão na mesma versão de
 schema e nessa versão que o `*.up.sql` mais alto de `deploy/migrations` declara —
 aplicada a nenhum dos dois, uma migration os deixaria concordando e atrasados; o
 realm emite token pelo tempo que `deploy/keycloak/junglegaming-realm.json`
 declara; as filas e o tópico que o Terraform descreve existem no broker; e a
 imagem em execução não é mais antiga que o último commit que mudou o que ela
 contém — os caminhos que o `Dockerfile` copia, menos os `_test.go`, que só o
-estágio de build enxerga. Ele sai
+estágio de build enxerga; o Grafana tem o painel "Liquidação" provisionado; e o
+Prometheus carregou cada regra que `deploy/prometheus/rules/settlement.yml`
+declara, pelo nome. Ele sai
 diferente de zero nomeando o que divergiu, e funciona quando a aplicação não sobe
 — que é quando ele é chamado.
 
@@ -155,6 +158,8 @@ curl -s "http://localhost:8090/wallets/<id da carteira>/reconciliation" \
 
 Os dois saldos saem da mesma sentença SQL, então um commit entre as leituras não inventa desvio, e a leitura não espera uma aposta que esteja com a carteira travada. `consistent` é verdadeiro quando o ledger fecha com o saldo; senão `divergences` lista o que desviou, de um vocabulário fechado: `BALANCE_MISMATCH` quando a soma difere do saldo gravado, `SEQUENCE_GAP` quando a contagem de lançamentos difere da última sequência, e `CHAIN_BREAK` quando um lançamento não começa onde o anterior terminou — este com `firstBreakSequence` apontando o primeiro. Uma carteira consistente omite os dois campos. A rota informa e não corrige; toda divergência deixa uma linha de log com o `walletId` e os tokens, sem saldo.
 
+Ninguém precisa chamar a rota para uma divergência aparecer. O observador de divergência, o quarto componente de fundo do binário, varre todas as carteiras em páginas de `RECONCILIATION_BATCH` a cada `RECONCILIATION_INTERVAL`, e produz o mesmo veredito pela mesma sentença. Ele só lê: não toma lock, não abre transação e não corrige nada, então uma carteira divergente reaparece a cada passagem até alguém corrigir o banco. A divergência que ele encontra deixa a mesma linha de log e move `wager_reconciliation_divergences_total` com a origem `watch`, e é essa série que o alerta observa.
+
 ## Rotas de aposta
 
 `POST /wagering/transactions` liquida a operação do provedor e `GET /wagering/transactions/{transactionId}` devolve o resultado gravado. As duas exigem token de provedor: o cliente interno recebe 403 nelas, e o provedor continua recebendo 403 nas rotas de carteira.
@@ -253,9 +258,9 @@ O LocalStack community não persiste: qualquer reinício do container esvazia fi
 
 O ready do processo só fica verde depois desse apply: a fila `wager-transactions.fifo` precisa existir, e sem ela `GET /health/ready` responde 503 enquanto `GET /health/live` continua 200. O tópico não entra no ready, mas precisa existir para o relay publicar: sem ele a linha da outbox fica na fila e o log do processo mostra a recusa. O `pprof` escuta em `127.0.0.1:6060` dentro do container e o Compose não publica essa porta.
 
-No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` os três componentes de fundo param de reivindicar ou buscar. O worker de referência conclui ou desfaz a espera que já reivindicou dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica. O relay conclui o envio em curso dentro do lease que já segura — o sinal corta a varredura, não o envio que já tem reivindicação, e quem corta o envio é o prazo do processo. O que ele não confirmar continua publicável, com o mesmo `eventId`, e outra réplica reivindica depois do prazo. O consumidor da fila para de buscar mensagem nova e conclui a que tem em mãos dentro do prazo; cortada por ele, a mensagem volta à fila com visibilidade zero, para ser entregue de novo sem esperar a invisibilidade que ninguém mais vai servir.
+No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` os quatro componentes de fundo param de reivindicar, buscar ou ler. O worker de referência conclui ou desfaz a espera que já reivindicou dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica. O relay conclui o envio em curso dentro do lease que já segura — o sinal corta a varredura, não o envio que já tem reivindicação, e quem corta o envio é o prazo do processo. O que ele não confirmar continua publicável, com o mesmo `eventId`, e outra réplica reivindica depois do prazo. O consumidor da fila para de buscar mensagem nova e conclui a que tem em mãos dentro do prazo; cortada por ele, a mensagem volta à fila com visibilidade zero, para ser entregue de novo sem esperar a invisibilidade que ninguém mais vai servir. O observador de divergência não começa turno novo, e a leitura em curso é cancelada: nada do que ele faz é gravável, então não há o que concluir.
 
-Sete variáveis configuram o trabalho de fundo, e as sete têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila de esperas, 1 segundo; `OUTBOX_INTERVAL` é de quanto em quanto tempo o relay varre a outbox, 1 segundo; `OUTBOX_LEASE` é quanto uma reivindicação segura a linha, 30 segundos; `QUEUE_POLL` é a espera do long poll, 20 segundos; `QUEUE_VISIBILITY` é a invisibilidade da mensagem, 30 segundos; `QUEUE_TIMEOUT` é o prazo de uma decisão, 8 segundos. Qualquer uma delas escrita com algo que não seja uma duração positiva impede a subida em vez de cair no padrão.
+Nove variáveis configuram o trabalho de fundo, e as nove têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila de esperas, 1 segundo; `OUTBOX_INTERVAL` é de quanto em quanto tempo o relay varre a outbox, 1 segundo; `OUTBOX_LEASE` é quanto uma reivindicação segura a linha, 30 segundos; `QUEUE_POLL` é a espera do long poll, 20 segundos; `QUEUE_VISIBILITY` é a invisibilidade da mensagem, 30 segundos; `QUEUE_TIMEOUT` é o prazo de uma decisão, 8 segundos; `RECONCILIATION_INTERVAL` é de quanto em quanto tempo o observador lê uma página de carteiras, 5 segundos; `RECONCILIATION_BATCH` é quantas carteiras cabem numa página, 50. Qualquer uma das oito durações escrita com algo que não seja uma duração positiva, ou um lote que não seja inteiro positivo, impede a subida em vez de cair no padrão. Os dois números do observador são ponto de partida: o custo de um turno é o lote vezes o ledger de cada carteira, e ainda não foi medido sob carga.
 
 As três últimas não são três números independentes: a invisibilidade tem de cobrir a espera do long poll somada ao prazo da decisão. Com invisibilidade menor que a espera, medido no broker local, a busca devolve resposta vazia **e consome a entrega** — a mensagem queima o orçamento de entregas sem nunca ter sido processada, sem erro e sem log. Os padrões são os da fila que o apply provisiona: 20 de espera sob 30 de invisibilidade, com o prazo da decisão abaixo dos 10 que sobram.
 
@@ -369,13 +374,26 @@ Troque `client_id` e `client_secret` por `provider-a` / `provider-a-local` ou `p
 
 ## Telemetria
 
-O coletor recebe OTLP, aplica batch e entrega trace ao Tempo, log ao Loki e métrica ao Prometheus. O Grafana só provisiona esses três datasources. Não há dashboard de negócio nem regra de alerta.
+O coletor recebe OTLP, aplica batch e entrega trace ao Tempo, log ao Loki e métrica ao Prometheus. O Grafana provisiona esses três datasources e o painel "Liquidação"; o Prometheus carrega as duas regras de alerta. Os dois são arquivos do repositório, lidos na subida.
+
+O painel está em `deploy/grafana/dashboards/liquidacao.json` e abre em `localhost:3000` com a senha de exemplo. No topo, as divergências de reconciliação dos últimos 15 minutos, vermelhas acima de zero; abaixo, cinco faixas na ordem: saúde e latência, com o p99 cujos pontos abrem o trace no Tempo; resultado financeiro, com desfechos, rejeições por `failureCode` e duplicatas; fila e referência pendente, com as duas profundidades, os retries e a idade da espera mais antiga; outbox, com pendentes, a idade do mais antigo, as linhas mortas e os retries; reconciliação, com carteiras conferidas e divergências por origem. O painel é provisionado: pela interface ele se explora, mas não se salva, porque o arquivo é a fonte.
+
+As regras estão em `deploy/prometheus/rules/settlement.yml`, e a página `localhost:9095/alerts` mostra o estado das duas:
+
+- `ReconciliationDivergenceFound` dispara quando `wager_reconciliation_divergences_total` subiu nos últimos 15 minutos, sem espera: a divergência é achado, não tendência.
+- `OutboxOldestPendingTooOld` dispara quando o evento pendente mais antigo passa de 30 s por mais de um minuto. O lease de um envio é de 30 s, e o minuto é o que deixa um envio lento legítimo passar sem alerta.
+
+Não há Alertmanager: o alerta aparece no Prometheus e no Grafana, e não há para onde notificar num ambiente local. As regras têm teste de unidade, que roda sem a stack com o `promtool` da mesma imagem do Prometheus:
+
+```bash
+make rules-test
+```
 
 O processo manda trace e log por OTLP. A série de processo não vai por esse caminho: ela sai pelo `/metrics`, que o Prometheus raspa em `wager:8090`, para heap e goroutines terem uma fonte só. O outro alvo, `otel-collector:8889`, publica o que chegar ao coletor por OTLP.
 
 A latência HTTP sai em OpenMetrics com exemplar de `trace_id`. O Prometheus sobe com `--enable-feature=exemplar-storage` e o datasource liga esse exemplar ao Tempo, então o ponto do gráfico abre o trace.
 
-`/health/live`, `/health/ready` e `/metrics` ficam fora do span e do log. São chamados de segundo em segundo pela sonda e pelo scrape, e afogariam o trace e o histograma que o dashboard vai usar.
+`/health/live`, `/health/ready` e `/metrics` ficam fora do span e do log. São chamados de segundo em segundo pela sonda e pelo scrape, e afogariam o trace e o histograma que o painel usa.
 
 ## Testes
 
@@ -417,4 +435,4 @@ A suíte pede IdP real: ela obtém token dos três clientes e, no caso do token 
 
 A suíte cai nos próprios defaults — banco, endpoint, coletor e credencial — quando eles não vêm do ambiente. O default de `DATABASE_URL` é o banco da suíte, e não o da aplicação: o comando acima o exporta por clareza, e quem esquecer continua caindo no banco certo. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_REGION` sobrescrevem a credencial para apontar em outro broker. Os três estão em `.env.example`. O código de produção não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
 
-Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 90% em `money`, `wallet`, `wager`, `ledger` e `identity`, 80% em `internal/app` e 70% em `internal/platform` — e o `.golangci.yml`.
+Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 90% em `money`, `wallet`, `wager`, `ledger` e `identity`, 80% em `internal/app` e 70% em `internal/platform` — e o `.golangci.yml`. Antes de qualquer Go ele confere que o painel é JSON válido e roda o teste das regras de alerta.

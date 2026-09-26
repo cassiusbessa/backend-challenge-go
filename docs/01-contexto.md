@@ -56,6 +56,7 @@ flowchart TB
         ref["Worker de referência<br/>fecha as esperas pelo prazo"]
         relay["Relay da outbox<br/>publica por carteira, sob lease"]
         cons["Consumidor da fila<br/>long poll · inbox · DLQ"]
+        watch["Observador de divergência<br/>varre as carteiras por página · só lê"]
         uc["Casos de uso<br/>openwallet · submitwager · resolvereference<br/>relayoutbox · receivewager<br/>readwallet · readwager · listledger · reconcilewallet"]
         dom["Domínio<br/>money · identity · wallet · ledger · wager · event"]
         pool["Pool pgx<br/>SET ROLE wager_app"]
@@ -70,6 +71,7 @@ flowchart TB
     ref --> uc
     relay --> uc
     cons --> uc
+    watch --> uc
     uc --> dom
     uc --> pool
     pool --> pg
@@ -79,7 +81,9 @@ flowchart TB
     api -. "JWKS" .-> kc
 ```
 
-Os três componentes de fundo são tipos separados, não três usos de um runner comum ([ADR 0011](adr/0011-tres-runners-de-fundo-separados.md)). Todos sobem no mesmo ciclo de vida do Fx, depois do pool e antes do listener, e descem na ordem inversa: a porta deixa de aceitar primeiro, e os três param de reivindicar ou buscar depois dela, cada um dentro da própria fatia do prazo ([05-transversais](05-transversais.md#ciclo-de-vida)).
+Os quatro componentes de fundo são tipos separados, não quatro usos de um runner comum ([ADR 0011](adr/0011-tres-runners-de-fundo-separados.md)). Todos sobem no mesmo ciclo de vida do Fx, depois do pool e antes do listener, e descem na ordem inversa: a porta deixa de aceitar primeiro, e os quatro param de reivindicar, buscar ou ler depois dela, cada um dentro da própria fatia do prazo ([05-transversais](05-transversais.md#ciclo-de-vida)).
+
+O observador de divergência é o único dos quatro que não escreve. Ele varre todas as carteiras em páginas, a partir de um cursor em memória, e entrega cada uma ao mesmo `reconcilewallet` que a rota chama: a divergência que ele existe para achar é a que nenhuma escrita da aplicação produziu, e por isso nenhum filtro por atualização a encontraria ([ADR 0024](adr/0024-observador-de-divergencia-por-cursor-em-memoria.md)).
 
 O binário não carrega migration. O SQL versionado é aplicado por um serviço do Compose que termina, ou por um Job do Kubernetes, antes das réplicas.
 
@@ -89,8 +93,8 @@ O binário não carrega migration. O SQL versionado é aplicado por um serviço 
 flowchart TB
     subgraph platform["<b>internal/platform</b> — adaptadores: implementam as portas e injetam"]
         direction LR
-        entrada["<b>Bordas de entrada</b><br/>httpapi · wagerapi · walletapi · authz<br/>wagerqueue · referenceworker · outboxrelay"]
-        saida["<b>Adaptadores de saída</b><br/>postgres · broker · telemetry<br/>mint · clock"]
+        entrada["<b>Bordas de entrada</b><br/>httpapi · wagerapi · walletapi · authz<br/>wagerqueue · referenceworker · outboxrelay · divergencewatch"]
+        saida["<b>Adaptadores de saída</b><br/>postgres · broker · telemetry · metrics<br/>mint · clock"]
         erro["<b>Contrato de erro</b><br/>problem · fault"]
         root["<b>Composition root</b><br/>app · config"]
     end
@@ -157,6 +161,7 @@ Tudo por variável de ambiente, lida e validada antes de qualquer porta abrir. A
 | Fila de entrada | `SQS_ENDPOINT` · `SQS_QUEUE_URL` · `SQS_DLQ_URL` · `QUEUE_SENDERS_PATH` · `QUEUE_POLL` · `QUEUE_VISIBILITY` · `QUEUE_TIMEOUT` |
 | Eventos | `SNS_ENDPOINT` · `SNS_TOPIC_ARN` · `OUTBOX_INTERVAL` · `OUTBOX_LEASE` |
 | Espera | `REFERENCE_TTL` · `REFERENCE_INTERVAL` |
+| Reconciliação | `RECONCILIATION_INTERVAL` · `RECONCILIATION_BATCH` |
 | Telemetria | `OTEL_EXPORTER_OTLP_ENDPOINT` · `OTEL_SAMPLE_RATIO` |
 
 Os três prazos da fila não são três números: `QUEUE_VISIBILITY` tem de cobrir `QUEUE_POLL` mais `QUEUE_TIMEOUT`, e a subida recusa o contrário ([ADR 0017](adr/0017-invisibilidade-cobre-long-poll-e-processamento.md)). Os mapas de clientes e de remetentes são arquivos versionados, apontados por caminho.

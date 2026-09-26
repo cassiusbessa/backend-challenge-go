@@ -137,6 +137,8 @@ internal/platform/         adaptadores — a única camada que conhece pgx, HTTP
   wagerqueue/              o consumidor da fila: long poll, decisão por mensagem, DLQ
   outboxrelay/             o ticker do relay
   referenceworker/         o ticker do worker de referência
+  divergencewatch/         o observador de divergência: varre as carteiras por página e só lê
+  metrics/                 o registro único das séries de negócio, com rótulos de conjunto fechado
   telemetry/               OTLP, log JSON com lista branca de campos, Prometheus
   probe/                   as sondas de readiness
   mint/ clock/             UUIDv7 e relógio em UTC, injetados para o domínio nunca os chamar
@@ -149,11 +151,13 @@ deploy/
   terraform/localstack/    filas, tópico e papel IAM do remetente
   keycloak/                o realm de desenvolvimento
   local/                   os mapas versionados: clientes e remetentes
-  otel/ tempo/ loki/ prometheus/ grafana/   a stack de observabilidade do Compose
+  otel/ tempo/ loki/ prometheus/ grafana/   a stack de observabilidade do Compose, com o painel
+                           "Liquidação" e as duas regras de alerta
 
 scripts/
   testgates/               os pisos de cobertura que o CI aplica, por pacote
-  envcheck/                confere o ambiente local contra as migrations em disco
+  envcheck/                confere o ambiente local contra os arquivos versionados: migrations, realm,
+                           broker, imagem, painel e regras de alerta
 
 docs/                      esta documentação; docs/adr/ é o registro de decisões
 compose.yaml  Dockerfile  Makefile

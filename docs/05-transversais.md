@@ -95,7 +95,26 @@ Na fila não há token: a identidade vem do broker junto da mensagem, e a recusa
 
 **Trace** por OTLP, com propagação W3C no header HTTP e em atributo da mensagem. Um span da entrada, um do caso de uso, um da unit of work fechado no commit; sem span por query. O nome do span é o padrão da rota, nunca o path com identidade. `REJECTED` deixa o span ok; erro de span é infraestrutura, conflito de versão ou DLQ. A outbox grava `trace_id` e `span_id` do commit, e o relay abre span próprio ligado a eles por *link*, não por paternidade — aquele span fechou no commit, e depois de um restart nem existe.
 
-**Métricas** em `/metrics`, Prometheus, com exemplar de `trace_id` na latência para o p99 abrir o trace. Sem `walletId` nem `providerId` em rótulo. Resultado por status e origem, rejeição por `failureCode`, duplicata, retry, DLQ por razão, profundidade da DLQ lida uma vez por turno, conflito de versão, atraso e quantidade da outbox, idade da espera mais antiga, saturação do pool, heap e goroutines. `pprof` escuta em porta própria.
+**Métricas** em `/metrics`, Prometheus, com exemplar de `trace_id` na latência para o p99 abrir o trace. `pprof` escuta em porta própria. Todo rótulo vem de um conjunto que o código fixa — origem, componente, tipo, status, token do catálogo, razão, estado do pool — e nenhum carrega `walletId`, `providerId`, `transactionId`, `messageId` ou `eventId`. As séries de negócio são registradas num lugar só, e cada uma é movida por quem já decide o desfecho que ela conta: o `Reporter` de cada borda, o worker de referência, o relay e o observador.
+
+| Série | Tipo | Rótulos | Quem move |
+| --- | --- | --- | --- |
+| `wager_settlements_total` | contador | `origin`, `kind`, `status` | cada desfecho gravado, pela borda HTTP, pela fila ou pelo worker que fecha a espera; replay não conta |
+| `wager_rejections_total` | contador | `origin`, `failure_code` | cada linha `REJECTED`, pelo token |
+| `wager_duplicates_total` | contador | `origin`, `reason` | `replay`, `key_conflict`, `external_duplicate` e `redelivery` |
+| `wager_retries_total` | contador | `component`, `reason` | o `503` que pede nova tentativa, a mensagem devolvida com backoff, a linha da outbox de volta ao backoff, a espera reprogramada; o conflito de versão é a razão `version_conflict` |
+| `wager_ingress_messages_abandoned_total` | contador | `reason` | cada mensagem copiada para a DLQ |
+| `wager_ingress_queue_depth` · `wager_ingress_dead_letter_depth` | gauge | — | o consumidor, uma vez por turno, as duas juntas |
+| `wager_outbox_pending_events` · `wager_outbox_oldest_pending_age_seconds` | gauge | — | o relay, uma vez por turno, pelo relógio do banco |
+| `wager_outbox_dead_events_total` | contador | — | a décima recusa permanente |
+| `wager_reference_wait_oldest_age_seconds` | gauge | — | o worker de referência, uma vez por turno |
+| `wager_reconciliation_wallets_checked_total` | contador | `origin` | cada veredito, da rota (`http`) ou do observador (`watch`) |
+| `wager_reconciliation_divergences_total` | contador | `origin`, `divergence` | cada token de divergência de cada veredito |
+| `wager_db_pool_connections` · `wager_db_pool_max_connections` · `wager_db_pool_empty_acquires_total` | gauge e contador | `state` | o próprio pool, no instante do scrape, sem ir ao banco |
+
+Um gauge lido por turno guarda o último valor quando a leitura falha: um gauge que caísse a zero com o broker ou o banco fora leria como uma fila que esvaziou. A divergência é contador e não gauge, e as duas séries de reconciliação nascem em zero para toda origem e todo token, para que a primeira divergência encontrada já seja uma subida ([ADR 0024](adr/0024-observador-de-divergencia-por-cursor-em-memoria.md)).
+
+**Painel e alertas** são arquivos do repositório, carregados na subida. O Grafana provisiona o painel "Liquidação" a partir de `deploy/grafana/dashboards/liquidacao.json`: a divergência dos últimos 15 minutos no topo, e cinco faixas na ordem — saúde e latência, resultado financeiro, fila e referência pendente, outbox, reconciliação. O Prometheus carrega `deploy/prometheus/rules/settlement.yml`, com duas regras: `ReconciliationDivergenceFound`, que dispara quando a série de divergência subiu na janela, sem `for`; e `OutboxOldestPendingTooOld`, que dispara com o evento pendente mais antigo acima de 30 s por mais de um minuto, a janela que absorve o lease legítimo de um envio. Não há Alertmanager: o alerta vive no Prometheus, e o Grafana o lista pelo datasource ([ADR 0025](adr/0025-alertas-como-regras-do-prometheus-testadas.md)).
 
 **Saúde**: `/health/live` responde pelo processo; `/health/ready` consulta PostgreSQL e SQS com prazo curto, e ready falho não derruba o live. Os dois e `/metrics` ficam fora do span e do log, porque batem de segundo em segundo.
 
@@ -105,7 +124,7 @@ O Uber Fx compõe o processo, e `internal/platform/app` é o único pacote que o
 
 A telemetria é a exceção e sobe **antes** de todo o resto, no construtor dela, porque o Fx roda todo construtor antes de todo hook: um start registrado como hook entregaria aos componentes um provider que ele mesmo substituiria depois ([ADR 0021](adr/0021-telemetria-iniciada-no-construtor-antes-dos-hooks.md)).
 
-Subida, nesta ordem: validação da configuração → pool do PostgreSQL → sonda da fila → sonda do tópico → fila de entrada → worker de referência → relay da outbox → consumidor da fila → servidor HTTP. Nenhum componente de fundo segura a subida com fila vazia.
+Subida, nesta ordem: validação da configuração → pool do PostgreSQL → sonda da fila → sonda do tópico → fila de entrada → worker de referência → relay da outbox → observador de divergência → consumidor da fila → servidor HTTP. Nenhum componente de fundo segura a subida com fila vazia ou tabela vazia.
 
 Descida, na ordem inversa, e cada parada com uma **fatia** de `SHUTDOWN_TIMEOUT` (20 s por padrão). O Fx entrega a todos os hooks o mesmo contexto e retorna quando ele vence, pulando o que não alcançou — uma parada que consome o orçamento inteiro leva as de trás consigo. As fatias moram ao lado do registro, e a subida é recusada se o orçamento não paga a soma delas ([ADR 0012](adr/0012-flush-de-telemetria-fora-do-lifecycle.md)).
 
@@ -117,6 +136,7 @@ No `SIGTERM`:
 | Worker de referência | para de reivindicar espera nova | não corta a decisão em curso |
 | Relay | para de reivindicar linha; conclui o envio em curso dentro do lease | o sinal não cancela um envio já reivindicado — quem corta é o prazo do processo |
 | Consumidor | para de buscar; conclui a decisão em curso no prazo dela | a mensagem cortada pelo prazo volta com visibilidade zero |
+| Observador de divergência | não começa turno novo; a leitura em curso é cancelada | não deixa nada pela metade: nada do que ele faz é gravável |
 | Telemetria | descarrega o buffer **depois** do ciclo de vida, com 3 s próprios; uma subida que falhou também descarrega | não falha o processo se não conseguir |
 
 ## Dinheiro

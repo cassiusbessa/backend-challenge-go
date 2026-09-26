@@ -9,9 +9,8 @@ Tudo o que não está nesta tabela está implementado e coberto pela suíte de j
 | O quê | Estado | Nota |
 | --- | --- | --- |
 | Consumidor dos eventos | não existe | O tópico `wallet-events.fifo` é provisionado sem subscription, de propósito. A suíte de jornada anexa um assinante só pelo tempo do caso. |
-| Métrica e painel do atraso da outbox | não existem | A linha morta fica visível no log e no banco, mas nenhum alarme a observa. |
-| Observador contínuo da reconciliação, série e alerta de divergência | não existem | A rota e o caso de uso `reconcilewallet` já produzem o veredito; ninguém o pede periodicamente, e uma divergência só aparece no log de quem chamou a rota. |
 | Guia de execução em múltiplas instâncias e simulação de falha | não existe | As instruções de subida e teste estão no `README.md`. |
+| Notificação dos alertas | não existe, de propósito | As duas regras vivem no Prometheus e aparecem no Grafana; não há Alertmanager, porque num ambiente local não há para onde notificar ([ADR 0025](adr/0025-alertas-como-regras-do-prometheus-testadas.md)). |
 
 ## Lacunas de verificação
 
@@ -23,7 +22,7 @@ Tudo o que não está nesta tabela está implementado e coberto pela suíte de j
 
 ## Guardas para o que não deveria acontecer
 
-Três erros existem para um estado que o desenho torna inalcançável, e respondem `503` com `Retry-After` em vez de cair por baixo em silêncio. Se um deles aparecer na série de `retryable`, é algo a investigar, não a ignorar.
+Três erros existem para um estado que o desenho torna inalcançável, e respondem `503` com `Retry-After` em vez de cair por baixo em silêncio. Cada um tem razão própria em `wager_retries_total` — `version_conflict`, `outcome_in_flight` e `race_unresolved` —, e se um deles aparecer ali, é algo a investigar, não a ignorar.
 
 | Guarda | Estado impossível | Por que é impossível |
 | --- | --- | --- |
@@ -36,7 +35,7 @@ Três erros existem para um estado que o desenho torna inalcançável, e respond
 - **`LOSS` com referência carrega a citada e a descarta.** O construtor não proíbe um `LOSS` de citar; `citedFor` busca a operação e `Loss` a ignora. Um `SELECT` gasto, sem efeito. Proibir exigiria um token novo para um problema que não existe em produção.
 - **Identidades cunhadas e não usadas.** Quatro UUIDs por chegada — transação, lançamento, dois eventos — mesmo quando o desfecho usa dois. O preço de o domínio nunca chamar um minter.
 - **Vinte linhas duplicadas entre dois runners de fundo** ([ADR 0011](adr/0011-tres-runners-de-fundo-separados.md)).
-- **As leituras não têm prazo próprio, e o pool não tem teto explícito.** A reconciliação é a primeira rota cujo custo cresce com o ledger da carteira ([ADR 0022](adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md)). O plano entra pelo índice único da carteira e lê só as linhas dela, com `sequence_number` já pré-ordenado, então a memória não cresce com o ledger; e o contexto da requisição cancela a consulta quando o cliente desiste, devolvendo a conexão ao pool. O que falta é um prazo do lado do servidor: com carteira grande, ou com pedidos simultâneos bastantes, cada leitura ocupa uma conexão do pool — cujo padrão do `pgxpool` é o maior entre quatro e o número de CPUs — e `SubmitWager` passa a esperar por conexão. Fixar um `statement_timeout` agora seria escolher o número sem medida, e ele atingiria também a unit of work, onde um prazo estourado é falha de infraestrutura no caminho do dinheiro. O que fecha: a série de saturação do pool e o teste de carga do degrau seguinte, que medem antes de escolher.
+- **As leituras não têm prazo próprio, e o pool não tem teto explícito.** A reconciliação é a primeira rota cujo custo cresce com o ledger da carteira ([ADR 0022](adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md)), e o observador de divergência a chama em lote, a cada turno ([ADR 0024](adr/0024-observador-de-divergencia-por-cursor-em-memoria.md)). O plano entra pelo índice único da carteira e lê só as linhas dela, com `sequence_number` já pré-ordenado, então a memória não cresce com o ledger; e o contexto da requisição cancela a consulta quando o cliente desiste, devolvendo a conexão ao pool. O que falta é um prazo do lado do servidor: com carteira grande, ou com leituras simultâneas bastantes, cada uma ocupa uma conexão do pool — cujo padrão do `pgxpool` é o maior entre quatro e o número de CPUs — e `SubmitWager` passa a esperar por conexão. Isso agora é visível: `wager_db_pool_connections` por estado e `wager_db_pool_empty_acquires_total`, as aquisições que acharam o pool vazio, estão no painel. Fixar um `statement_timeout` agora seria escolher o número sem medida, e ele atingiria também a unit of work, onde um prazo estourado é falha de infraestrutura no caminho do dinheiro. O que fecha: o teste de carga do degrau seguinte, que lê essas séries antes de escolher o prazo, o tamanho do pool, e o intervalo e o lote do observador.
 
 ## Ambiente local
 
