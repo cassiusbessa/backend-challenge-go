@@ -26,6 +26,9 @@ func TestSubmitCaused_recordsTheMessageInTheCommitOfTheMovement(t *testing.T) {
 	if result.Status != wager.Processed {
 		t.Fatalf("status = %s, want PROCESSED", result.Status)
 	}
+	if result.Redelivered {
+		t.Fatalf("redelivered = %t, want false on the first delivery", result.Redelivered)
+	}
 	assertRows(t, book, 1, 1)
 	if len(book.messages) != 1 {
 		t.Fatalf("inbox rows = %d, want 1", len(book.messages))
@@ -60,6 +63,9 @@ func TestSubmitCaused_answersTheRecordedOutcomeOfARedeliveryAndAppliesNothing(t 
 	}
 	if !again.IdempotentReplay {
 		t.Fatalf("replay = %t, want true on a redelivery", again.IdempotentReplay)
+	}
+	if !again.Redelivered {
+		t.Fatalf("redelivered = %t, want true: the inbox already held the message", again.Redelivered)
 	}
 	if again.TransactionID != first.TransactionID {
 		t.Fatalf("transaction = %s, want the one of the first delivery %s", again.TransactionID, first.TransactionID)

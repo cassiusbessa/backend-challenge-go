@@ -135,6 +135,11 @@ func (c Caused) recorded(at time.Time) storage.Message {
 // Result is the outcome as the border answers it. ObservedBalance is the balance
 // of the commit that closed the operation, and on a replay it is the one observed
 // back then and not the current one.
+//
+// Redelivered says the inbox already held the message that caused this arrival:
+// the same identifier with the same body, delivered again. It is set beside
+// IdempotentReplay and never instead of it, because a redelivery is answered
+// through the key like any replay is, and the border reports the two apart.
 type Result struct {
 	TransactionID    identity.TransactionID
 	Kind             wager.Kind
@@ -143,6 +148,7 @@ type Result struct {
 	Amount           money.Money
 	ObservedBalance  money.Money
 	IdempotentReplay bool
+	Redelivered      bool
 }
 
 // Replayed marks a refusal that was already recorded: the same key and the same
@@ -347,11 +353,13 @@ func (s *Service) settle(ctx context.Context, job pending) (settlement, error) {
 }
 
 func (s *Service) decide(ctx context.Context, tx storage.Tx, job pending) (settlement, error) {
-	if err := receive(ctx, tx, job); err != nil {
+	redelivered, err := receive(ctx, tx, job)
+	if err != nil {
 		return settlement{}, err
 	}
 	recorded, found, err := s.recorded(ctx, tx, job)
 	if found || err != nil {
+		recorded.result.Redelivered = redelivered
 		return recorded, err
 	}
 	return s.apply(ctx, tx, job)
@@ -367,19 +375,20 @@ func (s *Service) decide(ctx context.Context, tx storage.Tx, job pending) (settl
 // which the first delivery committed, and the read right after this one finds it.
 //
 // An operation that came over HTTP records nothing: there is no message to
-// remember.
-func receive(ctx context.Context, tx storage.Tx, job pending) error {
+// remember. It reports whether the inbox already held the message, which is
+// what the border counts a redelivery by.
+func receive(ctx context.Context, tx storage.Tx, job pending) (bool, error) {
 	if job.caused.IsZero() {
-		return nil
+		return false, nil
 	}
 	already, err := tx.Inbox().Insert(ctx, job.caused.recorded(job.at()))
 	if !errors.Is(err, storage.ErrMessageRecorded) {
-		return err
+		return false, err
 	}
 	if already.BodyHash != job.caused.BodyHash {
-		return ErrMessageBodyDiffers
+		return false, ErrMessageBodyDiffers
 	}
-	return nil
+	return true, nil
 }
 
 // recorded is the fast path of a replay: the transaction already written under

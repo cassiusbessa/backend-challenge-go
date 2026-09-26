@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -423,27 +424,74 @@ func TestRun_reportsAPollThatFailedAndDoesNotSpin(t *testing.T) {
 	lineWith(t, logs, "receive from the ingress queue")
 }
 
-func TestMeasure_movesTheDepthOfTheDeadLetterQueueIntoTheMetric(t *testing.T) {
+// One turn reads both queues: the ingress one the consumer takes from, and the
+// dead-letter one beside it, each into its own gauge.
+func TestMeasure_movesTheDepthOfBothQueuesIntoTheirGauges(t *testing.T) {
 	t.Parallel()
-	queue := &fakeQueue{depth: 4}
+	queue := &fakeQueue{depth: 4, ingressDepth: 11}
 	consumer, _, metrics := consumerOver(t, queue, &fakeReceiver{})
 	consumer.measure(context.Background())
 	if got := gaugeOf(t, metrics.DeadLetterDepth); got != 4 {
-		t.Fatalf("depth = %v, want 4", got)
+		t.Fatalf("depth of the dead-letter queue = %v, want 4", got)
+	}
+	if got := gaugeOf(t, metrics.IngressDepth); got != 11 {
+		t.Fatalf("depth of the ingress queue = %v, want 11", got)
 	}
 }
 
-// A read that failed leaves the last value: a gauge that went to zero because the
-// broker was out would read as a queue that drained.
-func TestMeasure_keepsTheLastDepthWhenTheBrokerIsOut(t *testing.T) {
+// A read that failed leaves the last values: a gauge that went to zero because
+// the broker was out would read as a queue that drained. Either read failing
+// leaves both, so the two gauges never come from two different turns.
+func TestMeasure_keepsTheLastDepthsWhenTheBrokerIsOut(t *testing.T) {
 	t.Parallel()
-	queue := &fakeQueue{depth: 4}
-	consumer, _, metrics := consumerOver(t, queue, &fakeReceiver{})
-	consumer.measure(context.Background())
-	queue.depthErr = errors.New("connection refused")
-	consumer.measure(context.Background())
-	if got := gaugeOf(t, metrics.DeadLetterDepth); got != 4 {
-		t.Fatalf("depth = %v, want the 4 of the last read", got)
+	cases := []struct {
+		name string
+		fail func(*fakeQueue)
+	}{
+		{name: "the ingress read failed", fail: func(q *fakeQueue) { q.ingressErr = errors.New("connection refused") }},
+		{name: "the dead-letter read failed", fail: func(q *fakeQueue) { q.depthErr = errors.New("connection refused") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			queue := &fakeQueue{depth: 4, ingressDepth: 11}
+			consumer, _, metrics := consumerOver(t, queue, &fakeReceiver{})
+			consumer.measure(context.Background())
+			queue.depth, queue.ingressDepth = 0, 0
+			tc.fail(queue)
+			consumer.measure(context.Background())
+			if got := gaugeOf(t, metrics.DeadLetterDepth); got != 4 {
+				t.Fatalf("depth of the dead-letter queue = %v, want the 4 of the last read", got)
+			}
+			if got := gaugeOf(t, metrics.IngressDepth); got != 11 {
+				t.Fatalf("depth of the ingress queue = %v, want the 11 of the last read", got)
+			}
+		})
+	}
+}
+
+// A message handed back for another attempt is counted by the reason off the
+// chain, beside the line that reports the failure.
+func TestDecide_countsTheMessageHandedBackAsARetry(t *testing.T) {
+	t.Parallel()
+	queue := &fakeQueue{}
+	consumer, _, metrics := consumerOver(t, queue, &fakeReceiver{refuse: errors.New("connection reset")})
+	consumer.decide(context.Background(), arrived(1))
+	if got := testutil.ToFloat64(metrics.Retries.WithLabelValues("sqs", "transient")); got != 1 {
+		t.Fatalf("retries{sqs,transient} = %v, want 1", got)
+	}
+}
+
+// The shutdown handing a message back is not a retry: nothing failed about it,
+// and it goes back with no wait.
+func TestDecide_countsNoRetryForAMessageTheShutdownHandedBack(t *testing.T) {
+	t.Parallel()
+	queue := &fakeQueue{}
+	consumer, _, metrics := consumerOver(t, queue, &fakeReceiver{refuse: context.Canceled})
+	work, cut := context.WithCancel(context.Background())
+	cut()
+	consumer.decide(work, arrived(1))
+	if got := testutil.CollectAndCount(metrics.Retries); got != 0 {
+		t.Fatalf("retry series moved by the shutdown = %d, want none", got)
 	}
 }
 
@@ -510,6 +558,8 @@ type fakeQueue struct {
 	window        time.Duration
 	depth         int64
 	depthErr      error
+	ingressDepth  int64
+	ingressErr    error
 	deadLetterErr error
 	deleteErr     error
 	releaseErr    error
@@ -597,6 +647,13 @@ func (q *fakeQueue) DeadLetter(ctx context.Context, _ Delivery) error {
 
 func reachable(ctx context.Context) error {
 	return ctx.Err()
+}
+
+func (q *fakeQueue) Depth(context.Context) (int64, error) {
+	if q.ingressErr != nil {
+		return 0, q.ingressErr
+	}
+	return q.ingressDepth, nil
 }
 
 func (q *fakeQueue) DeadLetterDepth(context.Context) (int64, error) {

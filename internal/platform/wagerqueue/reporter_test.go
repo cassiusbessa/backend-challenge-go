@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
@@ -139,4 +143,147 @@ func loggingReporter(t *testing.T) (*Reporter, *bytes.Buffer) {
 	logs := &bytes.Buffer{}
 	reporter := NewReporter(slog.New(slog.NewJSONHandler(logs, nil)), quietTracer(), metrics.New(prometheus.NewRegistry()))
 	return reporter, logs
+}
+
+// countingReporter builds a reporter over a registry of its own, so a case
+// reads the series it moved and nothing another case moved.
+func countingReporter() (*Reporter, *metrics.Settlement) {
+	series := metrics.New(prometheus.NewRegistry())
+	return NewReporter(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), quietTracer(), series), series
+}
+
+func processedBet(t *testing.T) submitwager.Result {
+	t.Helper()
+	return submitwager.Result{TransactionID: transactionOf(t), Kind: wager.KindBet, Status: wager.Processed}
+}
+
+// refusalOf answers the rule as the consumer hands it to the reporter: the
+// rejection reached with errors.As, not the error around it.
+func refusalOf(t *testing.T, code wager.FailureCode) wager.Rejection {
+	t.Helper()
+	refusal, refused := rejectionOf(wager.NewRejection(code, nil))
+	if !refused {
+		t.Fatalf("rejectionOf = %t, want the rejection of %s", refused, code)
+	}
+	return refusal
+}
+
+func TestSettled_countsTheOutcomeUnderTheOriginOfTheQueue(t *testing.T) {
+	t.Parallel()
+	reporter, series := countingReporter()
+	reporter.Settled(context.Background(), processedBet(t))
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("sqs", "BET", "PROCESSED")); got != 1 {
+		t.Fatalf("settlements{sqs,BET,PROCESSED} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("http", "BET", "PROCESSED")); got != 0 {
+		t.Fatalf("settlements{http,BET,PROCESSED} after a message = %v, want 0", got)
+	}
+}
+
+// A redelivery the inbox deduced and a resend under the same key are two
+// reasons of one series, and neither is a settlement: nothing new was decided.
+func TestSettled_countsARedeliveryAndAReplayAsDuplicatesUnderTheirOwnReasons(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		result submitwager.Result
+		reason string
+	}{
+		{name: "a redelivery the inbox deduced", result: submitwager.Result{Kind: wager.KindBet, Status: wager.Processed, IdempotentReplay: true, Redelivered: true}, reason: "redelivery"},
+		{name: "a resend under the same key", result: submitwager.Result{Kind: wager.KindBet, Status: wager.Processed, IdempotentReplay: true}, reason: "replay"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reporter, series := countingReporter()
+			reporter.Settled(context.Background(), tc.result)
+			if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", tc.reason)); got != 1 {
+				t.Fatalf("duplicates{sqs,%s} = %v, want 1", tc.reason, got)
+			}
+			if got := testutil.CollectAndCount(series.Settlements); got != 0 {
+				t.Fatalf("settlement series moved by %s = %d, want none", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestRejected_countsTheRowAsASettlementThatEndedRejectedAndByItsToken(t *testing.T) {
+	t.Parallel()
+	reporter, series := countingReporter()
+	row := submitwager.Result{TransactionID: transactionOf(t), Kind: wager.KindBet, Status: wager.Rejected}
+	reporter.Rejected(context.Background(), row, refusalOf(t, wager.InsufficientFunds))
+	if got := testutil.ToFloat64(series.Settlements.WithLabelValues("sqs", "BET", "REJECTED")); got != 1 {
+		t.Fatalf("settlements{sqs,BET,REJECTED} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("sqs", "INSUFFICIENT_FUNDS")); got != 1 {
+		t.Fatalf("rejections{sqs,INSUFFICIENT_FUNDS} = %v, want 1", got)
+	}
+}
+
+// The recorded refusal delivered again is a redelivery, not a second rejection.
+func TestRejected_countsARedeliveredRefusalAsADuplicate(t *testing.T) {
+	t.Parallel()
+	reporter, series := countingReporter()
+	again := submitwager.Result{TransactionID: transactionOf(t), Kind: wager.KindBet, Status: wager.Rejected, IdempotentReplay: true, Redelivered: true}
+	reporter.Rejected(context.Background(), again, refusalOf(t, wager.InsufficientFunds))
+	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", "redelivery")); got != 1 {
+		t.Fatalf("duplicates{sqs,redelivery} = %v, want 1", got)
+	}
+	if got := testutil.CollectAndCount(series.Rejections); got != 0 {
+		t.Fatalf("rejection series moved by a redelivery = %d, want none", got)
+	}
+}
+
+// The two conflicts of idempotency wrote no row and are duplicates under their
+// own reasons; a refusal without a row that is neither is not counted at all.
+func TestRejected_countsTheConflictsAsDuplicatesAndNothingForARefusalWithoutARow(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		code   wager.FailureCode
+		reason string
+	}{
+		{code: wager.IdempotencyConflict, reason: "key_conflict"},
+		{code: wager.DuplicateExternalTransaction, reason: "external_duplicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.reason+" is counted", func(t *testing.T) {
+			reporter, series := countingReporter()
+			reporter.Rejected(context.Background(), submitwager.Result{}, refusalOf(t, tc.code))
+			if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", tc.reason)); got != 1 {
+				t.Fatalf("duplicates{sqs,%s} = %v, want 1", tc.reason, got)
+			}
+		})
+	}
+	reporter, series := countingReporter()
+	reporter.Rejected(context.Background(), submitwager.Result{}, refusalOf(t, wager.WalletNotFound))
+	if got := testutil.CollectAndCount(series.Settlements) + testutil.CollectAndCount(series.Rejections) + testutil.CollectAndCount(series.Duplicates); got != 0 {
+		t.Fatalf("series moved by a refusal without a row = %d, want none", got)
+	}
+}
+
+// A message handed back is counted by the reason off the chain, and the write
+// that missed the lock has a reason of its own.
+func TestReturned_countsTheRetryByTheReasonOffTheChain(t *testing.T) {
+	t.Parallel()
+	reporter, series := countingReporter()
+	reporter.Returned(fmt.Errorf("receive wager: %w", storage.ErrLostWrite))
+	reporter.Returned(fault.Wrap("acquire connection", errors.New("connection refused")))
+	reporter.Returned(context.Canceled)
+	if got := testutil.ToFloat64(series.Retries.WithLabelValues("sqs", "version_conflict")); got != 1 {
+		t.Fatalf("retries{sqs,version_conflict} = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(series.Retries.WithLabelValues("sqs", "transient")); got != 1 {
+		t.Fatalf("retries{sqs,transient} = %v, want 1: the shutdown is not a retry", got)
+	}
+}
+
+func TestDepth_movesBothGauges(t *testing.T) {
+	t.Parallel()
+	reporter, series := countingReporter()
+	reporter.Depth(3, 2)
+	if got := testutil.ToFloat64(series.IngressDepth); got != 3 {
+		t.Fatalf("ingress depth = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(series.DeadLetterDepth); got != 2 {
+		t.Fatalf("dead-letter depth = %v, want 2", got)
+	}
 }

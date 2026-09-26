@@ -70,9 +70,11 @@ type Queue interface {
 	// the deduplication it arrived under.
 	DeadLetter(ctx context.Context, delivery Delivery) error
 
-	// DeadLetterDepth answers how many messages that queue is holding, which is
-	// the series the dashboard watches. It is asked once per turn rather than at
-	// every scrape, so a broker that is out cannot hold up the metrics endpoint.
+	// Depth and DeadLetterDepth answer how many messages each queue is holding,
+	// which are the two series the dashboard watches. They are asked once per
+	// turn rather than at every scrape, so a broker that is out cannot hold up
+	// the metrics endpoint.
+	Depth(ctx context.Context) (int64, error)
 	DeadLetterDepth(ctx context.Context) (int64, error)
 }
 
@@ -202,16 +204,21 @@ func (c *Consumer) run(polling, work context.Context) {
 	}
 }
 
-// measure reads the depth of the dead-letter queue into the metric. A read that
-// fails leaves the last value: a gauge that went to zero because the broker was
-// out would read as a queue that drained.
+// measure reads the depth of the two queues into their gauges. A read that
+// fails leaves the last values: a gauge that went to zero because the broker
+// was out would read as a queue that drained.
 func (c *Consumer) measure(polling context.Context) {
-	waiting, err := c.queue.DeadLetterDepth(polling)
+	ingress, err := c.queue.Depth(polling)
+	if err != nil {
+		c.reporter.Failed(polling, "read the depth of the ingress queue", err)
+		return
+	}
+	dead, err := c.queue.DeadLetterDepth(polling)
 	if err != nil {
 		c.reporter.Failed(polling, "read the depth of the dead-letter queue", err)
 		return
 	}
-	c.reporter.Depth(waiting)
+	c.reporter.Depth(ingress, dead)
 }
 
 // pause waits one base window and reports whether the loop goes on.
@@ -333,6 +340,7 @@ func (c *Consumer) answer(ctx, work context.Context, delivery Delivery, result s
 		c.abandon(ctx, delivery, reason, err)
 	case Return:
 		c.reporter.Failed(ctx, "settle a message of the ingress queue", err)
+		c.reporter.Returned(err)
 		c.release(ctx, delivery, c.returned(work, delivery))
 	}
 }

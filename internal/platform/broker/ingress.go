@@ -176,18 +176,27 @@ func (i *Ingress) DeadLetter(ctx context.Context, delivery wagerqueue.Delivery) 
 	return nil
 }
 
-// DeadLetterDepth answers how many messages that queue is holding.
+// Depth answers how many messages the ingress queue is holding.
+func (i *Ingress) Depth(ctx context.Context) (int64, error) {
+	return i.depthOf(ctx, i.url, "read the depth of the ingress queue")
+}
+
+// DeadLetterDepth answers how many messages the dead-letter queue is holding.
 func (i *Ingress) DeadLetterDepth(ctx context.Context) (int64, error) {
+	return i.depthOf(ctx, i.deadURL, "read the depth of the dead-letter queue")
+}
+
+func (i *Ingress) depthOf(ctx context.Context, queueURL, op string) (int64, error) {
 	out, err := i.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
-		QueueUrl:       aws.String(i.deadURL),
+		QueueUrl:       aws.String(queueURL),
 		AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameApproximateNumberOfMessages},
 	})
 	if err != nil {
-		return 0, fault.Wrap("read the depth of the dead-letter queue", err)
+		return 0, fault.Wrap(op, err)
 	}
 	waiting, err := strconv.ParseInt(out.Attributes[string(types.QueueAttributeNameApproximateNumberOfMessages)], 10, 64)
 	if err != nil {
-		return 0, fault.Wrap("read the depth of the dead-letter queue", err)
+		return 0, fault.Wrap(op, err)
 	}
 	return waiting, nil
 }

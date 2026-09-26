@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,35 @@ func TestDeadLetterDepth_answersWhatThatQueueIsHolding(t *testing.T) {
 	}
 	if aws.ToString(fake.asked.QueueUrl) != deadURL {
 		t.Fatalf("queue = %q, want the dead-letter one", aws.ToString(fake.asked.QueueUrl))
+	}
+}
+
+// The two queues are asked apart, each by its own address: the ingress one is
+// what the consumer takes from, and the dead-letter one is beside it.
+func TestDepth_answersWhatTheIngressQueueIsHolding(t *testing.T) {
+	t.Parallel()
+	fake := &fakeMessenger{attributes: map[string]string{"ApproximateNumberOfMessages": "9"}}
+	waiting, err := ingress(fake).Depth(context.Background())
+	if err != nil {
+		t.Fatalf("Depth = %v, want nil", err)
+	}
+	if waiting != 9 {
+		t.Fatalf("depth of the ingress queue = %d, want 9", waiting)
+	}
+	if aws.ToString(fake.asked.QueueUrl) != ingressURL {
+		t.Fatalf("queue = %q, want the ingress one", aws.ToString(fake.asked.QueueUrl))
+	}
+}
+
+func TestDepth_answersTheFailureOfTheBrokerNamingTheIngressQueue(t *testing.T) {
+	t.Parallel()
+	broken := errors.New("connection refused")
+	_, err := ingress(&fakeMessenger{refuse: broken}).Depth(context.Background())
+	if !errors.Is(err, broken) {
+		t.Fatalf("Depth over a broker that is out = %v, want %v", err, broken)
+	}
+	if !strings.Contains(err.Error(), "ingress queue") {
+		t.Fatalf("failure of the ingress depth = %v, want the ingress queue named in the chain", err)
 	}
 }
 

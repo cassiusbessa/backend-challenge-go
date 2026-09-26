@@ -104,7 +104,13 @@ func rejectionOf(err error) (wager.Rejection, bool) {
 
 // Settled records the outcome of a message that reached a decision, including a
 // redelivery that reapplied nothing.
+//
+// A redelivery and a replay are not new outcomes: each is counted as a duplicate
+// under its own reason, and the series of settlements is what was decided.
 func (rep *Reporter) Settled(ctx context.Context, result submitwager.Result) {
+	if !rep.countDuplicate(result) {
+		rep.metrics.Settled(metrics.OriginSQS, result.Kind, result.Status)
+	}
 	trace.SpanFromContext(ctx).SetAttributes(
 		attribute.String("wager.transaction.id", result.TransactionID.String()),
 		attribute.String("wager.status", result.Status.String()),
@@ -125,6 +131,7 @@ func (rep *Reporter) Settled(ctx context.Context, result submitwager.Result) {
 // two origins of one rule read alike. The span stays ok, because a rejection is
 // none of the three cases that mark one.
 func (rep *Reporter) Rejected(ctx context.Context, result submitwager.Result, refusal wager.Rejection) {
+	rep.countRejected(result, refusal.Code())
 	code := refusal.Code().String()
 	transaction := result.TransactionID.String()
 	trace.SpanFromContext(ctx).SetAttributes(
@@ -139,6 +146,50 @@ func (rep *Reporter) Rejected(ctx context.Context, result submitwager.Result, re
 			slog.String("status", wager.Rejected.String()),
 			slog.String("failureCode", code),
 		)...)
+}
+
+// countDuplicate moves the series of duplicates for an arrival already decided,
+// and reports whether it was one. The redelivery is asked first: it is answered
+// through the key like a replay is, and it is the reason worth telling apart.
+func (rep *Reporter) countDuplicate(result submitwager.Result) bool {
+	switch {
+	case result.Redelivered:
+		rep.metrics.Duplicate(metrics.OriginSQS, metrics.ReasonRedelivery)
+	case result.IdempotentReplay:
+		rep.metrics.Duplicate(metrics.OriginSQS, metrics.ReasonReplay)
+	default:
+		return false
+	}
+	return true
+}
+
+// countRejected moves the series of a rule that refused: a duplicate under its
+// reason, or the row it wrote as a settlement that ended REJECTED and by its
+// token. A refusal that wrote no row is answered and logged and is not counted,
+// because nothing was recorded to count.
+func (rep *Reporter) countRejected(result submitwager.Result, code wager.FailureCode) {
+	if rep.countDuplicate(result) {
+		return
+	}
+	if reason, duplicate := metrics.DuplicateReason(code); duplicate {
+		rep.metrics.Duplicate(metrics.OriginSQS, reason)
+		return
+	}
+	if result.TransactionID.IsZero() {
+		return
+	}
+	rep.metrics.Settled(metrics.OriginSQS, result.Kind, wager.Rejected)
+	rep.metrics.Rejected(metrics.OriginSQS, code)
+}
+
+// Returned counts a message handed back to the queue for another attempt, by
+// the reason read off the chain. A message the shutdown handed back is not one:
+// nothing failed about it, and it goes back with no wait.
+func (rep *Reporter) Returned(err error) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	rep.metrics.Retry(metrics.ComponentSQS, metrics.RetryReason(err))
 }
 
 // Abandoned records a message on its way to the dead-letter queue, whatever the
@@ -179,9 +230,11 @@ func (rep *Reporter) Failed(ctx context.Context, message string, err error) {
 		)...)
 }
 
-// Depth records how many messages the dead-letter queue is holding.
-func (rep *Reporter) Depth(messages int64) {
-	rep.metrics.DeadLetterDepth.Set(float64(messages))
+// Depth records how many messages the two queues are holding: the ingress
+// queue the consumer takes from, and the dead-letter queue beside it.
+func (rep *Reporter) Depth(ingress, dead int64) {
+	rep.metrics.IngressDepth.Set(float64(ingress))
+	rep.metrics.DeadLetterDepth.Set(float64(dead))
 }
 
 // named is what every line of one operation carries: the identity of the message,
