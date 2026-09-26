@@ -212,10 +212,7 @@ func (s *scene) boot(ctx context.Context, t *testing.T, overrides map[string]str
 		t.Fatalf("start = %v, want nil", err)
 	}
 	started := &instance{base: "http://" + (<-got).Addr(), application: application}
-	// The cleanup runs after the context of the case is cancelled, so the stop
-	// carries the same context without its deadline.
-	stopping := context.WithoutCancel(ctx)
-	t.Cleanup(func() { started.stop(stopping, t) })
+	t.Cleanup(func() { started.stop(ctx, t) })
 	return started
 }
 
@@ -227,8 +224,9 @@ func (in *instance) stop(ctx context.Context, t *testing.T) {
 		return
 	}
 	in.stopped = true
-	// Above the shutdown budget of the process, so the lifecycle is what decides
-	// how long a stop takes and this bound only catches one that hangs.
+	// Bounded on its own, because the deadline of the case may be gone when the
+	// cleanup runs, and above the shutdown budget of the process, so the lifecycle
+	// decides how long a stop takes and this bound only catches one that hangs.
 	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	if err := in.application.Stop(stopping); err != nil {
@@ -520,8 +518,9 @@ func giveUp(ctx context.Context) time.Time {
 	return deadline.Add(-checkMargin)
 }
 
-// pollEvery is how often a wait looks. It is well above the interval the
-// workers run at, and far below any deadline.
+// pollEvery is how often a wait looks: as often as the relay and the reference
+// worker of a case turn, so a wait sees an outcome about one turn after it
+// lands, and far below any deadline.
 const pollEvery = 50 * time.Millisecond
 
 // checkMargin is what one check of a wait takes at most: a query of the
