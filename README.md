@@ -22,6 +22,7 @@ make provision   # o apply do Terraform contra o LocalStack
 make migrate     # o schema nos dois bancos, cada um nomeado no comando
 make test        # a suíte de unidade
 make test-journey  # a suíte de jornada, em série e no banco dela
+make scenarios   # os oito cenários de concorrência do enunciado, um go test cada
 make rules-test  # o teste de unidade das duas regras de alerta, com o promtool da imagem
 make verify      # o ambiente está no estado que os arquivos versionados declaram?
 make down        # derruba a stack e descarta os volumes dela
@@ -436,3 +437,52 @@ A suíte pede IdP real: ela obtém token dos três clientes e, no caso do token 
 A suíte cai nos próprios defaults — banco, endpoint, coletor e credencial — quando eles não vêm do ambiente. O default de `DATABASE_URL` é o banco da suíte, e não o da aplicação: o comando acima o exporta por clareza, e quem esquecer continua caindo no banco certo. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_REGION` sobrescrevem a credencial para apontar em outro broker. Os três estão em `.env.example`. O código de produção não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
 
 Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 90% em `money`, `wallet`, `wager`, `ledger` e `identity`, 80% em `internal/app` e 70% em `internal/platform` — e o `.golangci.yml`. Antes de qualquer Go ele confere que o painel é JSON válido e roda o teste das regras de alerta.
+
+### Os cenários obrigatórios
+
+Os testes de concorrência que o enunciado exige moram num pacote próprio, `internal/e2e/scenarios`, um teste por item, contra PostgreSQL, Keycloak e LocalStack reais. Todo cenário sobe várias instâncias independentes do processo — cada uma com o próprio grafo do Fx, pool, porta e componentes de fundo — sobre o mesmo banco e o mesmo broker, e reparte as chegadas entre elas; é assim que o item 4, três ou mais instâncias, vale para todos os outros ([ADR 0027](docs/adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)). A morte entre o commit e a remoção da mensagem, e a contagem de cada evento publicado, são feitas por um proxy do teste entre a instância e o broker ([ADR 0028](docs/adr/0028-falha-e-contagem-na-fronteira-de-rede-do-broker.md)).
+
+Pedem o mesmo ambiente da suíte de jornada, e cada um roda sozinho com o próprio comando. O `DATABASE_URL` pode ficar de fora: o default já é o banco da suíte.
+
+```bash
+# 1. a mesma aposta 50 vezes em paralelo → um débito
+go test -race -count=1 -tags=integration -run '^TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce$' ./internal/e2e/scenarios/
+# 2. duas apostas de 80 numa carteira de 100 → uma PROCESSED, uma INSUFFICIENT_FUNDS, e o reenvio não muda nada
+go test -race -count=1 -tags=integration -run '^TestRacingBets_settleAgainstTheBalanceAlreadyCommitted$' ./internal/e2e/scenarios/
+# 3. carteiras distintas ao mesmo tempo, com uma delas travada fora da aplicação
+go test -race -count=1 -tags=integration -run '^TestLockedWallet_doesNotHoldTheOthers$' ./internal/e2e/scenarios/
+# 5. a instância morre depois do commit e antes da remoção → outra recebe a reentrega, sem segundo efeito
+go test -race -count=1 -tags=integration -run '^TestInterruption_changesNothingWhenTheRemovalNeverReachedTheBroker$' ./internal/e2e/scenarios/
+# 6. dois publicadores disputando a outbox → cada evento sai uma vez
+go test -race -count=1 -tags=integration -run '^TestPublishers_sendEachEventOnce$' ./internal/e2e/scenarios/
+# 7. REFUND e ROLLBACK antes da citada → resolvem quando ela chega, ou expiram
+go test -race -count=1 -tags=integration -run '^TestEarlyReversal_waitsAndThenResolvesOrExpires$' ./internal/e2e/scenarios/
+# 8. reinício da frota inteira → replay, conflito, espera concluída, eventos publicados, reconciliação consistente
+go test -race -count=1 -tags=integration -run '^TestRestart_keepsIdempotencyTheWaitAndTheLedger$' ./internal/e2e/scenarios/
+# HTTP e SQS compartilham a idempotência → um efeito nas duas ordens, e conflito com outro corpo
+go test -race -count=1 -tags=integration -run '^TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue$' ./internal/e2e/scenarios/
+```
+
+Cada quantidade é uma variável de ambiente, e a ausente vale o padrão do enunciado. Um valor inválido falha o cenário nomeando a variável, antes de subir qualquer instância, e nunca cai no padrão. O desfecho esperado é calculado a partir dos parâmetros: `SCENARIO_RACING_BETS=5 SCENARIO_RACING_AMOUNT=30.00` espera três `PROCESSED`, duas `INSUFFICIENT_FUNDS` e saldo 10.00.
+
+| Variável | Padrão | Origem |
+| --- | --- | --- |
+| `SCENARIO_INSTANCES` | `3` | enunciado |
+| `SCENARIO_SAME_BET_COPIES` | `50` | enunciado |
+| `SCENARIO_OPENING_BALANCE` | `100.00` | enunciado |
+| `SCENARIO_RACING_BETS` | `2` | enunciado |
+| `SCENARIO_RACING_AMOUNT` | `80.00` | enunciado |
+| `SCENARIO_OTHER_WALLETS` | `10` | estes cenários — o enunciado não fixa |
+| `SCENARIO_PUBLISHERS` | `2` | enunciado |
+| `SCENARIO_RESTARTS` | `1` | estes cenários — o enunciado não fixa |
+| `SCENARIO_DEADLINE` | `2m` | estes cenários: o prazo de cada caso |
+
+`make scenarios` roda os oito em sequência, cada um no próprio `go test`, contra o banco da suíte. Ele continua depois de um cenário que falhou, termina listando os que falharam e sai diferente de zero se algum falhou. Os parâmetros passam pela linha de comando ou pelo ambiente, e `SCENARIO_REPEAT` repete cada cenário — cada execução monta os próprios dados, então repetir contra a mesma stack é legítimo:
+
+```bash
+make scenarios
+make scenarios SCENARIO_INSTANCES=5 SCENARIO_SAME_BET_COPIES=200
+make scenarios SCENARIO_REPEAT=3
+```
+
+O passo de integração do CI roda o pacote com os padrões, dentro do `./...`. Medido na stack local, numa máquina de 16 CPUs, o pacote leva cerca de 14 s; metade disso é o cenário da interrupção, que espera os 6 s de invisibilidade separarem as duas entregas.

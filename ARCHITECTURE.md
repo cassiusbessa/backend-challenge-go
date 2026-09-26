@@ -145,7 +145,8 @@ internal/platform/         adaptadores — a única camada que conhece pgx, HTTP
   probe/                   as sondas de readiness
   mint/ clock/             UUIDv7 e relógio em UTC, injetados para o domínio nunca os chamar
 
-internal/e2e/              a suíte de jornada, por área, sob a tag integration
+internal/e2e/              a suíte de jornada, por área, sob a tag integration; scenarios/ são os
+                           oito cenários de concorrência do enunciado, sobre várias instâncias
 internal/suiteenv/         o que toda suíte de jornada precisa para alcançar o ambiente
 
 deploy/

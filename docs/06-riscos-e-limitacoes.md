@@ -4,12 +4,13 @@ O que está declarado em vez de apresentado como coberto. Cada item diz o que fa
 
 ## Não implementado
 
-Tudo o que não está nesta tabela está implementado e coberto pela suíte de jornada.
+O que não está nesta tabela está implementado, e cada rota, worker e invariante tem caso na suíte de jornada. Os oito cenários de concorrência que o enunciado exige têm pacote próprio, `internal/e2e/scenarios`, com várias instâncias independentes do processo, e o comando de cada um está no `README.md`.
 
 | O quê | Estado | Nota |
 | --- | --- | --- |
 | Consumidor dos eventos | não existe | O tópico `wallet-events.fifo` é provisionado sem subscription, de propósito. A suíte de jornada anexa um assinante só pelo tempo do caso. |
-| Guia de execução em múltiplas instâncias e simulação de falha | não existe | As instruções de subida e teste estão no `README.md`. |
+| Rota de consulta pelo provedor e o contrato de campos do enunciado | não existe | A consulta é `GET /wagering/transactions/{id}`, pelo identificador do serviço, e não `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}`. A submissão responde `id` e `observedBalance`, onde o enunciado pede `transactionId` e `balance`; a reconciliação é `GET` com `ledgerBalance` e `entryCount`, onde ele pede `POST` com `calculatedBalance`, `difference` e `checkedEntries`. |
+| Réplicas como processos, e o guia de operá-las | não existe | Os cenários com várias instâncias e com a morte entre o commit e a remoção rodam por `make scenarios`, dentro do binário de teste. Falta subir réplicas como processos separados, para operar e para o teste de carga. |
 | Notificação dos alertas | não existe, de propósito | As duas regras vivem no Prometheus e aparecem no Grafana; não há Alertmanager, porque num ambiente local não há para onde notificar ([ADR 0025](adr/0025-alertas-como-regras-do-prometheus-testadas.md)). |
 
 ## Lacunas de verificação
@@ -17,6 +18,8 @@ Tudo o que não está nesta tabela está implementado e coberto pela suíte de j
 **A amarração das interfaces de comportamento não tem teste.** `problem` declara `retryable`, `defective` e `replayed` e o caso de uso as satisfaz por estrutura ([ADR 0008](adr/0008-interfaces-de-comportamento-no-consumidor.md)). Nenhum teste passa `submitwager.ErrOutcomeInFlight` ou `ErrRaceUnresolved` por `problem.From`; o teste de `problem` usa um fake local. Um rename em qualquer dos lados degrada `503` com `Retry-After` em `500` sem que nada fique vermelho. O que fecha: um teste em `problem_test.go` sobre os erros reais, e uma assertiva anônima no produtor.
 
 **A forma do identificador de principal da nuvem nunca é exercitada localmente.** O broker local registra o identificador da conta; a AWS registra o do principal ([ADR 0019](adr/0019-mapa-de-remetentes-pela-identidade-observada.md)). O valor é opaco e só comparado por igualdade dentro do mapa, então o risco é baixo — mas um mapa com o valor errado manda toda mensagem legítima para a DLQ, e é a linha de log com a identidade observada que corrige.
+
+**Os cenários obrigatórios rodam as instâncias dentro de um processo só.** Cada instância é um grafo do Fx independente, com pool, porta e componentes de fundo próprios, e nenhuma garantia do sistema passa pela memória ([ADR 0027](adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)). Mas elas dividem o runtime do Go, e um estado de pacote de que um desfecho dependesse seria compartilhado por todas: os cenários passariam onde processos separados falhariam. O isolamento de memória pelo sistema operacional não é provado por eles. O que fecha: as réplicas como processos separados, em orquestrador, com o teste de carga sobre elas.
 
 **O piso de cobertura tem margem estreita.** 70% em `internal/platform` e 80% em `internal/app`. Os caminhos de I/O de `postgres`, `probe` e `telemetry` são cobertos pela suíte de integração, que não entra nesse cálculo.
 
@@ -40,6 +43,6 @@ Três erros existem para um estado que o desenho torna inalcançável, e respond
 ## Ambiente local
 
 - O LocalStack community não persiste: qualquer reinício esvazia filas e tópico, e é preciso rodar `terraform apply` de novo. O IAM dele é parcial — o principal é criado, mas a política pode não ser aplicada como na AWS.
-- O Compose sobe uma réplica do processo. As três instâncias que o desafio pede ficam para Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas — decidido, sem manifesto nem guia ainda, como a tabela acima registra.
+- O Compose sobe uma réplica do processo. Nos testes, os cenários obrigatórios já sobem três instâncias independentes; as três como processos separados ficam para Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas — decidido, sem manifesto nem guia ainda, como a tabela acima registra.
 - O realm de teste não tem mapper de audience, e os clientes estão com `fullScopeAllowed`. A borda não confere `aud` ([ADR 0020](adr/0020-jwks-separado-do-issuer.md)).
 - O `causationId` do envelope sai omitido em todo commit que nenhuma mensagem causou: a operação por HTTP tem só `correlationId`, e o commit diferido do worker de referência é disparado pelo prazo, não pela mensagem. A travessia entre os dois commits é o identificador da transação, que o primeiro evento carrega e o segundo usa como correlação.
