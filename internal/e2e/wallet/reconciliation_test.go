@@ -149,14 +149,60 @@ func TestReconcile_namesABalanceWrittenPastTheLedger(t *testing.T) {
 
 func assertBalanceMismatch(t *testing.T, report externalReconciliation, status int) {
 	t.Helper()
+	assertDivergences(t, report, status, "BALANCE_MISMATCH")
+	assertBalances(t, report, "1100.00", "1000.00")
+}
+
+// assertDivergences checks a report that names exactly the tokens asked. The
+// status is 200 either way: a divergence is a result the read reports, not a
+// failure of the service.
+func assertDivergences(t *testing.T, report externalReconciliation, status int, want ...string) {
+	t.Helper()
 	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200: a divergence is a result, not a failure", status)
+		t.Fatalf("status of a divergent wallet = %d, want 200: a divergence is a result, not a failure", status)
 	}
 	if report.Consistent {
-		t.Fatalf("consistent = %t, want false after the balance was written past the ledger", report.Consistent)
+		t.Fatalf("consistent = %t, want false after the ledger was written past the application", report.Consistent)
 	}
-	if strings.Join(report.Divergences, ",") != "BALANCE_MISMATCH" {
-		t.Fatalf("divergences = %v, want exactly BALANCE_MISMATCH", report.Divergences)
+	if got := strings.Join(report.Divergences, ","); got != strings.Join(want, ",") {
+		t.Fatalf("divergences = %q, want exactly %q", got, strings.Join(want, ","))
 	}
-	assertBalances(t, report, "1100.00", "1000.00")
+}
+
+// The count of entries no longer reaches the last sequence, and the chain still
+// closes over the hole, so the gap is the only token: it is the aggregate arm of
+// the statement, and the stored balance follows the sum so nothing else is named.
+func TestReconcile_namesASequenceThatHasNoEntry(t *testing.T) {
+	ctx, base := start(t)
+	internal := tokenFor(ctx, t, internalClient, internalSecret)
+	wallet := openFunded(ctx, t, base, internal)
+	gap := brokenEntry{entryID: lowEntryID(), sequence: 5, amountCents: 2500, balanceBefore: 100000}
+	insertEntryPastTheApplication(ctx, t, wallet.wallet.ID, gap, 102500)
+	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
+	assertDivergences(t, report, status, "SEQUENCE_GAP")
+	if report.EntryCount != 2 || report.LastSequence != 5 {
+		t.Fatalf("report = %d entries up to sequence %d, want 2 up to 5", report.EntryCount, report.LastSequence)
+	}
+	if report.FirstBreakSequence != 0 {
+		t.Fatalf("first break = %d, want 0: the chain closes over the hole", report.FirstBreakSequence)
+	}
+}
+
+// The entry starts from a balance the one before it did not leave. This is the
+// window arm of the statement, the only one that needs the whole ledger, and the
+// report answers where the chain broke and not only that it did.
+func TestReconcile_pointsAtTheEntryThatDoesNotContinueTheChain(t *testing.T) {
+	ctx, base := start(t)
+	internal := tokenFor(ctx, t, internalClient, internalSecret)
+	wallet := openFunded(ctx, t, base, internal)
+	broken := brokenEntry{entryID: lowEntryID(), sequence: 2, amountCents: 1000, balanceBefore: 50000}
+	insertEntryPastTheApplication(ctx, t, wallet.wallet.ID, broken, 101000)
+	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
+	assertDivergences(t, report, status, "CHAIN_BREAK")
+	if report.FirstBreakSequence != 2 {
+		t.Fatalf("first break = %d, want 2: the entry that starts from a balance the first one did not leave", report.FirstBreakSequence)
+	}
+	if report.EntryCount != 2 || report.LastSequence != 2 {
+		t.Fatalf("report = %d entries up to sequence %d, want 2 up to 2: the chain broke, the sequence did not", report.EntryCount, report.LastSequence)
+	}
 }

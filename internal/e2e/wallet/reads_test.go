@@ -166,15 +166,68 @@ func reconcile(ctx context.Context, t *testing.T, base, bearer, walletID string)
 	return answered, status
 }
 
-// divergeBalance writes a stored balance the ledger does not sum to, which is
-// the only state the reconciliation exists to detect and the one thing the
-// application role cannot produce.
-//
-// The deferred constraint trigger would refuse the commit, so it is switched
-// off for this transaction with session_replication_role, which only a
-// superuser may set. A suite pointed at another user fails here by name instead
-// of passing a case it never ran.
+// divergeBalance writes a stored balance the ledger does not sum to, which is one
+// of the three states the reconciliation exists to detect and one the application
+// role cannot produce.
 func divergeBalance(ctx context.Context, t *testing.T, walletID string, cents int64) {
+	t.Helper()
+	withoutTriggers(ctx, t, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, updateStoredBalance, walletID, cents); err != nil {
+			t.Fatalf("write the balance past the ledger = %v, want nil", err)
+		}
+	})
+}
+
+// brokenEntry is a ledger row the application could not write: the case spells the
+// sequence, the credit and the balance the row starts from, and the helper closes
+// the movement the way the per-row CHECK demands. The identity comes from
+// lowEntryID, for the reason given there.
+type brokenEntry struct {
+	entryID       string
+	sequence      int64
+	amountCents   int64
+	balanceBefore int64
+}
+
+// insertEntryPastTheApplication writes that row and moves the stored balance onto
+// the signed sum of the ledger, so the report names the divergence the case is
+// about and not a balance mismatch on top of it. It is the only way to reach the
+// aggregate and window arms of the summary statement.
+func insertEntryPastTheApplication(ctx context.Context, t *testing.T, walletID string, entry brokenEntry, storedCents int64) {
+	t.Helper()
+	withoutTriggers(ctx, t, func(tx pgx.Tx) {
+		after := entry.balanceBefore + entry.amountCents
+		args := []any{entry.entryID, walletID, suiteenv.NewID(), entry.amountCents, entry.balanceBefore, after, entry.sequence}
+		if _, err := tx.Exec(ctx, insertLedgerEntry, args...); err != nil {
+			t.Fatalf("write the entry past the application = %v, want nil", err)
+		}
+		if _, err := tx.Exec(ctx, updateStoredBalance, walletID, storedCents); err != nil {
+			t.Fatalf("move the stored balance onto the sum of the ledger = %v, want nil", err)
+		}
+	})
+}
+
+// The application role holds only SELECT and INSERT on the ledger, and the
+// currency is the one openFunded opens the wallet with.
+const insertLedgerEntry = `
+INSERT INTO ledger_entries (id, wallet_id, transaction_id, direction, amount_cents, currency,
+                            balance_before_cents, balance_after_cents, sequence_number, created_at)
+VALUES ($1, $2, $3, 'CREDIT', $4, 'BRL', $5, $6, $7, now())`
+
+const updateStoredBalance = `UPDATE wallets SET balance_cents = $2 WHERE id = $1`
+
+// lowEntryID mints an identity whose first four bytes are zero, which sorts below
+// every identity the application mints, and whose tail is random, which keeps the
+// primary key free across cases and across runs of the suite.
+func lowEntryID() string {
+	return "00000000-0000-4000-8000-" + suiteenv.NewID()[24:]
+}
+
+// withoutTriggers runs the write with the triggers off: the deferred balance
+// trigger and the foreign key of the transaction refuse every row these cases
+// need, while the per-row CHECK stays on. Only a superuser may set
+// session_replication_role, and a suite pointed at another user fails by name.
+func withoutTriggers(ctx context.Context, t *testing.T, write func(tx pgx.Tx)) {
 	t.Helper()
 	conn := connect(ctx, t)
 	requireSuperuser(ctx, t, conn)
@@ -185,11 +238,9 @@ func divergeBalance(ctx context.Context, t *testing.T, walletID string, cents in
 	if _, err := tx.Exec(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
 		t.Fatalf("switch the triggers off = %v, want nil: the divergence needs a superuser", err)
 	}
-	if _, err := tx.Exec(ctx, "UPDATE wallets SET balance_cents = $2 WHERE id = $1", walletID, cents); err != nil {
-		t.Fatalf("write the balance past the ledger = %v, want nil", err)
-	}
+	write(tx)
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the divergence = %v, want nil: the trigger was expected to be off", err)
+		t.Fatalf("commit the divergence = %v, want nil: the triggers were expected to be off", err)
 	}
 }
 
