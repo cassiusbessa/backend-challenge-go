@@ -7,7 +7,7 @@ O serviço é um bounded context, um binário e N réplicas. Esta página é o n
 ```mermaid
 flowchart LR
     provider(["Provedor de jogo<br/>envia apostas · lê a própria transação"])
-    internal(["Cliente interno<br/>abre e lê carteira"])
+    internal(["Cliente interno<br/>abre, lê e reconcilia carteira"])
     consumer(["Consumidor de eventos<br/>ainda não existe"])
 
     system["<b>Liquidação de apostas</b><br/>Go · um binário · N réplicas"]
@@ -30,7 +30,7 @@ flowchart LR
     system -- "OTLP · scrape de /metrics" --> otel
 ```
 
-Duas identidades entram pelo HTTP, e a diferença entre elas é papel, não credencial: o **provedor** envia apostas e lê só a própria transação; o **cliente interno** abre e lê carteira e não envia aposta. Quem decide é o cliente do token cruzado com um mapa versionado — o `providerId` do corpo não autoriza nada.
+Duas identidades entram pelo HTTP, e a diferença entre elas é papel, não credencial: o **provedor** envia apostas e lê só a própria transação; o **cliente interno** abre, lê e reconcilia carteira e não envia aposta. Quem decide é o cliente do token cruzado com um mapa versionado — o `providerId` do corpo não autoriza nada.
 
 ## Os sistemas externos
 
@@ -56,7 +56,7 @@ flowchart TB
         ref["Worker de referência<br/>fecha as esperas pelo prazo"]
         relay["Relay da outbox<br/>publica por carteira, sob lease"]
         cons["Consumidor da fila<br/>long poll · inbox · DLQ"]
-        uc["Casos de uso<br/>openwallet · submitwager · readwallet<br/>readwager · resolvereference · relayoutbox · receivewager"]
+        uc["Casos de uso<br/>openwallet · submitwager · resolvereference<br/>relayoutbox · receivewager<br/>readwallet · readwager · listledger · reconcilewallet"]
         dom["Domínio<br/>money · identity · wallet · ledger · wager · event"]
         pool["Pool pgx<br/>SET ROLE wager_app"]
     end
@@ -99,7 +99,7 @@ flowchart TB
         direction LR
         storage["<b>Portas</b><br/>storage: UnitOfWork · Tx · Reads<br/>Wallets · Transactions · Entries · Outbox · Inbox"]
         escrita["<b>Escrita</b><br/>openwallet · submitwager · receivewager<br/>resolvereference · relayoutbox"]
-        leitura["<b>Leitura</b><br/>readwallet · readwager"]
+        leitura["<b>Leitura</b><br/>readwallet · readwager<br/>listledger · reconcilewallet"]
         apoio["<b>Apoio</b><br/>bodyhash · referencewait"]
     end
 
@@ -126,12 +126,14 @@ flowchart TB
 
 ## Contratos de fronteira
 
-**HTTP.** Sete rotas, e a lista fecha aqui:
+**HTTP.** Nove rotas, e a lista fecha aqui:
 
 | Rota | Papel | Responde |
 | --- | --- | --- |
 | `POST /wallets` | interno | `201` |
 | `GET /wallets/{walletId}` | interno | `200` |
+| `GET /wallets/{walletId}/ledger` | interno | `200`, página com `nextCursor` quando há próxima |
+| `GET /wallets/{walletId}/reconciliation` | interno | `200`, `consistent` e o vocabulário de divergência |
 | `POST /wagering/transactions` | provedor | `201` decidida · `202` esperando · `200` replay |
 | `GET /wagering/transactions/{transactionId}` | provedor, só a própria | `200` |
 | `GET /health/live` · `GET /health/ready` | público | `200` / `503` |

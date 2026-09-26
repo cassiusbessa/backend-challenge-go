@@ -111,6 +111,50 @@ Saldo inicial positivo grava carteira, transação `OPENING` já `PROCESSED` e o
 
 A segunda carteira do mesmo jogador na mesma moeda responde 409, decidido pela unicidade do banco e não por consulta prévia. Carteira inexistente na URL responde 404. Entrada inválida responde 400 sem gravar linha. Todo corpo de erro é `application/problem+json` conforme a RFC 9457, e `failureCode` aparece em extensão só quando a recusa é de regra de negócio.
 
+## Leituras da carteira
+
+`GET /wallets/{walletId}/ledger` devolve o extrato paginado e `GET /wallets/{walletId}/reconciliation` compara o saldo gravado com o que o ledger soma. As duas exigem o mesmo token do cliente interno das rotas de carteira; o provedor recebe 403 sem lançamento nem saldo no corpo. Nenhuma das duas grava linha, move saldo ou toma lock.
+
+```bash
+curl -s "http://localhost:8090/wallets/<id da carteira>/ledger?limit=2" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "walletId": "<id da carteira>",
+  "entries": [
+    {"id": "…", "transactionId": "…", "direction": "CREDIT", "sequenceNumber": 1,
+     "amount": {"amount":"1000.00","currency":"BRL"},
+     "balanceBefore": {"amount":"0.00","currency":"BRL"},
+     "balanceAfter": {"amount":"1000.00","currency":"BRL"},
+     "createdAt": "2026-09-26T12:00:00Z"},
+    {"id": "…", "transactionId": "…", "direction": "DEBIT", "sequenceNumber": 2, "…": "…"}
+  ],
+  "nextCursor": "MTExMTExMTEt…"
+}
+```
+
+Os lançamentos saem em ordem de sequência, cada um com o saldo anterior e o posterior, e `limit` é o tamanho da página — 50 por padrão, no máximo 200; `nextCursor` é um token opaco que só aparece quando há página seguinte, e é passado de volta em `cursor` para continuar exatamente do lançamento seguinte ao último devolvido, mesmo que outro tenha sido gravado no meio. `limit` fora da faixa ou não inteiro, cursor que a rota não emitiu e cursor emitido para outra carteira respondem 400 nomeando o campo, sem consultar o ledger — e os dois últimos com o mesmo corpo, para a recusa não dizer nada sobre a outra carteira.
+
+```bash
+curl -s "http://localhost:8090/wallets/<id da carteira>/reconciliation" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "walletId": "<id da carteira>",
+  "storedBalance": {"amount":"1100.00","currency":"BRL"},
+  "ledgerBalance": {"amount":"1000.00","currency":"BRL"},
+  "version": 1, "entryCount": 1, "lastSequence": 1,
+  "consistent": false,
+  "divergences": ["BALANCE_MISMATCH"]
+}
+```
+
+Os dois saldos saem da mesma sentença SQL, então um commit entre as leituras não inventa desvio, e a leitura não espera uma aposta que esteja com a carteira travada. `consistent` é verdadeiro quando o ledger fecha com o saldo; senão `divergences` lista o que desviou, de um vocabulário fechado: `BALANCE_MISMATCH` quando a soma difere do saldo gravado, `SEQUENCE_GAP` quando a contagem de lançamentos difere da última sequência, e `CHAIN_BREAK` quando um lançamento não começa onde o anterior terminou — este com `firstBreakSequence` apontando o primeiro. Uma carteira consistente omite os dois campos. A rota informa e não corrige; toda divergência deixa uma linha de log com o `walletId` e os tokens, sem saldo.
+
 ## Rotas de aposta
 
 `POST /wagering/transactions` liquida a operação do provedor e `GET /wagering/transactions/{transactionId}` devolve o resultado gravado. As duas exigem token de provedor: o cliente interno recebe 403 nelas, e o provedor continua recebendo 403 nas rotas de carteira.

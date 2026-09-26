@@ -78,7 +78,7 @@ Um provedor pode ter vários clientes — dois datacenters, uma rotação de seg
 
 | Papel | Pode | Não pode |
 | --- | --- | --- |
-| **Interno** | abrir carteira, ler carteira, reconciliar | enviar aposta |
+| **Interno** | abrir carteira, ler carteira, listar o ledger, reconciliar | enviar aposta |
 | **Provedor** | enviar aposta, ler a própria transação (inclusive no replay) | abrir carteira, ler saldo, ledger ou reconciliação, ler transação alheia |
 
 Corpo de outro provedor recusa com `403`, sem movimento e sem revelar se a transação existe — uma transação alheia e uma inexistente saem pelo mesmo `404`, porque o provedor é parte da consulta e não de uma checagem depois. `playerId` que não é o dono da carteira rejeita com `PLAYER_WALLET_MISMATCH`, sem movimento.
@@ -89,7 +89,7 @@ Na fila não há token: a identidade vem do broker junto da mensagem, e a recusa
 
 ## Observabilidade
 
-**Log** em JSON com lista branca de campos: `correlationId`, `trace_id`, `span_id`, `messageId`, `eventId`, `transactionId`, `walletId`, `providerId`, `kind`, `status`, `failureCode`. O filtro é do handler, não da chamada: atributo fora da lista é descartado antes da saída, então header de autorização, token, corpo, quantia e saldo não vazam nem por engano. Sucesso loga só ids; rejeição, conflito, DLQ e divergência sempre logam.
+**Log** em JSON com lista branca de campos: `correlationId`, `trace_id`, `span_id`, `messageId`, `eventId`, `transactionId`, `walletId`, `providerId`, `kind`, `status`, `failureCode`, e `divergences`, os tokens de uma reconciliação que não fechou. O filtro é do handler, não da chamada: atributo fora da lista é descartado antes da saída, então header de autorização, token, corpo, quantia e saldo não vazam nem por engano. Sucesso loga só ids; rejeição, conflito, DLQ e divergência sempre logam.
 
 **Correlação**: no HTTP, `X-Correlation-Id` vale se for token opaco curto, senão o `trace_id`; na fila sem correlação, o `messageId`. Decidida uma vez na borda, antes do handler, e carregada no contexto — o que a operação grava a leva.
 

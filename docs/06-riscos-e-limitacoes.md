@@ -8,10 +8,9 @@ Tudo o que não está nesta tabela está implementado e coberto pela suíte de j
 
 | O quê | Estado | Nota |
 | --- | --- | --- |
-| Ledger paginado (`GET /wallets/{walletId}/ledger`) | decidido, não implementado | Cursor opaco sobre `(sequence_number, id)`; `created_at` sozinho não ordena. |
-| Reconciliação (`GET /wallets/{walletId}/reconciliation`) | decidido, não implementado | Saldo armazenado e saldo calculado pelo ledger saem da mesma sentença, ou da mesma transação em `REPEATABLE READ`. |
 | Consumidor dos eventos | não existe | O tópico `wallet-events.fifo` é provisionado sem subscription, de propósito. A suíte de jornada anexa um assinante só pelo tempo do caso. |
 | Métrica e painel do atraso da outbox | não existem | A linha morta fica visível no log e no banco, mas nenhum alarme a observa. |
+| Observador contínuo da reconciliação, série e alerta de divergência | não existem | A rota e o caso de uso `reconcilewallet` já produzem o veredito; ninguém o pede periodicamente, e uma divergência só aparece no log de quem chamou a rota. |
 | Guia de execução em múltiplas instâncias e simulação de falha | não existe | As instruções de subida e teste estão no `README.md`. |
 
 ## Lacunas de verificação

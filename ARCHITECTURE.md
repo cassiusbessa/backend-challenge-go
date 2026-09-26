@@ -69,7 +69,7 @@ O mesmo princípio vale para erros: a borda HTTP declara as interfaces de compor
 - **Zero value inválido**: `Money{}`, `Wallet{}`, `Transaction{}` não são valores de negócio. Construção só por construtor; reidratação é função separada que não reaplica movimento nem emite evento.
 - **Uma função de domínio por tipo de operação** — `Bet`, `Win`, `Loss`, `Refund`, `Rollback` — em vez de um *domain service*. Nenhuma calcula saldo: quem calcula é `Wallet.move`, único escritor do saldo. O caso de uso escolhe a função pelo `kind` e não faz mais nada com ele.
 - **Um caso de uso por pacote**: `openwallet`, `submitwager`, `resolvereference`, `relayoutbox`, `receivewager`, e as leituras.
-- **Leituras fora do agregado**: `readwallet` e `readwager` devolvem modelos de leitura direto do SQL, sem reidratar nem chamar `Debit`. Um `GET` não move dinheiro e não paga por um agregado.
+- **Leituras fora do agregado**: `readwallet`, `readwager`, `listledger` e `reconcilewallet` devolvem modelos de leitura direto do SQL, sem reidratar nem chamar `Debit`. Um `GET` não move dinheiro e não paga por um agregado. A reconciliação lê os dois saldos numa sentença só e decide o veredito no caso de uso ([ADR 0022](docs/adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md)); o extrato continua de um cursor opaco amarrado à carteira ([ADR 0023](docs/adr/0023-cursor-opaco-amarrado-a-carteira.md)).
 
 ### DDD tático — o que não usamos, de propósito
 
@@ -119,6 +119,8 @@ internal/app/              casos de uso — importam o domínio e declaram as po
   relayoutbox/             o turno do relay: reivindica, publica, confirma
   receivewager/            o que a fila acrescenta à submissão: remetente e memória da mensagem
   readwallet/ readwager/   as leituras, em modelo de leitura
+  listledger/              o extrato paginado: o cursor opaco e a página de limit + 1
+  reconcilewallet/         o veredito da reconciliação sobre os agregados que o SQL devolve
   bodyhash/                o hash canônico do negócio, igual pelos dois canais
   referencewait/           a política da espera: prazo e backoff, compartilhada por quem abre e por quem fecha
 

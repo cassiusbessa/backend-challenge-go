@@ -247,3 +247,30 @@ sequenceDiagram
 ```
 
 HTTP e fila chamam o mesmo caso de uso; o que a fila acrescenta é o par que o HTTP não tem — a identidade do remetente e a memória da mensagem — e a inbox entra no mesmo commit do lançamento ([ADR 0016](adr/0016-inbox-em-savepoint.md)). No `SIGTERM`, a busca é cancelada e a decisão em curso não; a mensagem cortada pelo prazo volta com visibilidade zero.
+
+## 8. As duas leituras da carteira
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant I as Cliente interno
+    participant B as walletapi
+    participant R as reconcilewallet
+    participant PG as PostgreSQL
+
+    I->>B: GET /wallets/{walletId}/reconciliation
+    B->>R: Reconcile(walletId)
+    R->>PG: uma SELECT: wallets ⋈ (soma, contagem, última sequência, primeira quebra) do ledger
+    Note over R,PG: sem transação, sem FOR UPDATE:<br/>uma sentença é um snapshot, e não espera a aposta em curso
+    PG-->>R: LedgerSummary
+    R->>R: divergencesOf: BALANCE_MISMATCH · SEQUENCE_GAP · CHAIN_BREAK
+    R-->>B: Report
+    alt consistent
+        B-->>I: 200 sem divergences
+    else divergiu
+        B->>B: Reporter.Diverged: log com walletId e os tokens, span ok
+        B-->>I: 200 com divergences e firstBreakSequence
+    end
+```
+
+O extrato segue o mesmo molde com duas idas ao banco — existe a carteira; a página keyset de `limit + 1` linhas sobre `(sequence_number, id)` — porque nada apaga carteira, e a linha excedente é o que diz que há próxima página sem contar a tabela. O cursor decodifica antes de qualquer consulta, e é recusado se foi emitido para outra carteira ([ADR 0023](adr/0023-cursor-opaco-amarrado-a-carteira.md)). A reconciliação lê tudo numa sentença e decide fora dela: o SQL devolve números, e o veredito é regra testável sem banco, que o observador do próximo change vai chamar sem passar pela rota ([ADR 0022](adr/0022-reconciliacao-em-uma-sentenca-com-veredito-no-caso-de-uso.md)). Nenhuma das duas escreve, e a divergência não marca o span: é um resultado que a leitura relata, não uma falha do serviço.
