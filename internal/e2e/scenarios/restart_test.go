@@ -110,7 +110,7 @@ func awaitPublished(ctx context.Context, t *testing.T, db store, holder owner, r
 // leave over the opening.
 func assertReconciled(ctx context.Context, t *testing.T, at *scene, in *instance, holder owner) {
 	t.Helper()
-	answered := call(ctx, t, request{method: http.MethodGet, url: in.base + "/wallets/" + holder.id + "/reconciliation", bearer: at.internal})
+	answered := call(ctx, t, request{method: http.MethodPost, url: in.base + "/wallets/" + holder.id + "/reconciliation", bearer: at.internal})
 	if answered.status != http.StatusOK {
 		t.Fatalf("reconciliation = %d, want 200: %s", answered.status, answered.body)
 	}
@@ -118,8 +118,8 @@ func assertReconciled(ctx context.Context, t *testing.T, at *scene, in *instance
 	if err := json.Unmarshal(answered.body, &report); err != nil {
 		t.Fatalf("unmarshal the reconciliation = %v, want nil: %s", err, answered.body)
 	}
-	if !report.Consistent || report.StoredBalance.Amount != "975.00" || report.LedgerBalance.Amount != "975.00" {
+	if !report.Consistent || report.StoredBalance.Amount != "975.00" || report.CalculatedBalance.Amount != "975.00" {
 		t.Errorf("reconciliation = %+v, want consistent at 975.00 on both sides", report)
 	}
-	t.Logf("reconciliation: consistent=%t, stored %s, ledger %s", report.Consistent, report.StoredBalance.Amount, report.LedgerBalance.Amount)
+	t.Logf("reconciliation: consistent=%t, stored %s, ledger %s", report.Consistent, report.StoredBalance.Amount, report.CalculatedBalance.Amount)
 }

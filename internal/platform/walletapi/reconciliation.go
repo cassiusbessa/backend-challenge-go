@@ -14,26 +14,28 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, id identity.WalletID) (reconcilewallet.Report, error)
 }
 
-// reconciliationResponse is what the reconciliation route answers. Divergences
-// and FirstBreakSequence are left out of a consistent wallet: a field that is
-// absent says there is nothing to name, and an empty list would say the same
-// thing twice.
+// reconciliationResponse is what the reconciliation route answers, under the
+// names of the challenge statement. Divergences and FirstBreakSequence are left
+// out of a consistent wallet: a field that is absent says there is nothing to
+// name, and an empty list would say the same thing twice.
 type reconciliationResponse struct {
 	WalletID           string      `json:"walletId"`
 	StoredBalance      money.Money `json:"storedBalance"`
-	LedgerBalance      money.Money `json:"ledgerBalance"`
+	CalculatedBalance  money.Money `json:"calculatedBalance"`
+	Difference         money.Money `json:"difference"`
 	Version            int64       `json:"version"`
-	EntryCount         int64       `json:"entryCount"`
+	CheckedEntries     int64       `json:"checkedEntries"`
 	LastSequence       int64       `json:"lastSequence"`
 	Consistent         bool        `json:"consistent"`
 	Divergences        []string    `json:"divergences,omitempty"`
 	FirstBreakSequence int64       `json:"firstBreakSequence,omitempty"`
 }
 
-// Reconcile serves GET /wallets/{walletId}/reconciliation. It reads and never
-// corrects, and a wallet that does not exist answers 404. A divergence is a
-// result the read reports, not a failure of the service: it is logged, and the
-// span stays ok.
+// Reconcile serves POST /wallets/{walletId}/reconciliation. The verb is the one
+// the challenge statement names, and the effect is still a read's: it takes no
+// body, so one that is sent changes nothing, and it never corrects. A wallet that
+// does not exist answers 404. A divergence is a result the read reports, not a
+// failure of the service: it is logged, and the span stays ok.
 func Reconcile(reconciler Reconciler, reporter *Reporter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := decodeWalletID(r)
@@ -50,9 +52,10 @@ func Reconcile(reconciler Reconciler, reporter *Reporter) http.Handler {
 		write(w, http.StatusOK, reconciliationResponse{
 			WalletID:           report.WalletID.String(),
 			StoredBalance:      report.StoredBalance,
-			LedgerBalance:      report.LedgerBalance,
+			CalculatedBalance:  report.LedgerBalance,
+			Difference:         report.Difference,
 			Version:            report.Version,
-			EntryCount:         report.EntryCount,
+			CheckedEntries:     report.EntryCount,
 			LastSequence:       report.LastSequence,
 			Consistent:         report.Consistent,
 			Divergences:        tokensOf(report.Divergences),

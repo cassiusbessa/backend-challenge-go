@@ -41,9 +41,10 @@ type externalLedger struct {
 type externalReconciliation struct {
 	WalletID           string        `json:"walletId"`
 	StoredBalance      externalMoney `json:"storedBalance"`
-	LedgerBalance      externalMoney `json:"ledgerBalance"`
+	CalculatedBalance  externalMoney `json:"calculatedBalance"`
+	Difference         externalMoney `json:"difference"`
 	Version            int64         `json:"version"`
-	EntryCount         int64         `json:"entryCount"`
+	CheckedEntries     int64         `json:"checkedEntries"`
 	LastSequence       int64         `json:"lastSequence"`
 	Consistent         bool          `json:"consistent"`
 	Divergences        []string      `json:"divergences"`
@@ -135,9 +136,9 @@ func listLedger(ctx context.Context, t *testing.T, base, bearer, walletID, rawQu
 
 // refusalOf answers the status, the media type and the raw body of a refused
 // read, so a case can compare two refusals byte for byte.
-func refusalOf(ctx context.Context, t *testing.T, rawURL, bearer string) (int, string, []byte) {
+func refusalOf(ctx context.Context, t *testing.T, method, rawURL, bearer string) (int, string, []byte) {
 	t.Helper()
-	res := send(ctx, t, http.MethodGet, rawURL, bearer, "")
+	res := send(ctx, t, method, rawURL, bearer, "")
 	defer func() { _ = res.Body.Close() }()
 	answered, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -162,7 +163,7 @@ func reconciliationURL(base, walletID string) string {
 func reconcile(ctx context.Context, t *testing.T, base, bearer, walletID string) (externalReconciliation, int) {
 	t.Helper()
 	var answered externalReconciliation
-	status := request(ctx, t, http.MethodGet, reconciliationURL(base, walletID), bearer, "", &answered)
+	status := request(ctx, t, http.MethodPost, reconciliationURL(base, walletID), bearer, "", &answered)
 	return answered, status
 }
 

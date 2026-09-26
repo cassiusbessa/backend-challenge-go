@@ -3,6 +3,7 @@ package walletapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 )
 
@@ -35,15 +37,82 @@ func assertConsistentBody(t *testing.T, body externalReconciliation) {
 
 func assertBalances(t *testing.T, body externalReconciliation, stored, rebuilt string) {
 	t.Helper()
-	if body.StoredBalance.Amount != stored || body.LedgerBalance.Amount != rebuilt || body.StoredBalance.Currency != "BRL" {
-		t.Fatalf("balances = %+v stored and %+v rebuilt, want %s and %s in BRL", body.StoredBalance, body.LedgerBalance, stored, rebuilt)
+	if body.StoredBalance.Amount != stored || body.CalculatedBalance.Amount != rebuilt || body.StoredBalance.Currency != "BRL" {
+		t.Fatalf("balances = %+v stored and %+v calculated, want %s and %s in BRL", body.StoredBalance, body.CalculatedBalance, stored, rebuilt)
 	}
 }
 
 func assertCounters(t *testing.T, body externalReconciliation) {
 	t.Helper()
-	if body.WalletID != walletText || body.Version != 4 || body.EntryCount != 3 || body.LastSequence != 3 {
-		t.Fatalf("report = %s at version %d with %d entries up to %d, want %s at 4 with 3 up to 3", body.WalletID, body.Version, body.EntryCount, body.LastSequence, walletText)
+	if body.WalletID != walletText || body.Version != 4 || body.CheckedEntries != 3 || body.LastSequence != 3 {
+		t.Fatalf("report = %s at version %d with %d entries up to %d, want %s at 4 with 3 up to 3", body.WalletID, body.Version, body.CheckedEntries, body.LastSequence, walletText)
+	}
+}
+
+// The body carries the names of the challenge statement and none of the former
+// ones, read from the raw body so a field left out is told from a zero one.
+func TestReconcile_answersTheNamesOfTheStatement(t *testing.T) {
+	t.Parallel()
+	recorder := serve(Reconcile(&reconciler{report: consistentReport(t)}, quietReporter()), reconciliationRequestOf(walletText))
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("unmarshal the fields of the reconciliation = %v, want nil", err)
+	}
+	for _, name := range []string{"calculatedBalance", "difference", "checkedEntries"} {
+		if _, ok := fields[name]; !ok {
+			t.Fatalf("body = %s, want %q in it", recorder.Body, name)
+		}
+	}
+	for _, former := range []string{"ledgerBalance", "entryCount"} {
+		if _, ok := fields[former]; ok {
+			t.Fatalf("body = %s, want no former name %q", recorder.Body, former)
+		}
+	}
+}
+
+// The difference leaves with its sign and in the currency of the wallet: zero
+// when the two close, and the direction of the drift when they do not.
+func TestReconcile_answersTheDifferenceWithItsSign(t *testing.T) {
+	t.Parallel()
+	below := divergentReport(t)
+	below.StoredBalance = moneyOf(t, "925.00")
+	// Parse refuses a negative amount, which is the rule of external input; a
+	// difference is internal, and it is built the way the use case builds it.
+	difference, err := money.FromCents(-10000, below.StoredBalance.Currency())
+	if err != nil {
+		t.Fatalf("money.FromCents of the negative difference = %v, want nil", err)
+	}
+	below.Difference = difference
+	cases := map[string]struct {
+		report reconcilewallet.Report
+		want   string
+	}{
+		"consistent": {report: consistentReport(t), want: "0.00"},
+		"above":      {report: divergentReport(t), want: "975.00"},
+		"below":      {report: below, want: "-100.00"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			body := decodeReconciliation(t, serve(Reconcile(&reconciler{report: tc.report}, quietReporter()), reconciliationRequestOf(walletText)))
+			if body.Difference.Amount != tc.want || body.Difference.Currency != "BRL" {
+				t.Fatalf("difference = %+v, want %s BRL", body.Difference, tc.want)
+			}
+		})
+	}
+}
+
+// The route takes no body: one that is sent, even one naming another wallet and
+// other balances, answers the same bytes as none at all.
+func TestReconcile_answersTheSameWhateverBodyIsSent(t *testing.T) {
+	t.Parallel()
+	bare := serve(Reconcile(&reconciler{report: consistentReport(t)}, quietReporter()), reconciliationRequestOf(walletText))
+	sent := reconciliationRequestOf(walletText)
+	sent.Body = io.NopCloser(strings.NewReader(`{"walletId":"` + walletText + `","storedBalance":{"amount":"1.00","currency":"BRL"}}`))
+	sent.Header.Set("Content-Type", "application/json")
+	withBody := serve(Reconcile(&reconciler{report: consistentReport(t)}, quietReporter()), sent)
+	if withBody.Code != bare.Code || withBody.Body.String() != bare.Body.String() {
+		t.Fatalf("with a body = %d %s, want the %d %s of none", withBody.Code, withBody.Body, bare.Code, bare.Body)
 	}
 }
 
@@ -134,9 +203,10 @@ func (r *reconciler) Reconcile(context.Context, identity.WalletID) (reconcilewal
 type externalReconciliation struct {
 	WalletID           string        `json:"walletId"`
 	StoredBalance      externalMoney `json:"storedBalance"`
-	LedgerBalance      externalMoney `json:"ledgerBalance"`
+	CalculatedBalance  externalMoney `json:"calculatedBalance"`
+	Difference         externalMoney `json:"difference"`
 	Version            int64         `json:"version"`
-	EntryCount         int64         `json:"entryCount"`
+	CheckedEntries     int64         `json:"checkedEntries"`
 	LastSequence       int64         `json:"lastSequence"`
 	Consistent         bool          `json:"consistent"`
 	Divergences        []string      `json:"divergences"`
@@ -144,7 +214,7 @@ type externalReconciliation struct {
 }
 
 func reconciliationRequestOf(walletID string) *http.Request {
-	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/wallets/"+walletID+"/reconciliation", nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/wallets/"+walletID+"/reconciliation", nil)
 	request.SetPathValue("walletId", walletID)
 	return request
 }
@@ -164,6 +234,7 @@ func consistentReport(t *testing.T) reconcilewallet.Report {
 		WalletID:      walletOf(t),
 		StoredBalance: moneyOf(t, "1025.00"),
 		LedgerBalance: moneyOf(t, "1025.00"),
+		Difference:    moneyOf(t, "0.00"),
 		Version:       4,
 		EntryCount:    3,
 		LastSequence:  3,
@@ -175,6 +246,7 @@ func divergentReport(t *testing.T) reconcilewallet.Report {
 	t.Helper()
 	report := consistentReport(t)
 	report.StoredBalance = moneyOf(t, "2000.00")
+	report.Difference = moneyOf(t, "975.00")
 	report.Consistent = false
 	report.Divergences = []reconcilewallet.Divergence{reconcilewallet.BalanceMismatch, reconcilewallet.ChainBreak}
 	report.FirstBreakSequence = 2

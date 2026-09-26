@@ -43,7 +43,7 @@ func Handler(routes Routes) http.Handler {
 	mux.Handle("POST /wallets", routes.wrap("POST /wallets", routes.OpenWallet))
 	mux.Handle("GET /wallets/{walletId}", routes.wrap("GET /wallets/{walletId}", routes.ReadWallet))
 	mux.Handle("GET /wallets/{walletId}/ledger", routes.wrap("GET /wallets/{walletId}/ledger", routes.ListLedger))
-	mux.Handle("GET /wallets/{walletId}/reconciliation", routes.wrap("GET /wallets/{walletId}/reconciliation", routes.ReconcileWallet))
+	mux.Handle("POST /wallets/{walletId}/reconciliation", routes.wrap("POST /wallets/{walletId}/reconciliation", routes.ReconcileWallet))
 	mux.Handle("POST /wagering/transactions", routes.wrap("POST /wagering/transactions", routes.SubmitWager))
 	mux.Handle("GET /wagering/transactions/{transactionId}", routes.wrap("GET /wagering/transactions/{transactionId}", routes.ReadTransaction))
 	mux.Handle("GET /providers/{providerId}/wagering/transactions/{externalTransactionId}",

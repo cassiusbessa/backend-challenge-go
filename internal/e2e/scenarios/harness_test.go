@@ -345,9 +345,9 @@ type rejection struct {
 // reconciliation is what the reconciliation of a wallet answers, in the fields a
 // case asks about.
 type reconciliation struct {
-	StoredBalance externalMoney `json:"storedBalance"`
-	LedgerBalance externalMoney `json:"ledgerBalance"`
-	Consistent    bool          `json:"consistent"`
+	StoredBalance     externalMoney `json:"storedBalance"`
+	CalculatedBalance externalMoney `json:"calculatedBalance"`
+	Consistent        bool          `json:"consistent"`
 }
 
 // externalMoney is money as the client reads it: two strings, never a number.

@@ -29,6 +29,7 @@ func TestReconcile_answersConsistentAfterThreeMovements(t *testing.T) {
 	wallet.win(ctx, t, base, "50.00")
 	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
 	assertConsistent(t, report, status, "1025.00", 3, 3)
+	assertDifference(t, report, "0.00")
 	if report.Version != 3 {
 		t.Fatalf("version = %d, want 3 after two movements over the opening", report.Version)
 	}
@@ -46,21 +47,30 @@ func assertConsistent(t *testing.T, report externalReconciliation, status int, b
 		t.Fatalf("consistent = false with %v, want true", report.Divergences)
 	}
 	assertBalances(t, report, balance, balance)
-	if report.EntryCount != count || report.LastSequence != last {
-		t.Fatalf("report = %d entries up to %d, want %d up to %d", report.EntryCount, report.LastSequence, count, last)
+	if report.CheckedEntries != count || report.LastSequence != last {
+		t.Fatalf("report = %d entries up to %d, want %d up to %d", report.CheckedEntries, report.LastSequence, count, last)
 	}
 }
 
 func assertBalances(t *testing.T, report externalReconciliation, stored, rebuilt string) {
 	t.Helper()
-	if report.StoredBalance.Amount != stored || report.LedgerBalance.Amount != rebuilt || report.LedgerBalance.Currency != "BRL" {
-		t.Fatalf("balances = %+v stored and %+v rebuilt, want %s and %s in BRL", report.StoredBalance, report.LedgerBalance, stored, rebuilt)
+	if report.StoredBalance.Amount != stored || report.CalculatedBalance.Amount != rebuilt || report.CalculatedBalance.Currency != "BRL" {
+		t.Fatalf("balances = %+v stored and %+v calculated, want %s and %s in BRL", report.StoredBalance, report.CalculatedBalance, stored, rebuilt)
+	}
+}
+
+// assertDifference checks the stored balance minus the calculated one, with its
+// sign and in the currency of the wallet.
+func assertDifference(t *testing.T, report externalReconciliation, want string) {
+	t.Helper()
+	if report.Difference.Amount != want || report.Difference.Currency != "BRL" {
+		t.Fatalf("difference = %+v, want %s BRL", report.Difference, want)
 	}
 }
 
 func assertNoDivergenceField(ctx context.Context, t *testing.T, base, internal, walletID string) {
 	t.Helper()
-	_, _, raw := refusalOf(ctx, t, reconciliationURL(base, walletID), internal)
+	_, _, raw := refusalOf(ctx, t, http.MethodPost, reconciliationURL(base, walletID), internal)
 	for _, absent := range []string{"divergences", "firstBreakSequence"} {
 		if bytes.Contains(raw, []byte(absent)) {
 			t.Fatalf("body = %s, want it without %q for a consistent wallet", raw, absent)
@@ -77,13 +87,31 @@ func TestReconcile_answersConsistentForAWalletAtZero(t *testing.T) {
 	}
 	report, status := reconcile(ctx, t, base, internal, opened.ID)
 	assertConsistent(t, report, status, "0.00", 0, 0)
+	assertDifference(t, report, "0.00")
+}
+
+// The former verb no longer reconciles: it falls on the route that does not
+// exist, and the answer carries neither a balance nor a verdict.
+func TestReconcile_isNotServedByTheFormerVerb(t *testing.T) {
+	ctx, base := start(t)
+	internal := tokenFor(ctx, t, internalClient, internalSecret)
+	wallet := openFunded(ctx, t, base, internal)
+	status, _, raw := refusalOf(ctx, t, http.MethodGet, reconciliationURL(base, wallet.wallet.ID), internal)
+	if status == http.StatusOK {
+		t.Fatalf("GET of the reconciliation = %d, want it not to answer the verdict: %s", status, raw)
+	}
+	for _, banned := range []string{"storedBalance", "calculatedBalance", "consistent", "1000.00"} {
+		if bytes.Contains(raw, []byte(banned)) {
+			t.Fatalf("body of the former verb = %s, want it without %q", raw, banned)
+		}
+	}
 }
 
 func TestReconcile_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	asked := suiteenv.NewID()
-	status, mediaType, _ := refusalOf(ctx, t, reconciliationURL(base, asked), internal)
+	status, mediaType, _ := refusalOf(ctx, t, http.MethodPost, reconciliationURL(base, asked), internal)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", status)
 	}
@@ -151,6 +179,20 @@ func assertBalanceMismatch(t *testing.T, report externalReconciliation, status i
 	t.Helper()
 	assertDivergences(t, report, status, "BALANCE_MISMATCH")
 	assertBalances(t, report, "1100.00", "1000.00")
+	assertDifference(t, report, "100.00")
+}
+
+// A stored balance written below what the ledger sums drifts the other way, and
+// the difference says so with its sign.
+func TestReconcile_answersANegativeDifferenceForABalanceWrittenBelowTheLedger(t *testing.T) {
+	ctx, base := start(t)
+	internal := tokenFor(ctx, t, internalClient, internalSecret)
+	wallet := openFunded(ctx, t, base, internal)
+	divergeBalance(ctx, t, wallet.wallet.ID, 90000)
+	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
+	assertDivergences(t, report, status, "BALANCE_MISMATCH")
+	assertBalances(t, report, "900.00", "1000.00")
+	assertDifference(t, report, "-100.00")
 }
 
 // assertDivergences checks a report that names exactly the tokens asked. The
@@ -180,8 +222,8 @@ func TestReconcile_namesASequenceThatHasNoEntry(t *testing.T) {
 	insertEntryPastTheApplication(ctx, t, wallet.wallet.ID, gap, 102500)
 	report, status := reconcile(ctx, t, base, internal, wallet.wallet.ID)
 	assertDivergences(t, report, status, "SEQUENCE_GAP")
-	if report.EntryCount != 2 || report.LastSequence != 5 {
-		t.Fatalf("report = %d entries up to sequence %d, want 2 up to 5", report.EntryCount, report.LastSequence)
+	if report.CheckedEntries != 2 || report.LastSequence != 5 {
+		t.Fatalf("report = %d entries up to sequence %d, want 2 up to 5", report.CheckedEntries, report.LastSequence)
 	}
 	if report.FirstBreakSequence != 0 {
 		t.Fatalf("first break = %d, want 0: the chain closes over the hole", report.FirstBreakSequence)
@@ -202,7 +244,7 @@ func TestReconcile_pointsAtTheEntryThatDoesNotContinueTheChain(t *testing.T) {
 	if report.FirstBreakSequence != 2 {
 		t.Fatalf("first break = %d, want 2: the entry that starts from a balance the first one did not leave", report.FirstBreakSequence)
 	}
-	if report.EntryCount != 2 || report.LastSequence != 2 {
-		t.Fatalf("report = %d entries up to sequence %d, want 2 up to 2: the chain broke, the sequence did not", report.EntryCount, report.LastSequence)
+	if report.CheckedEntries != 2 || report.LastSequence != 2 {
+		t.Fatalf("report = %d entries up to sequence %d, want 2 up to 2: the chain broke, the sequence did not", report.CheckedEntries, report.LastSequence)
 	}
 }

@@ -128,7 +128,7 @@ func TestListLedger_answers404ForAWalletThatDoesNotExist(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	asked := suiteenv.NewID()
-	status, mediaType, _ := refusalOf(ctx, t, ledgerURL(base, asked, ""), internal)
+	status, mediaType, _ := refusalOf(ctx, t, http.MethodGet, ledgerURL(base, asked, ""), internal)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", status)
 	}
@@ -146,7 +146,7 @@ func TestListLedger_refusesEveryLimitOutsideTheContractNamingTheField(t *testing
 	wallet := openFunded(ctx, t, base, internal)
 	for _, limit := range []string{"0", "201", "abc"} {
 		t.Run("limit "+limit+" is refused", func(t *testing.T) {
-			status, mediaType, raw := refusalOf(ctx, t, ledgerURL(base, wallet.wallet.ID, "limit="+limit), internal)
+			status, mediaType, raw := refusalOf(ctx, t, http.MethodGet, ledgerURL(base, wallet.wallet.ID, "limit="+limit), internal)
 			assertInvalidField(t, status, mediaType, raw, "limit")
 		})
 	}
@@ -174,7 +174,7 @@ func TestListLedger_refusesACursorTheRouteDidNotIssue(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	wallet := openFunded(ctx, t, base, internal)
-	status, mediaType, raw := refusalOf(ctx, t, ledgerURL(base, wallet.wallet.ID, "cursor=bm90LW91cnM"), internal)
+	status, mediaType, raw := refusalOf(ctx, t, http.MethodGet, ledgerURL(base, wallet.wallet.ID, "cursor=bm90LW91cnM"), internal)
 	assertInvalidField(t, status, mediaType, raw, "cursor")
 	if bytes.Contains(raw, []byte("bm90LW91cnM")) {
 		t.Fatalf("body = %s, want it without the cursor", raw)
@@ -194,11 +194,11 @@ func TestListLedger_refusesTheCursorOfAnotherWalletTheSameWayAsAMalformedOne(t *
 		t.Fatalf("cursor of wallet A = %q, want one to present on wallet B", issued.NextCursor)
 	}
 	second := openFunded(ctx, t, base, internal)
-	status, _, otherWallet := refusalOf(ctx, t, ledgerURL(base, second.wallet.ID, "cursor="+issued.NextCursor), internal)
+	status, _, otherWallet := refusalOf(ctx, t, http.MethodGet, ledgerURL(base, second.wallet.ID, "cursor="+issued.NextCursor), internal)
 	if status != http.StatusBadRequest {
 		t.Fatalf("status of the cursor of another wallet = %d, want 400", status)
 	}
-	_, _, malformed := refusalOf(ctx, t, ledgerURL(base, second.wallet.ID, "cursor=bm90LW91cnM"), internal)
+	_, _, malformed := refusalOf(ctx, t, http.MethodGet, ledgerURL(base, second.wallet.ID, "cursor=bm90LW91cnM"), internal)
 	if !bytes.Equal(otherWallet, malformed) {
 		t.Fatalf("refusal of the cursor of another wallet = %s, want the same body as a malformed one, %s", otherWallet, malformed)
 	}
@@ -211,12 +211,9 @@ func TestReadRoutes_refuseAProviderByPermissionWithoutALedgerOrABalance(t *testi
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	wallet := openFunded(ctx, t, base, internal)
-	for name, rawURL := range map[string]string{
-		"the ledger":         ledgerURL(base, wallet.wallet.ID, ""),
-		"the reconciliation": reconciliationURL(base, wallet.wallet.ID),
-	} {
+	for name, asked := range readRoutes(base, wallet.wallet.ID) {
 		t.Run(name+" refuses the provider", func(t *testing.T) {
-			status, mediaType, raw := refusalOf(ctx, t, rawURL, wallet.provider)
+			status, mediaType, raw := refusalOf(ctx, t, asked.method, asked.url, wallet.provider)
 			assertRefusedByPermission(t, status, mediaType, raw)
 		})
 	}
@@ -243,16 +240,27 @@ func TestReadRoutes_refuseAnAbsentCredential(t *testing.T) {
 	ctx, base := start(t)
 	internal := tokenFor(ctx, t, internalClient, internalSecret)
 	wallet := openFunded(ctx, t, base, internal)
-	for name, rawURL := range map[string]string{
-		"the ledger":         ledgerURL(base, wallet.wallet.ID, ""),
-		"the reconciliation": reconciliationURL(base, wallet.wallet.ID),
-	} {
+	for name, asked := range readRoutes(base, wallet.wallet.ID) {
 		t.Run(name+" refuses the absent credential", func(t *testing.T) {
-			status, _, _ := refusalOf(ctx, t, rawURL, "")
+			status, _, _ := refusalOf(ctx, t, asked.method, asked.url, "")
 			if status != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401", status)
 			}
 		})
+	}
+}
+
+// route is one of the two reads as the client calls it: the ledger is a GET, and
+// the reconciliation is the POST the challenge statement names.
+type route struct {
+	method string
+	url    string
+}
+
+func readRoutes(base, walletID string) map[string]route {
+	return map[string]route{
+		"the ledger":         {method: http.MethodGet, url: ledgerURL(base, walletID, "")},
+		"the reconciliation": {method: http.MethodPost, url: reconciliationURL(base, walletID)},
 	}
 }
 

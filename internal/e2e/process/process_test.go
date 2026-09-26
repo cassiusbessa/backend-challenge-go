@@ -106,7 +106,7 @@ func TestWagerAndWalletReadRoutesAreServed(t *testing.T) {
 		{method: http.MethodGet, path: "/wagering/transactions/33333333-3333-4333-8333-333333333333"},
 		{method: http.MethodGet, path: "/providers/provider-a/wagering/transactions/external-1"},
 		{method: http.MethodGet, path: wallet + "/ledger"},
-		{method: http.MethodGet, path: wallet + "/reconciliation"},
+		{method: http.MethodPost, path: wallet + "/reconciliation"},
 	}
 	for _, route := range routes {
 		if got := statusOf(ctx, t, route.method, base+route.path); got != http.StatusUnauthorized {
