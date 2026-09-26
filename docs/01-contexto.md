@@ -161,4 +161,4 @@ Os três prazos da fila não são três números: `QUEUE_VISIBILITY` tem de cobr
 
 ## Implantação
 
-`docker compose up --build` sobe o ambiente inteiro: `postgres`, `localstack`, `keycloak`, `otel-collector`, `tempo`, `loki`, `prometheus`, `grafana`, o `migrate` que termina, o `tools` do Terraform e `wager`, uma réplica do processo. Kind ou k3d reproduzem as três instâncias que o desafio pede, com a migration como Job. O `README.md` tem o passo a passo.
+`docker compose up --build` sobe o ambiente inteiro: `postgres`, `localstack`, `keycloak`, `otel-collector`, `tempo`, `loki`, `prometheus`, `grafana`, o `migrate` que termina, o `tools` do Terraform e `wager`, uma réplica do processo. As três instâncias que o desafio pede ficam para Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas; os manifestos e o guia ainda não existem, e [06 · Riscos e limitações](06-riscos-e-limitacoes.md) os lista como pendentes.

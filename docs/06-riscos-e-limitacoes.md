@@ -41,6 +41,6 @@ Três erros existem para um estado que o desenho torna inalcançável, e respond
 ## Ambiente local
 
 - O LocalStack community não persiste: qualquer reinício esvazia filas e tópico, e é preciso rodar `terraform apply` de novo. O IAM dele é parcial — o principal é criado, mas a política pode não ser aplicada como na AWS.
-- O Compose sobe uma réplica do processo. As três instâncias que o desafio pede são reproduzidas com Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas.
+- O Compose sobe uma réplica do processo. As três instâncias que o desafio pede ficam para Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas — decidido, sem manifesto nem guia ainda, como a tabela acima registra.
 - O realm de teste não tem mapper de audience, e os clientes estão com `fullScopeAllowed`. A borda não confere `aud` ([ADR 0020](adr/0020-jwks-separado-do-issuer.md)).
 - O `causationId` do envelope sai omitido em todo commit que nenhuma mensagem causou: a operação por HTTP tem só `correlationId`, e o commit diferido do worker de referência é disparado pelo prazo, não pela mensagem. A travessia entre os dois commits é o identificador da transação, que o primeiro evento carrega e o segundo usa como correlação.
