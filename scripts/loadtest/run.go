@@ -18,10 +18,17 @@ func run(ctx context.Context, o options, stdout io.Writer) error {
 	}
 	start := time.Now()
 	l.send(ctx, start.Add(o.duration))
+	window := time.Since(start)
 	unresolved := l.resolveAll(ctx)
-	wallets := l.check(ctx)
-	fmt.Fprintf(stdout, "sent %d arrivals: %d decided, %d errors, %d replays\n", l.sent, len(l.latencies), l.errors, l.replays)
-	return verdictOf(append(append(l.failures(), unresolved...), wallets...))
+	published := l.clientReport(window)
+	published.Failures = append(published.Failures, l.failures()...)
+	published.Failures = append(published.Failures, unresolved...)
+	published.Failures = append(published.Failures, l.check(ctx)...)
+	published.Passed = len(published.Failures) == 0
+	if err := published.write(stdout, o.report); err != nil {
+		return err
+	}
+	return verdictOf(published.Failures)
 }
 
 // failures answers what the arrivals themselves showed to be wrong.
