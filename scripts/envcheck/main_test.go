@@ -191,8 +191,16 @@ func TestGetJSON_sendsTheBearerOnlyWhenThereIsAToken(t *testing.T) {
 			if err := getJSON(options{timeout: 5 * time.Second}, server.URL, tc.token, &body); err != nil {
 				t.Fatalf("getJSON err = %v, want nil", err)
 			}
-			if got := <-heard; got != tc.want {
-				t.Errorf("Authorization = %q, want %q", got, tc.want)
+			// getJSON returns only after the answer, and the handler reports the
+			// header before it answers, so an empty channel is a request that was
+			// never sent, not one still on its way.
+			select {
+			case got := <-heard:
+				if got != tc.want {
+					t.Errorf("Authorization = %q, want %q", got, tc.want)
+				}
+			default:
+				t.Errorf("getJSON answered without a request reaching the server")
 			}
 		})
 	}
