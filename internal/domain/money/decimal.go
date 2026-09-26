@@ -109,6 +109,8 @@ func accumulate(value int64, digit byte) (int64, error) {
 func formatCents(cents int64) string {
 	units := cents / centsPerUnit
 	fraction := cents % centsPerUnit
+	// Relaxing this to fraction <= 0 is an immortal mutant: negating zero
+	// yields zero, so the padded text is the same either way.
 	if fraction < 0 {
 		fraction = -fraction
 	}

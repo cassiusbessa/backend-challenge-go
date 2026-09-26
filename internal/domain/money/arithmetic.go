@@ -55,6 +55,9 @@ func (m Money) combine(other Money, operation func(int64, int64) (int64, error))
 
 func addInt64(left, right int64) (int64, error) {
 	sum := left + right
+	// The boundary mutants of this guard are immortal: relaxing either
+	// comparison differs only at right == 0, where sum == left leaves the
+	// paired clause false on both sides.
 	if (right > 0 && sum < left) || (right < 0 && sum > left) {
 		return 0, ErrOverflow
 	}
@@ -63,6 +66,8 @@ func addInt64(left, right int64) (int64, error) {
 
 func subInt64(left, right int64) (int64, error) {
 	difference := left - right
+	// Immortal for the same reason as addInt64: the difference is only equal
+	// to left when right is zero, and there neither relaxed comparison fires.
 	if (right < 0 && difference < left) || (right > 0 && difference > left) {
 		return 0, ErrOverflow
 	}

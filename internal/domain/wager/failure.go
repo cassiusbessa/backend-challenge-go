@@ -55,6 +55,8 @@ var failureTokens = [failureCodeCount]string{
 // Catalog lists every token, in declaration order. The border builds its
 // status map from this list, and the exhaustiveness test walks it.
 func Catalog() []FailureCode {
+	// Mutants of this capacity hint are immortal: append sizes the slice, so
+	// the arithmetic here reaches no observable of the returned list.
 	out := make([]FailureCode, 0, failureCodeCount-1)
 	for code := InsufficientFunds; code < failureCodeCount; code++ {
 		out = append(out, code)
