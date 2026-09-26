@@ -74,7 +74,7 @@ WRITE_PROBE := BEGIN; SET ROLE wager_app; \
 	ROLLBACK
 
 .DEFAULT_GOAL := help
-.PHONY: help up down cluster-up provision migrate test test-journey scenarios cover-journey mutation verify migrate-reversibility rules-test
+.PHONY: help up down cluster-up cluster-down provision migrate test test-journey scenarios cover-journey mutation verify migrate-reversibility rules-test
 
 help: ## lista os alvos
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -e 's/:.*## /|/' | awk -F'|' '{printf "%-24s %s\n", $$1, $$2}'
@@ -83,7 +83,11 @@ up: ## sobe a stack com REPLICAS réplicas do processo, três por padrão, e esp
 	@$(CHECK_REPLICAS)
 	docker compose up -d --build --wait --scale wager=$(REPLICAS)
 
+# Um nó do cluster ligado à rede impede o Compose de removê-la, então o cluster
+# sai antes. A existência é lida no Docker, e não no Kind, para que um `down`
+# sem cluster não compile o Kind à toa.
 down: ## derruba a stack e descarta os volumes dela, voltando ao estado limpo
+	@if docker container inspect $(CLUSTER)-control-plane >/dev/null 2>&1; then $(KIND) delete cluster --name $(CLUSTER); fi
 	docker compose down -v
 
 # O `kubectl wait` espera uma condição só, e o Job termina em uma de duas. O
@@ -134,6 +138,14 @@ cluster-up: ## sobe REPLICAS réplicas num cluster Kind sobre os serviços do Co
 	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/wager --timeout=180s
 	$(KUBECTL) apply -f deploy/k8s/metrics-agent.yaml
 	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/metrics-agent --timeout=120s
+
+# O caminho de volta ao Compose. Um `docker compose up` à mão com o cluster de pé
+# devolveria as réplicas do Compose em silêncio, disputando a outbox e a fila com
+# os pods.
+cluster-down: ## apaga o cluster e devolve as REPLICAS réplicas do Compose a localhost:8090
+	@$(CHECK_REPLICAS)
+	$(KIND) delete cluster --name $(CLUSTER)
+	docker compose up -d --wait --scale wager=$(REPLICAS)
 
 # O mesmo serviço que o `up` roda antes das réplicas, e o que o CI roda: o
 # Terraform vem da imagem, na versão fixada no `compose.yaml`, e não do host.
