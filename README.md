@@ -6,7 +6,7 @@ A arquitetura está em [ARCHITECTURE.md](ARCHITECTURE.md): a visão de cima — 
 
 ## Pré-requisitos
 
-- Docker com Compose v2 — o Terraform que provisiona o broker vem numa imagem, e não do host
+- Docker com Compose 2.24 ou mais novo — o `restart` do `depends_on` que reprovisiona o broker pede 2.17, e o `logs --index` das réplicas, 2.24; o Terraform vem numa imagem, e não do host
 - As portas `5432`, `4566`, `8080`, `8090`, `4317`, `4318` e `3000` livres no host
 - `make` e Go 1.27.1, para o runner e o verificador
 
@@ -95,7 +95,7 @@ docker compose logs -f --index 2 wager                # só a segunda
 
 O balanceador enxerga até dez réplicas; acima disso, as excedentes sobem e não recebem tráfego. O teto é o `1-10` do `server-template` em `deploy/haproxy/haproxy.cfg`. O Prometheus raspa cada réplica em separado, pelo mesmo DNS, com o IP e a porta no rótulo `instance`.
 
-Parar uma réplica com `docker stop` a tira da rotação sem que um pedido falhe: no `SIGTERM` ela deixa de aceitar conexão, e o balanceador manda o pedido a outra enquanto a sonda não a marca fora, o que leva até dois segundos. Com `docker kill` falha só o que estava em curso nela. `docker compose up -d --wait` a devolve.
+Parar uma réplica com `docker stop` a tira da rotação sem que um pedido falhe: no `SIGTERM` ela deixa de aceitar conexão, e o balanceador manda o pedido a outra enquanto a sonda não a marca fora, o que leva até dois segundos. Com `docker kill` falha só o que estava em curso nela. `docker compose start wager` a devolve, e o balanceador a põe de volta na rotação quando ela responde ready. Um `docker compose up` também a devolve, mas reconcilia o número com `WAGER_REPLICAS` e remove as réplicas que `make up REPLICAS=n` subiu além dele.
 
 ## Schema
 
