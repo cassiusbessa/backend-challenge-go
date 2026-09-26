@@ -29,6 +29,7 @@ type options struct {
 	idp        string
 	realm      string
 	realmFile  string
+	migrations string
 	adminUser  string
 	adminPass  string
 	terraform  string
@@ -60,6 +61,7 @@ func readFlags() options {
 	flag.StringVar(&opts.realmFile, "realm-file", "deploy/keycloak/junglegaming-realm.json", "versioned realm, relative to root")
 	flag.StringVar(&opts.adminUser, "admin-user", "admin", "bootstrap administrator of the identity provider")
 	flag.StringVar(&opts.adminPass, "admin-password", "admin", "password of that administrator")
+	flag.StringVar(&opts.migrations, "migrations", "deploy/migrations", "versioned migrations, relative to root")
 	flag.StringVar(&opts.terraform, "terraform", "deploy/terraform/localstack", "versioned provisioning, relative to root")
 	flag.StringVar(&opts.service, "service", "wager", "Compose service that runs the application")
 	flag.StringVar(&opts.dockerfile, "dockerfile", "Dockerfile", "versioned image recipe, relative to root")
@@ -91,7 +93,30 @@ func checkDatabases(o options) []string {
 		}
 		states = append(states, state)
 	}
-	return append(out, compareSchema(states)...)
+	out = append(out, compareSchema(states)...)
+	names, err := migrationNames(o)
+	if err != nil {
+		return append(out, err.Error())
+	}
+	declared, err := declaredMigration(names)
+	if err != nil {
+		return append(out, err.Error())
+	}
+	return append(out, compareDeclared(declared, states)...)
+}
+
+// migrationNames lists the versioned migrations that move the schema forward. The
+// `down` files are left out: they carry the same versions and would say nothing
+// more about how current a database is.
+func migrationNames(o options) ([]string, error) {
+	names, err := filepath.Glob(filepath.Join(o.root, o.migrations, "*.up.sql"))
+	if err != nil {
+		return nil, fmt.Errorf("read the versioned migrations: %w", err)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("%s has no migration, so nothing declares the schema", filepath.Join(o.root, o.migrations))
+	}
+	return names, nil
 }
 
 func databaseState(o options, name string) (schemaState, error) {

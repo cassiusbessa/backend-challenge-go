@@ -368,3 +368,72 @@ ENTRYPOINT ["/wager"]
 		}
 	})
 }
+
+func TestDeclaredMigration_readsTheHighestVersionTheFilesDeclare(t *testing.T) {
+	t.Parallel()
+	t.Run("the highest of several, without the leading zeros", func(t *testing.T) {
+		got, err := declaredMigration([]string{
+			"deploy/migrations/000001_financial_schema.up.sql",
+			"deploy/migrations/000006_wager_inbox.up.sql",
+			"deploy/migrations/000004_outbox_publish_order.up.sql",
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if got != "6" {
+			t.Errorf("declared version = %q, want 6", got)
+		}
+	})
+
+	t.Run("a version of two digits is not compared as text", func(t *testing.T) {
+		got, err := declaredMigration([]string{"000009_nine.up.sql", "000010_ten.up.sql"})
+		if err != nil {
+			t.Fatalf("err on a set of two digits = %v, want nil", err)
+		}
+		if got != "10" {
+			t.Errorf("declared version of a set of two digits = %q, want 10", got)
+		}
+	})
+
+	t.Run("a set that names no version", func(t *testing.T) {
+		if _, err := declaredMigration([]string{"README.md"}); err == nil {
+			t.Errorf("err on a set without a migration = %v, want one", err)
+		}
+	})
+}
+
+func TestCompareDeclared_namesTheDatabaseBehindTheMigrations(t *testing.T) {
+	t.Parallel()
+	t.Run("both at the version the files declare", func(t *testing.T) {
+		got := compareDeclared("6", []schemaState{
+			{name: "junglegaming", present: true, version: "6"},
+			{name: "junglegaming_test", present: true, version: "6"},
+		})
+		if len(got) != 0 {
+			t.Errorf("findings when both are current = %v, want none", got)
+		}
+	})
+
+	t.Run("a migration applied to neither database", func(t *testing.T) {
+		got := compareDeclared("7", []schemaState{
+			{name: "junglegaming", present: true, version: "6"},
+			{name: "junglegaming_test", present: true, version: "6"},
+		})
+		if len(got) != 2 {
+			t.Fatalf("findings when the migration reached neither = %v, want two", got)
+		}
+		if !strings.Contains(got[0], "declare 7") {
+			t.Errorf("finding of a database left behind = %q, want the declared version in it", got[0])
+		}
+	})
+
+	t.Run("a state another comparison already named", func(t *testing.T) {
+		got := compareDeclared("6", []schemaState{
+			{name: "junglegaming", present: false},
+			{name: "junglegaming_test", present: true, version: noSchema},
+		})
+		if len(got) != 0 {
+			t.Errorf("findings for states compareSchema already names = %v, want none", got)
+		}
+	})
+}

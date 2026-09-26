@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -62,6 +63,49 @@ func compareSchema(states []schemaState) []string {
 		}
 	}
 	return append(out, disagreeingVersions(states)...)
+}
+
+// migrationFile matches a versioned migration and captures its version without
+// the leading zeros, which is the form golang-migrate records in the table.
+var migrationFile = regexp.MustCompile(`^0*(\d+)_.*\.up\.sql$`)
+
+// declaredMigration reads the highest version the versioned migrations declare,
+// which is the version a database that is up to date reports.
+func declaredMigration(names []string) (string, error) {
+	highest := -1
+	for _, each := range names {
+		found := migrationFile.FindStringSubmatch(filepath.Base(each))
+		if found == nil {
+			continue
+		}
+		version, err := strconv.Atoi(found[1])
+		if err != nil {
+			return "", fmt.Errorf("read the version of migration %s: %w", filepath.Base(each), err)
+		}
+		if version > highest {
+			highest = version
+		}
+	}
+	if highest < 0 {
+		return "", fmt.Errorf("no versioned migration names a version, so nothing says how current a database is")
+	}
+	return strconv.Itoa(highest), nil
+}
+
+// compareDeclared names every database that is not at the version the migrations
+// declare. Comparing the databases only against each other cannot see a migration
+// applied to neither of them, which breaks exactly as much as one applied to one.
+// A database that is missing or carries no migration is already named elsewhere.
+func compareDeclared(declared string, states []schemaState) []string {
+	var out []string
+	for _, each := range states {
+		if !each.present || each.version == noSchema || each.version == declared {
+			continue
+		}
+		out = append(out, fmt.Sprintf("database %s is at schema version %s, and the versioned migrations declare %s",
+			each.name, each.version, declared))
+	}
+	return out
 }
 
 // disagreeingVersions names the databases that are not on the same schema
