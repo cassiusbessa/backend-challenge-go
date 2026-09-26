@@ -238,6 +238,10 @@ func (r *rows) OldestWait(context.Context, time.Time) (time.Duration, error) {
 	return 0, nil
 }
 
+func (r *rows) WalletIDsAfter(context.Context, identity.WalletID, int) ([]identity.WalletID, error) {
+	return nil, nil
+}
+
 func summaryOf(t *testing.T, stored string, ledgerCents, count, last, firstBreak int64) storage.LedgerSummary {
 	t.Helper()
 	balance, err := money.Parse(stored, "BRL")

@@ -38,6 +38,16 @@ SELECT min(created_at)
   FROM wager_transactions
  WHERE status = 'PENDING_REFERENCE'`
 
+// The page of wallets a sweep walks, in the order of the identity. The zero
+// identity is the nil UUID, which sorts before every identity the process
+// mints, so the first page asks for everything after it.
+const selectWalletIDsAfter = `
+SELECT id
+  FROM wallets
+ WHERE id > $1
+ ORDER BY id
+ LIMIT $2`
+
 // Reads answers read models from the pool. A read opens no transaction and
 // writes nothing. The zero value is not used: NewReads is the only constructor.
 type Reads struct {
@@ -129,6 +139,37 @@ func (r *Reads) OldestWait(ctx context.Context, now time.Time) (time.Duration, e
 		return 0, wrap("read the oldest reference wait", err)
 	}
 	return ageOf(now, oldest), nil
+}
+
+// WalletIDsAfter answers the identities of the wallets after that one, in the
+// order of the identity, up to the limit asked.
+func (r *Reads) WalletIDsAfter(ctx context.Context, after identity.WalletID, limit int) ([]identity.WalletID, error) {
+	pool, err := r.source.Querier()
+	if err != nil {
+		return nil, wrap("acquire pool", err)
+	}
+	rows, err := pool.Query(ctx, selectWalletIDsAfter, after.String(), limit)
+	if err != nil {
+		return nil, wrap("page the wallets", err)
+	}
+	defer rows.Close()
+	return scanWalletIDs(rows)
+}
+
+func scanWalletIDs(rows pgx.Rows) ([]identity.WalletID, error) {
+	var page []identity.WalletID
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, wrap("read a wallet identity", err)
+		}
+		id, err := identity.ParseWalletID(raw)
+		if err != nil {
+			return nil, wrap("read a wallet identity", err)
+		}
+		page = append(page, id)
+	}
+	return page, wrap("page the wallets", rows.Err())
 }
 
 // ageOf answers how long the oldest wait has been waiting, and zero when there

@@ -315,4 +315,12 @@ type Reads interface {
 	// operation it cites has been waiting at that instant, measured from its
 	// entry into the wait, and zero when nothing is waiting.
 	OldestWait(ctx context.Context, now time.Time) (time.Duration, error)
+
+	// WalletIDsAfter answers the identities of the wallets after that one, in
+	// the order of the identity, up to the limit asked. The zero value starts
+	// from the first wallet, and a page shorter than the limit is the last.
+	//
+	// It takes no lock: it is the page a sweep walks, and the sweep reads each
+	// wallet on its own afterwards.
+	WalletIDsAfter(ctx context.Context, after identity.WalletID, limit int) ([]identity.WalletID, error)
 }

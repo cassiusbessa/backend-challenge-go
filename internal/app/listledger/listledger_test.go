@@ -268,6 +268,10 @@ func (r *rows) OldestWait(context.Context, time.Time) (time.Duration, error) {
 	return 0, nil
 }
 
+func (r *rows) WalletIDsAfter(context.Context, identity.WalletID, int) ([]identity.WalletID, error) {
+	return nil, nil
+}
+
 // entriesOf builds one credit per sequence, each with an identity of its own,
 // so a cursor can be checked against the entry it points at.
 func entriesOf(t *testing.T, sequences ...int64) []storage.EntryView {

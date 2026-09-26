@@ -803,6 +803,10 @@ func (b *book) OldestWait(context.Context, time.Time) (time.Duration, error) {
 	return 0, nil
 }
 
+func (b *book) WalletIDsAfter(context.Context, identity.WalletID, int) ([]identity.WalletID, error) {
+	return nil, nil
+}
+
 func (b *book) TransactionByKey(context.Context, identity.ProviderID, identity.IdempotencyKey) (wager.State, error) {
 	b.outsideReads++
 	if b.outside == nil {

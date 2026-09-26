@@ -98,6 +98,67 @@ func TestWithin_answersUnavailabilityWhenTheConnectionIsGone(t *testing.T) {
 	assertRows(ctx, t, gone.wallet.ID().String(), 0, 0, 0)
 }
 
+// The page a sweep walks: in the order of the identity, cut at the limit, the
+// page after a cursor starting right after it, and nothing after the last. The
+// suite shares the database, so the case reads its own three wallets among
+// whatever else is there, and pages the whole table to find them.
+func TestWalletIDsAfter_pagesTheWalletsInTheOrderOfTheIdentity(t *testing.T) {
+	ctx, pool, unit := open(t)
+	mine := map[identity.WalletID]bool{}
+	for range 3 {
+		opened := opening(t)
+		if err := record(ctx, unit, opened); err != nil {
+			t.Fatalf("Within = %v, want nil", err)
+		}
+		mine[opened.wallet.ID()] = true
+	}
+	reads := postgres.NewReads(pool)
+	walked := walkWallets(ctx, t, reads, 2)
+	assertAscending(t, walked)
+	seen := 0
+	for _, id := range walked {
+		if mine[id] {
+			seen++
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("wallets of this case seen by the sweep = %d, want all 3", seen)
+	}
+	last := walked[len(walked)-1]
+	if page, err := reads.WalletIDsAfter(ctx, last, 2); err != nil || len(page) != 0 {
+		t.Fatalf("page after the last wallet = %v with %v, want an empty page and nil", page, err)
+	}
+}
+
+// walkWallets pages the whole table from the zero identity, two at a time, and
+// answers every identity in the order the pages came. Every page but the last
+// is exactly the limit, which is what says the cut is by the limit.
+func walkWallets(ctx context.Context, t *testing.T, reads *postgres.Reads, limit int) []identity.WalletID {
+	t.Helper()
+	var walked []identity.WalletID
+	var cursor identity.WalletID
+	for {
+		page, err := reads.WalletIDsAfter(ctx, cursor, limit)
+		if err != nil {
+			t.Fatalf("WalletIDsAfter = %v, want nil", err)
+		}
+		walked = append(walked, page...)
+		if len(page) < limit {
+			return walked
+		}
+		cursor = page[len(page)-1]
+	}
+}
+
+func assertAscending(t *testing.T, walked []identity.WalletID) {
+	t.Helper()
+	for at := 1; at < len(walked); at++ {
+		if walked[at].String() <= walked[at-1].String() {
+			t.Fatalf("wallet %d = %s after %s, want the order of the identity", at, walked[at], walked[at-1])
+		}
+	}
+}
+
 // set is one opening, already built by the domain, waiting to be written.
 type set struct {
 	wallet      *wallet.Wallet

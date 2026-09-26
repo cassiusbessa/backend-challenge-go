@@ -278,3 +278,12 @@ func TestAgeOf_measuresTheWaitFromItsEntry(t *testing.T) {
 		t.Fatalf("age of a wait stamped ahead of the clock = %s, want 0", got)
 	}
 }
+
+func TestWalletIDsAfter_refusesWhileTheSharedPoolIsClosed(t *testing.T) {
+	t.Parallel()
+	reads := NewReads(NewPool(config.Config{DatabaseURL: unreachable}))
+	_, err := reads.WalletIDsAfter(context.Background(), identity.WalletID{}, 50)
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("WalletIDsAfter = %v, want %v", err, ErrPoolClosed)
+	}
+}
