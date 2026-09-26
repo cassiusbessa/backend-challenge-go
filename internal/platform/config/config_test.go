@@ -351,3 +351,118 @@ func TestParseDuration_refusesWhatIsNotAPositiveDuration(t *testing.T) {
 		}
 	}
 }
+
+// The three windows of the queue can each be a positive duration of its own and
+// still name a process that settles nothing: with the invisibility under the wait
+// of the long poll, a fetch comes back empty and spends the delivery anyway, and
+// five turns send every legitimate message to the dead-letter queue without one of
+// them ever being processed. Presence is not enough, so the relation refuses the
+// boot the way an absent key does.
+func TestIngressWindows_refusesTheRelationBetweenTheThreeWindows(t *testing.T) {
+	t.Parallel()
+	refusals := map[string]struct{ value, key string }{
+		"invisibility under the wait of the long poll":    {"10s", "QUEUE_VISIBILITY"},
+		"deadline of a message past the window it spends": {"60s", "QUEUE_TIMEOUT"},
+	}
+	for name, each := range refusals {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assertRefused(t, each.value, each.key)
+		})
+	}
+}
+
+// The two boundaries are the rule itself. The invisibility has to be past the poll
+// and not level with it, because a fetch that waits out the whole window leaves
+// nothing of it for the decision. The poll plus the deadline may reach the window
+// exactly: that is the message using every bit of what it was given, and the answer
+// to the broker still goes out inside the delivery it spent.
+func TestIngressWindows_holdsAtTheBoundariesOfTheRelation(t *testing.T) {
+	t.Parallel()
+	t.Run("invisibility level with the wait of the long poll", func(t *testing.T) {
+		t.Parallel()
+		assertRefused(t, "20s", "QUEUE_VISIBILITY")
+	})
+
+	t.Run("deadline reaching the window exactly", func(t *testing.T) {
+		t.Parallel()
+		// The poll defaults to 20s and the window to 30s, so a deadline of 10s
+		// lands on the boundary from below.
+		assertAccepted(t, "10s", "QUEUE_TIMEOUT")
+	})
+}
+
+// A wait below one second truncates to zero on the way to the broker, and a wait of
+// zero is not a long poll: the fetch answers empty at once and nothing paces the
+// loop, which asks the broker twice a turn. A wait past twenty is refused together
+// with the whole call, so every fetch fails and no message is ever consumed.
+func TestIngressWindows_boundsTheWaitOfTheLongPoll(t *testing.T) {
+	t.Parallel()
+	t.Run("under the second it truncates at", func(t *testing.T) {
+		t.Parallel()
+		assertRefused(t, "500ms", "QUEUE_POLL")
+	})
+
+	t.Run("past what the api takes", func(t *testing.T) {
+		t.Parallel()
+		assertRefused(t, "30s", "QUEUE_POLL")
+	})
+
+	t.Run("on either end", func(t *testing.T) {
+		t.Parallel()
+		assertAccepted(t, "1s", "QUEUE_POLL")
+		assertAccepted(t, "20s", "QUEUE_POLL")
+	})
+}
+
+// Nothing bounds the deadline of the decision from below but this floor: one of a
+// millisecond cuts every decision before it commits, and the five deliveries of a
+// sound message are spent on the dead-letter queue.
+func TestIngressWindows_boundsTheDeadlineOfTheDecisionFromBelow(t *testing.T) {
+	t.Parallel()
+	t.Run("under its floor", func(t *testing.T) {
+		t.Parallel()
+		assertRefused(t, "1ms", "QUEUE_TIMEOUT")
+	})
+
+	t.Run("on its floor", func(t *testing.T) {
+		t.Parallel()
+		assertAccepted(t, "1s", "QUEUE_TIMEOUT")
+	})
+}
+
+// assertRefused loads with that one knob overridden and demands the boot be refused
+// by name: the key names which of the windows the operator has to move.
+func assertRefused(t *testing.T, value, key string) {
+	t.Helper()
+	_, err := Load(envWith(value, key))
+	var invalid InvalidError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("Load with %s of %s = %v, want an InvalidError", key, value, err)
+	}
+	if invalid.Key != key {
+		t.Fatalf("key refused for %s of %s = %s, want %s", key, value, invalid.Key, key)
+	}
+}
+
+func assertAccepted(t *testing.T, value, key string) {
+	t.Helper()
+	if _, err := Load(envWith(value, key)); err != nil {
+		t.Fatalf("Load with %s of %s = %v, want nil", key, value, err)
+	}
+}
+
+// Validate is the hook that refuses the boot before the HTTP port opens, so the
+// relation is read there too: a Config assembled past Load must not come up with
+// windows Load would have refused.
+func TestValidate_refusesTheWindowsOutOfOrder(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(envWith("", ""))
+	if err != nil {
+		t.Fatalf("Load of the defaults the Validate case starts from = %v, want nil", err)
+	}
+	cfg.QueueVisibility = cfg.QueuePoll
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("Validate with the invisibility level with the poll = nil, want a refusal")
+	}
+}

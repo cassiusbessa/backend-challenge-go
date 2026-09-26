@@ -79,6 +79,9 @@ func Load(getenv func(string) string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if err := ingressWindows(c.QueuePoll, c.QueueVisibility, c.QueueTimeout); err != nil {
+		return err
+	}
 	return require(map[string]string{
 		"HTTP_ADDR":                   c.HTTPAddr,
 		"DATABASE_URL":                c.DatabaseURL,
@@ -238,7 +241,57 @@ func durations(raw map[string]string) (timing, error) {
 		}
 		*each.into = value
 	}
+	if err := ingressWindows(out.queuePoll, out.queueVisibility, out.queueTimeout); err != nil {
+		return timing{}, err
+	}
 	return out, nil
+}
+
+// The bounds of the long poll. Below one second the window truncates to zero on
+// the way to the broker, which divides a duration into whole seconds, and a wait
+// of zero is not a long poll at all: the fetch answers empty at once and nothing
+// paces the loop, which asks the broker twice a turn. Twenty seconds is the widest
+// wait the API takes, and a value past it is refused together with the whole call,
+// so every fetch fails and no message is ever consumed.
+const (
+	minQueuePoll = time.Second
+	maxQueuePoll = 20 * time.Second
+)
+
+// minQueueTimeout is the floor of the decision. The relation below bounds it from
+// above and nothing bounds it from below: a deadline of a millisecond cuts every
+// decision before it commits, and the five deliveries of a message are spent on
+// the dead-letter queue with nothing wrong with it.
+const minQueueTimeout = time.Second
+
+// ingressWindows refuses a set of the three queue windows the broker would answer
+// silently.
+//
+// The relation is not a preference. With the invisibility under the wait of the
+// long poll, a fetch comes back empty and spends the delivery anyway — no error,
+// no line, no signal — so five turns send every legitimate message to the
+// dead-letter queue without one of them ever being processed. The deadline of a
+// message sits inside the window together with the poll for the same reason: the
+// delivery it is spending has to still be invisible when the answer to the broker
+// goes out.
+//
+// Presence is not enough here, which is why this is not part of require: all three
+// knobs can be set, each to a positive duration of its own, and still name a
+// process that cannot settle a message.
+func ingressWindows(poll, visibility, timeout time.Duration) error {
+	if poll < minQueuePoll || poll > maxQueuePoll {
+		return InvalidError{Key: "QUEUE_POLL"}
+	}
+	if timeout < minQueueTimeout {
+		return InvalidError{Key: "QUEUE_TIMEOUT"}
+	}
+	if visibility <= poll {
+		return InvalidError{Key: "QUEUE_VISIBILITY"}
+	}
+	if poll+timeout > visibility {
+		return InvalidError{Key: "QUEUE_TIMEOUT"}
+	}
+	return nil
 }
 
 // The defaults of the reference wait. The TTL is the fifteen minutes of
