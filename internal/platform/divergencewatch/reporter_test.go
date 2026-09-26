@@ -66,12 +66,13 @@ func TestChecked_logsTheDivergentWalletAndCountsEveryToken(t *testing.T) {
 	reporter.Checked(context.Background(), reconcilewallet.Report{
 		WalletID:      id,
 		StoredBalance: brl(t, "2000.00"),
-		LedgerBalance: brl(t, "1000.00"),
+		LedgerBalance: brl(t, "1250.00"),
+		Difference:    brl(t, "750.00"),
 		Divergences:   []reconcilewallet.Divergence{reconcilewallet.BalanceMismatch, reconcilewallet.ChainBreak},
 	})
 	assertLine(t, written.String(),
 		[]string{`"walletId":"` + id.String() + `"`, "BALANCE_MISMATCH", "CHAIN_BREAK"},
-		[]string{"2000.00", "1000.00", "storedBalance", "ledgerBalance"})
+		[]string{"2000.00", "1250.00", "750.00", "storedBalance", "ledgerBalance", "calculatedBalance", "difference"})
 	assertCounted(t, moved, map[string]float64{"BALANCE_MISMATCH": 1, "CHAIN_BREAK": 1, "SEQUENCE_GAP": 0})
 	if got := testutil.ToFloat64(moved.WalletsChecked.WithLabelValues("watch")); got != 1 {
 		t.Fatalf("wallets_checked{watch} after a divergent verdict = %v, want 1", got)

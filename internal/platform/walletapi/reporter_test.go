@@ -106,7 +106,7 @@ func TestDiverged_logsTheWalletAndTheTokensWithoutABalance(t *testing.T) {
 	if !strings.Contains(line, "BALANCE_MISMATCH") || !strings.Contains(line, "CHAIN_BREAK") {
 		t.Fatalf("divergence line = %s, want the two tokens of the divergence", line)
 	}
-	for _, banned := range []string{"2000.00", "1025.00", "storedBalance", "ledgerBalance"} {
+	for _, banned := range []string{"2000.00", "1025.00", "975.00", "storedBalance", "ledgerBalance", "calculatedBalance", "difference"} {
 		if strings.Contains(line, banned) {
 			t.Fatalf("divergence line = %s, want it without %q", line, banned)
 		}
