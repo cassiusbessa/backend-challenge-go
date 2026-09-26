@@ -580,7 +580,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "wager_ingress_queue_depth",
+          "expr": "max(wager_ingress_queue_depth)",
           "legendFormat": "fila de entrada",
           "refId": "A"
         },
@@ -589,7 +589,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "wager_ingress_dead_letter_depth",
+          "expr": "max(wager_ingress_dead_letter_depth)",
           "legendFormat": "DLQ",
           "refId": "B"
         }
@@ -619,7 +619,7 @@
           "sort": "desc"
         }
       },
-      "description": "Lidas uma vez por turno do consumidor; uma leitura que falha deixa o último valor.",
+      "description": "Lidas uma vez por turno pelo consumidor de cada réplica, todas sobre a mesma fila; o painel mostra a maior leitura, e uma leitura que falha deixa o último valor.",
       "id": 13
     },
     {
@@ -694,7 +694,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "wager_reference_wait_oldest_age_seconds",
+          "expr": "max(wager_reference_wait_oldest_age_seconds)",
           "legendFormat": "mais antiga",
           "refId": "A"
         }
@@ -812,7 +812,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "wager_outbox_pending_events",
+          "expr": "max(wager_outbox_pending_events)",
           "legendFormat": "pendentes",
           "refId": "A"
         }
@@ -864,7 +864,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "wager_outbox_oldest_pending_age_seconds",
+          "expr": "max(wager_outbox_oldest_pending_age_seconds)",
           "legendFormat": "mais antigo",
           "refId": "A"
         }
@@ -930,7 +930,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "increase(wager_outbox_dead_events_total[1h])",
+          "expr": "sum(increase(wager_outbox_dead_events_total[1h]))",
           "legendFormat": "mortas na última hora",
           "refId": "A"
         }
@@ -960,7 +960,7 @@
           "sort": "desc"
         }
       },
-      "description": "A décima recusa permanente do broker. A linha permanece no banco com o mesmo eventId, e só volta por intervenção.",
+      "description": "A décima recusa permanente do broker, somada entre as réplicas: cada uma conta as linhas que ela marcou. A linha permanece no banco com o mesmo eventId, e só volta por intervenção.",
       "id": 20
     },
     {
