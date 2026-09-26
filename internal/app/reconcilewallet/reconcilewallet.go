@@ -107,8 +107,9 @@ func reportOf(summary storage.LedgerSummary) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("rebuild ledger balance: %w", err)
 	}
-	// A difference past int64 is a state Money does not represent, the same as a
-	// SUM past it (ADR 0022): there is no honest verdict, so it is a failure.
+	// The wallet certainly diverges, but a difference past int64 has no number,
+	// so the read fails as a SUM past int64 does. The alternatives and the alert
+	// this leaves blind are in docs/adr/0031.
 	difference, err := stored.Sub(rebuilt)
 	if err != nil {
 		return Report{}, fmt.Errorf("subtract ledger balance: %w", err)

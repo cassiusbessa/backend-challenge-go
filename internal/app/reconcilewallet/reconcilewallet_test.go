@@ -150,8 +150,8 @@ func TestReconcile_answersTheDifferenceWithItsSign(t *testing.T) {
 	}
 }
 
-// A ledger so far below zero that the difference leaves int64 has no verdict to
-// give, and the report answers the overflow instead of a wrapped-around number.
+// A ledger so far below zero that the difference leaves int64 has no number to
+// answer, and the reconciliation fails instead of answering a wrapped-around one.
 func TestReconcile_refusesADifferencePastTheRangeOfMoney(t *testing.T) {
 	t.Parallel()
 	report, err := New(&rows{summary: summaryOf(t, "1.00", math.MinInt64, 1, 1, 0)}).Reconcile(context.Background(), walletOf(t))
