@@ -542,3 +542,26 @@ func TestCompareDashboard_acceptsOnlyADashboardOfThatTitle(t *testing.T) {
 		}
 	})
 }
+
+// A COPY that carries only flags leaves nothing behind them, and the strip
+// stops there instead of reading past the end of the line.
+func TestStripCopyFlags_stopsAtTheEndOfALineThatIsOnlyFlags(t *testing.T) {
+	t.Parallel()
+	got, fromStage := stripCopyFlags([]string{"--chown=nonroot:nonroot", "--chmod=0755"})
+	if len(got) != 0 || fromStage {
+		t.Errorf("stripCopyFlags of flags alone = %v, %t, want nothing left and no stage", got, fromStage)
+	}
+}
+
+// Nothing declared is the sentinel below zero, so zero is the boundary: a
+// migration numbered 0 still names a version.
+func TestDeclaredMigration_readsVersionZeroAsAVersion(t *testing.T) {
+	t.Parallel()
+	got, err := declaredMigration([]string{"deploy/migrations/000000_init.up.sql"})
+	if err != nil {
+		t.Fatalf("declaredMigration of version zero: err = %v, want nil", err)
+	}
+	if got != "0" {
+		t.Errorf("declared version = %q, want 0", got)
+	}
+}
