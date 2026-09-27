@@ -499,12 +499,7 @@ func (q *queue) NextOf(_ context.Context, wallet identity.WalletID) (storage.Out
 func (q *queue) Due(ctx context.Context, limit int) ([]storage.OutboxCandidate, error) {
 	q.scans++
 	q.limit = limit
-	if q.scanned != nil {
-		select {
-		case q.scanned <- struct{}{}:
-		default:
-		}
-	}
+	q.signal()
 	if q.blocks {
 		// A database that does not answer. The adapter comes back with the error
 		// of the context, and a fake that returned at once would not be a scan
@@ -519,6 +514,18 @@ func (q *queue) Due(ctx context.Context, limit int) ([]storage.OutboxCandidate, 
 		return nil, errScannedTooOften
 	}
 	return q.answer(), nil
+}
+
+// signal tells a case waiting on the scan that one happened, and never holds
+// the scan back when nobody is listening.
+func (q *queue) signal() {
+	if q.scanned == nil {
+		return
+	}
+	select {
+	case q.scanned <- struct{}{}:
+	default:
+	}
 }
 
 // scansAtMost bounds the scans of one case. A turn that never leaves its loop
