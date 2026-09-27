@@ -205,4 +205,42 @@ flowchart LR
     prom -. "scrape de cada réplica, por DNS" .-> w1 & w2 & w3
 ```
 
-As réplicas não publicam porta: o balanceador as descobre pelo DNS do Docker, encaminha só para a que responde ready e tenta outra quando a conexão é recusada, e o Prometheus as raspa uma a uma pelo mesmo DNS ([ADR 0033](adr/0033-replicas-do-compose-atras-de-um-haproxy.md)). Os cenários de concorrência sobem três instâncias independentes do processo dentro do binário de teste ([ADR 0027](adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)). As réplicas em Kubernetes ficam para Kind ou k3d, com a migration como Job que roda uma vez antes das réplicas, e os manifestos e o guia ainda não existem — [06 · Riscos e limitações](06-riscos-e-limitacoes.md) os lista como pendentes.
+As réplicas não publicam porta: o balanceador as descobre pelo DNS do Docker, encaminha só para a que responde ready e tenta outra quando a conexão é recusada, e o Prometheus as raspa uma a uma pelo mesmo DNS ([ADR 0033](adr/0033-replicas-do-compose-atras-de-um-haproxy.md)). Os cenários de concorrência sobem três instâncias independentes do processo dentro do binário de teste ([ADR 0027](adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)).
+
+### As réplicas num cluster
+
+`make cluster-up` sobe as mesmas réplicas num cluster Kind de um nó, sobre os serviços do Compose. O nó entra na rede `junglegaming`, e cada pod alcança `postgres`, `localstack`, `keycloak` e `otel-collector` pelo mesmo nome que o `wager` do Compose usa; enquanto o cluster existe, as réplicas do Compose ficam paradas ([ADR 0034](adr/0034-cluster-kind-sobre-os-servicos-do-compose.md)).
+
+```mermaid
+flowchart LR
+    host(["host"])
+    subgraph kind["Kind · nó junglegaming, ligado à rede do Compose"]
+        direction TB
+        svc["Service wager<br/>NodePort 30091"]
+        subgraph pods["Deployment wager × REPLICAS"]
+            direction LR
+            p1["pod"]
+            p2["pod"]
+            p3["pod"]
+        end
+        job["Job migrate<br/>antes do Deployment"]
+        agent["agente do Prometheus<br/>scrape por pod"]
+    end
+    subgraph compose["Compose · rede junglegaming"]
+        direction TB
+        pg[("postgres")]
+        ls["localstack"]
+        kc["keycloak"]
+        prom["prometheus"]
+        balancer["balancer<br/>sem destino enquanto o cluster existe"]
+    end
+
+    host -- "localhost:8091" --> svc --> p1 & p2 & p3
+    host -. "localhost:8090" .-> balancer
+    p1 & p2 & p3 --> pg & ls & kc
+    job --> pg
+    agent -. "escrita remota, com exemplares" .-> prom
+    agent -.-> p1 & p2 & p3
+```
+
+O Job da migration roda uma vez a cada subida, antes do Deployment, com as migrations e o banco do Compose; as credenciais chegam por um Secret gerado das mesmas variáveis que o Compose interpola. O número de réplicas é o parâmetro `REPLICAS` do comando, e o manifesto não o declara. As séries de cada pod chegam ao Prometheus do Compose por um agente dentro do cluster, com o rótulo `pod` ([ADR 0035](adr/0035-series-das-replicas-por-agente-com-escrita-remota.md)). Como operar os dois modos, a carga sobre eles e os exercícios de falha estão em [07 · Operação](07-operacao.md).

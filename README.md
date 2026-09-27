@@ -1,224 +1,172 @@
-# Ambiente local
+# Liquidação de apostas
 
-Base compartilhada da liquidação: PostgreSQL, LocalStack, Keycloak, o cano de telemetria e as réplicas do processo `wager`, atrás de um balanceador.
+Serviço em Go que liquida as operações de provedores de jogo — aposta, ganho, perda, estorno e cancelamento — sobre a carteira do jogador. Cada movimento vira um lançamento num ledger imutável, a mesma operação enviada duas vezes produz um efeito só, e o desfecho é publicado como evento depois do commit.
 
-A arquitetura está em [ARCHITECTURE.md](ARCHITECTURE.md): a visão de cima — estilo, padrões, estrutura de pastas, invariantes — com links para a estrutura detalhada em `docs/` e para cada decisão de desenho, com a alternativa que rejeitou, em `docs/adr/`.
+As operações chegam por HTTP ou por uma fila SQS FIFO, e o serviço roda em N réplicas iguais sobre um PostgreSQL compartilhado — no Docker Compose ou num cluster Kubernetes local.
 
-## Pré-requisitos
+## O que o serviço garante
 
-- Docker com Compose 2.24 ou mais novo — o `restart` do `depends_on` que reprovisiona o broker pede 2.17, e o `logs --index` das réplicas, 2.24; o Terraform vem numa imagem, e não do host
-- As portas `5432`, `4566`, `8080`, `8090`, `4317`, `4318` e `3000` livres no host
-- `make` e Go 1.27.1, para o runner e o verificador
+- **Saldo nunca negativo**, mesmo com réplicas disputando a mesma carteira: lock da linha antes de decidir, versão como guarda do `UPDATE` e `CHECK` no banco.
+- **Uma operação, um efeito.** A idempotência é decidida por índice único, não por consulta prévia. HTTP e fila produzem o mesmo hash, então a mesma operação pelos dois canais é reconhecida como uma só.
+- **Ledger imutável.** Todo movimento tem um lançamento que o explica, a tabela só aceita `INSERT`, e no commit o saldo da carteira é o saldo posterior do último lançamento.
+- **Nenhum evento antes do commit.** O evento entra na outbox na mesma transação SQL do saldo; um relay publica depois, ao menos uma vez, com `eventId` estável.
+- **Operação fora de ordem espera.** Um estorno que chega antes da aposta que cita fica em `PENDING_REFERENCE` e é concluído — ou rejeitado por prazo — por um worker.
+- **Reconciliação contínua.** Um observador compara saldo e ledger de cada carteira e dispara alerta na primeira divergência.
+- **Dinheiro sem `float`.** `int64` de centavos com a moeda no tipo; entra e sai como string decimal.
 
-## Atalhos e verificação
+## Arquitetura
 
-Cada ritual deste documento tem um alvo no `Makefile`, e cada alvo é o comando
-que está publicado aqui — o atalho não esconde nada. `make help` lista todos.
+```mermaid
+flowchart LR
+    http["HTTP<br/>Bearer + Idempotency-Key"]
+    sqs["SQS FIFO<br/>grupo = carteira"]
+    subgraph replica["Réplica × N"]
+        direction TB
+        border["Borda<br/>autentica · autoriza"]
+        uc["Caso de uso"]
+        dom["Domínio<br/>Wallet · Ledger · Wager"]
+        uow["Unit of work — um commit<br/>inbox · carteira · transação<br/>lançamento · outbox"]
+        workers["Em segundo plano<br/>relay da outbox · worker de referência<br/>observador de divergência"]
+    end
+    pg[("PostgreSQL")]
+    sns["SNS FIFO<br/>wallet-events"]
 
-```bash
-make up          # docker compose up -d --build --wait, com três réplicas; make up REPLICAS=5 pede outro número
-make provision   # docker compose run --rm provision: o apply do broker de novo
-make migrate     # o schema nos dois bancos, cada um nomeado no comando
-make test        # a suíte de unidade
-make test-journey  # a suíte de jornada, em série e no banco dela
-make scenarios   # os oito cenários de concorrência do enunciado, um go test cada
-make rules-test  # o teste de unidade das três regras de alerta, com o promtool da imagem
-make verify      # o ambiente está no estado que os arquivos versionados declaram?
-make down        # derruba a stack e descarta os volumes dela
+    http --> border
+    sqs --> border
+    border --> uc --> dom --> uow --> pg
+    workers <--> pg
+    workers --> sns
 ```
 
-`make verify` é o único que não aparece em outra seção. Ele não altera nada e
-responde por seis coisas: os dois bancos existem, estão na mesma versão de
-schema e nessa versão que o `*.up.sql` mais alto de `deploy/migrations` declara —
-aplicada a nenhum dos dois, uma migration os deixaria concordando e atrasados; o
-realm emite token pelo tempo que `deploy/keycloak/junglegaming-realm.json`
-declara; as filas e o tópico que o Terraform descreve existem no broker; e a
-imagem em execução não é mais antiga que o último commit que mudou o que ela
-contém — os caminhos que o `Dockerfile` copia, menos os `_test.go`, que só o
-estágio de build enxerga; o Grafana tem o painel "Liquidação" provisionado; e o
-Prometheus carregou cada regra que `deploy/prometheus/rules/settlement.yml`
-declara, pelo nome. Ele sai
-diferente de zero nomeando o que divergiu, e funciona quando a aplicação não sobe
-— que é quando ele é chamado.
+Portas e adaptadores em três camadas: `internal/domain` guarda as regras e importa só a biblioteca padrão; `internal/app` coordena os casos de uso e declara as portas que precisa; `internal/platform` implementa essas portas e é a única camada que conhece `pgx`, HTTP, AWS e Uber Fx. Tudo que duas réplicas poderiam decidir diferente é decidido pelo PostgreSQL.
 
-```bash
-go run -C scripts/envcheck . -root "$PWD"
-```
+A visão completa está em [ARCHITECTURE.md](ARCHITECTURE.md), e cada decisão de desenho, com a alternativa rejeitada, em [docs/adr](docs/adr/README.md).
 
-Os defaults de flag do verificador são os valores deste repositório, e é por isso
-que o comando acima roda sem argumento. Quem tem um `.env` que troca o banco ou a
-senha do administrador usa `make verify`, que passa cada um deles explicitamente:
-o make inclui o `.env` pelo mesmo motivo que o Compose o lê.
-
-Dois alvos existem para medir, e nenhum dos dois entra na subida: `make
-cover-journey`, que soma o perfil das duas suítes com `go tool covdata`, e `make
-mutation`, que roda o gremlins sobre o módulo. E `make migrate-reversibility`
-sobe, reverte e sobe de novo **o banco da suíte**, conferindo que a versão não
-ficou suja e que os dois bancos continuam aceitando escrita pelo papel da
-aplicação — o revertido porque são os privilégios dele que a reversão revoga e a
-subida reconcede, e o da aplicação porque o papel é objeto de cluster e os dois o
-compartilham; ele derruba schema, e é por isso que o nome diz contra quem roda.
-
-## Subida
-
-Na raiz do repositório, sem precisar de um `.env`:
-
-```bash
-docker compose up --build
-```
-
-Os defaults do Compose são os valores de `.env.example`. São senhas locais do desafio, não credencial de produção.
-
-A subida prepara o banco e o broker antes de o processo escutar. Dois serviços rodam uma vez e terminam: o `migrate` aplica o schema, e o `provision` roda o apply do Terraform contra o LocalStack — filas, DLQ, tópico e remetente, descritos na seção [Broker](#broker). O `wager` espera `service_completed_successfully` dos dois, e se um deles falha o comando sai diferente de zero nomeando o serviço, com o processo parado. O binário da aplicação não carrega código de migration nem de provisionamento. Terminado o `up`, `GET /health/ready` responde 200 em `localhost:8090`.
-
-| Serviço | Endereço |
+| | |
 | --- | --- |
-| PostgreSQL | `localhost:5432`, database `junglegaming`, usuário e senha `junglegaming` |
-| LocalStack | `localhost:4566` |
-| Keycloak | `localhost:8080` |
-| Coletor OTLP | `localhost:4317` (gRPC) e `localhost:4318` (HTTP) |
-| Grafana | `localhost:3000`, usuário e senha `admin` |
-| Balanceador, na frente das réplicas do `wager` | `localhost:8090` |
+| Linguagem | Go 1.27 · Uber Fx |
+| Persistência | PostgreSQL 16 · pgx · golang-migrate |
+| Mensageria | SQS FIFO e SNS FIFO — LocalStack no ambiente local, provisionado por Terraform |
+| Identidade | Keycloak, `client_credentials` |
+| Observabilidade | OpenTelemetry → Tempo, Loki e Prometheus → Grafana |
+| Réplicas | HAProxy no Compose · Kind para Kubernetes |
 
-Consulta dos backends, a partir do host: Tempo em `localhost:3200`, Loki em `localhost:3100`, Prometheus em `localhost:9095`.
+## Início rápido
 
-### Réplicas
-
-O Compose sobe três réplicas do processo, cada uma com o próprio processo, memória e pool, sobre o mesmo banco, o mesmo broker e o mesmo IdP. Nenhuma réplica publica porta no host: `localhost:8090` é o `balancer`, um HAProxy que descobre as réplicas pelo DNS do Docker, manda tráfego só para a que responde `GET /health/ready` com 200 e, quando a conexão com uma delas é recusada, tenta outra. Um pedido que já chegou a uma réplica não é reenviado a outra. Sem nenhuma réplica pronta — o banco fora, por exemplo —, o balanceador responde 503 sem encaminhar, inclusive em `/health/live`; a liveness de cada réplica é o healthcheck dela, que `docker compose ps` mostra ([ADR 0033](docs/adr/0033-replicas-do-compose-atras-de-um-haproxy.md)).
+**Pré-requisitos:** Docker com Compose 2.24+ e as portas `5432`, `4566`, `8080`, `8090`, `4317`, `4318`, `3000`, `3100`, `3200` e `9095` livres. Para testes, cenários e carga: Go 1.27.1 e `make`. Os exemplos abaixo usam `jq`.
 
 ```bash
-WAGER_REPLICAS=5 docker compose up -d --build --wait  # o número vem de WAGER_REPLICAS, também lido do .env
-make up REPLICAS=5                                    # o mesmo, recusando antes um número que não seja inteiro ≥ 1
-docker compose logs -f wager                          # todas, intercaladas, cada linha com o nome da réplica
-docker compose logs -f --index 2 wager                # só a segunda
+docker compose up --build        # ou: make up
 ```
 
-O balanceador enxerga até dez réplicas; acima disso, as excedentes sobem e não recebem tráfego. O teto é o `1-10` do `server-template` em `deploy/haproxy/haproxy.cfg`. O Prometheus raspa cada réplica em separado, pelo mesmo DNS, com o IP e a porta no rótulo `instance`.
-
-Parar uma réplica com `docker stop` a tira da rotação sem que um pedido falhe: no `SIGTERM` ela deixa de aceitar conexão, e o balanceador manda o pedido a outra enquanto a sonda não a marca fora, o que leva até dois segundos. Com `docker kill` falha só o que estava em curso nela. `docker compose start wager` a devolve, e o balanceador a põe de volta na rotação quando ela responde ready. Um `docker compose up` também a devolve, mas reconcilia o número com `WAGER_REPLICAS` e remove as réplicas que `make up REPLICAS=n` subiu além dele.
-
-## Schema
-
-O SQL versionado fica em `deploy/migrations`, com arquivos numerados aplicados pelo `golang-migrate`. Aplicar de novo o mesmo conjunto termina com sucesso e não altera o schema.
+Não é preciso `.env`: os defaults são os valores locais de [.env.example](.env.example). A subida aplica o schema e provisiona filas e tópico no LocalStack antes de qualquer réplica, e sobe três réplicas atrás de um balanceador. Pronto quando:
 
 ```bash
-docker compose run --rm migrate
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8090/health/ready   # 200
 ```
 
-Reverter em desenvolvimento é o `down` da migration, ou `docker compose down -v` para recriar do zero. A reversão revoga os privilégios que concedeu e deixa de pé o papel `wager_app`, que é objeto de cluster compartilhado pelos dois bancos — derrubá-lo ao reverter um deles falharia enquanto o outro existisse. Quem quiser conferir a reversibilidade usa `make migrate-reversibility`, que derruba schema só no banco da suíte e nunca no da aplicação, e prova a escrita pelo papel nos dois.
+| Serviço | Endereço | Acesso |
+| --- | --- | --- |
+| API (balanceador → réplicas) | `http://localhost:8090` | token do Keycloak |
+| Keycloak | `http://localhost:8080` | realm `junglegaming` |
+| Grafana | `http://localhost:3000` | `admin` / `admin` |
+| Prometheus | `http://localhost:9095` | — |
+| PostgreSQL | `localhost:5432` | `junglegaming` / `junglegaming` |
+| LocalStack (SQS e SNS) | `http://localhost:4566` | — |
+| Coletor OTLP | `localhost:4317` (gRPC) · `localhost:4318` (HTTP) | — |
 
-As três tabelas financeiras são `wallets`, `wager_transactions` e `ledger_entries`, e ao lado delas fica a `outbox_events`, com o `eventId` como chave, o payload imutável depois da inserção e o índice parcial que serve a varredura da fila de publicação. As invariantes que o agregado não substitui ficam no banco: saldo não negativo, unicidade de jogador mais moeda, os campos exigidos por tipo e por status, uma reversão `PROCESSED` por transação citada, e o ledger recusando `UPDATE`, `DELETE` e `TRUNCATE`.
+## API
 
-A migration cria o papel `wager_app`, que tem apenas `SELECT` e `INSERT` no ledger, e concede esse papel a quem conectou. A aplicação entra com `SET ROLE` em cada conexão do pool, então o privilégio vale mesmo quando quem conecta é superusuário. Sem o schema aplicado, `GET /health/ready` responde 503 e `GET /health/live` continua 200.
+| Rota | Quem chama | Sucesso |
+| --- | --- | --- |
+| `POST /wallets` | cliente interno | `201` |
+| `GET /wallets/{walletId}` | cliente interno | `200` |
+| `GET /wallets/{walletId}/ledger` | cliente interno | `200` |
+| `POST /wallets/{walletId}/reconciliation` | cliente interno | `200` |
+| `POST /wagering/transactions` | provedor | `201` concluída · `202` aguardando referência · `200` replay |
+| `GET /wagering/transactions/{transactionId}` | provedor dono | `200` |
+| `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` | provedor dono | `200` |
+| `GET /health/live` · `GET /health/ready` · `GET /metrics` | público | `200` |
 
-## Rotas de carteira
+Dinheiro entra e sai como `{"amount":"25.00","currency":"BRL"}` — string decimal de duas casas, nunca número JSON. Todo erro sai em `application/problem+json` ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)).
 
-`POST /wallets` abre a carteira e `GET /wallets/:walletId` devolve o estado gravado. As duas exigem token do cliente interno.
+### Token
+
+O Keycloak emite tokens por `client_credentials`. `wallet-internal` abre, lê e reconcilia carteiras; `provider-a` e `provider-b` enviam operações e leem só as próprias. Quem autoriza é o cliente do token — o `providerId` do corpo ou da URL não autoriza nada.
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
-  -d grant_type=client_credentials -d client_id=wallet-internal \
-  -d client_secret=wallet-internal-local | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
-
-curl -s -X POST http://localhost:8090/wallets \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"playerId":"3f8c4a2e-1b5d-4e7a-9c3f-2d6b8a1e5c40","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
-```
-
-Saldo inicial positivo grava carteira, transação `OPENING` já `PROCESSED` e o lançamento de crédito no mesmo commit. Saldo inicial zero grava só a carteira. A carteira nasce na versão 1, e dinheiro entra e sai como `{"amount":"1000.00","currency":"BRL"}` — string decimal de duas casas, nunca número JSON.
-
-A segunda carteira do mesmo jogador na mesma moeda responde 409, decidido pela unicidade do banco e não por consulta prévia. Carteira inexistente na URL responde 404. Entrada inválida responde 400 sem gravar linha. Todo corpo de erro é `application/problem+json` conforme a RFC 9457, e `failureCode` aparece em extensão só quando a recusa é de regra de negócio.
-
-## Leituras da carteira
-
-`GET /wallets/{walletId}/ledger` devolve o extrato paginado e `POST /wallets/{walletId}/reconciliation` compara o saldo gravado com o que o ledger soma. As duas exigem o mesmo token do cliente interno das rotas de carteira; o provedor recebe 403 sem lançamento nem saldo no corpo. Nenhuma das duas grava linha, move saldo ou toma lock: a reconciliação é `POST` porque é o verbo do enunciado, e não lê corpo — um corpo enviado não muda a resposta, e o `GET` no mesmo caminho responde 404 como qualquer rota inexistente.
-
-```bash
-curl -s "http://localhost:8090/wallets/<id da carteira>/ledger?limit=2" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-{
-  "walletId": "<id da carteira>",
-  "entries": [
-    {"id": "…", "transactionId": "…", "direction": "CREDIT", "sequenceNumber": 1,
-     "amount": {"amount":"1000.00","currency":"BRL"},
-     "balanceBefore": {"amount":"0.00","currency":"BRL"},
-     "balanceAfter": {"amount":"1000.00","currency":"BRL"},
-     "createdAt": "2026-09-26T12:00:00Z"},
-    {"id": "…", "transactionId": "…", "direction": "DEBIT", "sequenceNumber": 2, "…": "…"}
-  ],
-  "nextCursor": "MTExMTExMTEt…"
+token() {
+  curl -s http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
+    -d grant_type=client_credentials -d client_id="$1" -d client_secret="$1-local" \
+    | jq -r .access_token
 }
+INTERNAL=$(token wallet-internal)
+PROVIDER=$(token provider-a)
 ```
 
-Os lançamentos saem em ordem de sequência, cada um com o saldo anterior e o posterior, e `limit` é o tamanho da página — 50 por padrão, no máximo 200; `nextCursor` é um token opaco que só aparece quando há página seguinte, e é passado de volta em `cursor` para continuar exatamente do lançamento seguinte ao último devolvido, mesmo que outro tenha sido gravado no meio. `limit` fora da faixa ou não inteiro, cursor que a rota não emitiu e cursor emitido para outra carteira respondem 400 nomeando o campo, sem consultar o ledger — e os dois últimos com o mesmo corpo, para a recusa não dizer nada sobre a outra carteira.
+### Abrir uma carteira
 
 ```bash
-curl -s -X POST "http://localhost:8090/wallets/<id da carteira>/reconciliation" \
-  -H "Authorization: Bearer $TOKEN"
+PLAYER_ID=$(uuidgen | tr 'A-Z' 'a-z')
+
+WALLET_ID=$(curl -s -X POST http://localhost:8090/wallets \
+  -H "Authorization: Bearer $INTERNAL" -H 'Content-Type: application/json' \
+  -d '{"playerId":"'"$PLAYER_ID"'","initialBalance":{"amount":"1000.00","currency":"BRL"}}' \
+  | jq -r .id)
+```
+
+```json
+{"id": "01a0e07b-5576-…", "playerId": "…", "balance": {"amount":"1000.00","currency":"BRL"}, "version": 1}
+```
+
+Saldo inicial positivo grava, no mesmo commit, a carteira, a transação `OPENING` e o lançamento de crédito. Há uma carteira por jogador e moeda: a segunda responde `409`.
+
+### Enviar uma operação
+
+`kind` é `BET`, `WIN`, `LOSS`, `REFUND` ou `ROLLBACK`. O cabeçalho `Idempotency-Key` é obrigatório.
+
+```bash
+curl -si -X POST http://localhost:8090/wagering/transactions \
+  -H "Authorization: Bearer $PROVIDER" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: bet-$WALLET_ID" \
+  -d @- <<JSON
+{"providerId":"provider-a","externalTransactionId":"bet-$WALLET_ID",
+ "playerId":"$PLAYER_ID","walletId":"$WALLET_ID",
+ "roundId":"round-1","gameId":"crash","kind":"BET",
+ "money":{"amount":"25.00","currency":"BRL"}}
+JSON
+```
+
+```
+HTTP/1.1 201 Created
+Location: /wagering/transactions/01a0e07b-5597-…
 ```
 
 ```json
 {
-  "walletId": "<id da carteira>",
-  "storedBalance": {"amount":"1100.00","currency":"BRL"},
-  "calculatedBalance": {"amount":"1000.00","currency":"BRL"},
-  "difference": {"amount":"100.00","currency":"BRL"},
-  "version": 1, "checkedEntries": 1, "lastSequence": 1,
-  "consistent": false,
-  "divergences": ["BALANCE_MISMATCH"]
-}
-```
-
-Os dois saldos saem da mesma sentença SQL, então um commit entre as leituras não inventa desvio, e a leitura não espera uma aposta que esteja com a carteira travada. `difference` é o saldo gravado menos o calculado, com sinal: `0.00` quando fecham, positivo quando a carteira guarda mais do que o ledger soma, negativo quando guarda menos. `consistent` é verdadeiro quando o ledger fecha com o saldo; senão `divergences` lista o que desviou, de um vocabulário fechado: `BALANCE_MISMATCH` quando a soma difere do saldo gravado, `SEQUENCE_GAP` quando a contagem de lançamentos difere da última sequência, e `CHAIN_BREAK` quando um lançamento não começa onde o anterior terminou — este com `firstBreakSequence` apontando o primeiro. Uma carteira consistente omite os dois campos. A rota informa e não corrige; toda divergência deixa uma linha de log com o `walletId` e os tokens, sem saldo.
-
-Ninguém precisa chamar a rota para uma divergência aparecer. O observador de divergência, o quarto componente de fundo do binário, varre todas as carteiras em páginas de `RECONCILIATION_BATCH` a cada `RECONCILIATION_INTERVAL`, e produz o mesmo veredito pela mesma sentença. Ele só lê: não toma lock, não abre transação e não corrige nada, então uma carteira divergente reaparece a cada passagem até alguém corrigir o banco. A divergência que ele encontra deixa a mesma linha de log e move `wager_reconciliation_divergences_total` com a origem `watch`, e é essa série que o alerta observa.
-
-## Rotas de aposta
-
-`POST /wagering/transactions` liquida a operação do provedor; `GET /wagering/transactions/{transactionId}` e `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` devolvem o resultado gravado, pela identidade do serviço ou pelo identificador que o provedor escolheu. As três exigem token de provedor: o cliente interno recebe 403 nelas, e o provedor continua recebendo 403 nas rotas de carteira.
-
-A rota aceita `BET`, `LOSS`, `WIN`, `REFUND` e `ROLLBACK`. O corpo leva `referenceExternalTransactionId` quando a operação cita outra: as duas reversões sempre o exigem, e um `WIN` pode trazê-lo. O campo presente e fora de formato responde 400 sem gravar linha; ausente, a operação se decide sozinha.
-
-```bash
-TOKEN=$(curl -s -X POST http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
-  -d grant_type=client_credentials -d client_id=provider-a \
-  -d client_secret=provider-a-local | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
-
-curl -i -X POST http://localhost:8090/wagering/transactions \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: key-0001' \
-  -d '{"providerId":"provider-a","externalTransactionId":"ext-0001",
-       "playerId":"3f8c4a2e-1b5d-4e7a-9c3f-2d6b8a1e5c40","walletId":"<id da carteira>",
-       "roundId":"round-0001","gameId":"crash","kind":"BET",
-       "money":{"amount":"25.00","currency":"BRL"}}'
-```
-
-```json
-{
-  "transactionId": "<id da transação>",
+  "transactionId": "01a0e07b-5597-…",
   "kind": "BET",
   "status": "PROCESSED",
-  "externalTransactionId": "ext-0001",
+  "externalTransactionId": "bet-…",
   "money": {"amount":"25.00","currency":"BRL"},
   "balance": {"amount":"975.00","currency":"BRL"},
   "idempotentReplay": false
 }
 ```
 
-Os nomes são os do enunciado: `transactionId`, `status`, `balance` — o saldo observado no commit — e `idempotentReplay`, sempre presente, `false` na primeira conclusão. Tipo, identificador externo e quantia vão ao lado, como extensão.
+`balance` é o saldo observado no commit. `BET` debita, `WIN` credita, `LOSS` conclui sem lançamento e sem mudar a versão da carteira. Reenviar a mesma chave com o mesmo corpo responde `200` com `idempotentReplay: true` e o saldo daquela época, não o atual.
 
-O `providerId` do corpo não autoriza: vale o cliente do token, e um corpo declarando outro provedor responde 403 sem gravar linha. A chave de idempotência vem no cabeçalho `Idempotency-Key`; sem ela a resposta é 400 e nada é gravado.
+### Respostas e `failureCode`
 
-A primeira conclusão responde 201, com `Location` apontando o recurso criado e o saldo observado no commit em `balance`. `BET` debita e grava o lançamento no mesmo commit da transação; `WIN` sem operação citada credita; `LOSS` termina `PROCESSED` com quantia zero, sem lançamento e sem mudar a versão da carteira.
-
-A mesma chave com o mesmo corpo responde 200 com `idempotentReplay: true` e o `balance` observado na conclusão original — não o saldo atual. A mesma chave com outro corpo responde 422 `IDEMPOTENCY_CONFLICT`, e o mesmo `externalTransactionId` com outra chave responde 422 `DUPLICATE_EXTERNAL_TRANSACTION`. Nenhuma das duas grava segunda linha: quem decide a duplicidade é o índice único do banco, não uma consulta prévia que duas réplicas vencem ao mesmo tempo.
-
-`INSUFFICIENT_FUNDS`, `PLAYER_WALLET_MISMATCH` e `CURRENCY_MISMATCH` gravam a transação `REJECTED` com o token, sem lançamento e sem mexer no saldo, e o mesmo vale para os tokens decididos sobre a carteira travada: `REVERSAL_INSUFFICIENT_FUNDS`, `REVERSAL_AMOUNT_MISMATCH`, `REFERENCE_MISMATCH`, `REFERENCE_UNSUCCESSFUL` e `ALREADY_REVERSED`. **A rejeição durável ocupa a chave de idempotência**: reenviar a mesma chave com o mesmo corpo devolve a mesma recusa, agora marcada como replay, e tentar de novo de verdade exige chave nova. `WALLET_NOT_FOUND`, `OPENING_NOT_ALLOWED`, `AMOUNT_NOT_ALLOWED_FOR_KIND` e `REFERENCE_REQUIRED` recusam sem gravar linha, porque a linha correspondente violaria as invariantes da tabela.
-
-A recusa que gravou linha sai em problem details com a identidade dessa linha na extensão `transactionId`, na primeira recusa e no replay dela; a que não gravou linha sai sem ela:
+| Status | Quando |
+| --- | --- |
+| `400` | corpo inválido ou sem `Idempotency-Key` — nada é gravado |
+| `401` | credencial ausente, inválida ou expirada |
+| `403` | cliente sem permissão para a rota, ou corpo declarando outro provedor |
+| `404` | recurso inexistente — ou de outro provedor, sem revelar que existe |
+| `409` | segunda carteira do mesmo jogador na mesma moeda |
+| `422` | regra de negócio recusou; o token vem na extensão `failureCode` |
+| `503` | nenhuma réplica pronta — banco ou fila fora |
 
 ```json
 {
@@ -227,108 +175,107 @@ A recusa que gravou linha sai em problem details com a identidade dessa linha na
   "status": 422,
   "instance": "/wagering/transactions",
   "failureCode": "INSUFFICIENT_FUNDS",
-  "transactionId": "<id da transação rejeitada>"
+  "transactionId": "01a0e07b-55bb-…"
 }
 ```
 
-`status` aqui é o código HTTP, como a RFC 9457 define, e por isso a recusa não traz o estado `REJECTED` do enunciado: ele fica legível na consulta, pela identidade que a extensão entrega. É a única divergência deliberada do contrato do enunciado ([ADR 0029](docs/adr/0029-contrato-http-segue-o-enunciado.md)).
+| `failureCode` | Efeito |
+| --- | --- |
+| `INSUFFICIENT_FUNDS` · `REVERSAL_INSUFFICIENT_FUNDS` · `PLAYER_WALLET_MISMATCH` · `CURRENCY_MISMATCH` · `REVERSAL_AMOUNT_MISMATCH` · `REFERENCE_MISMATCH` · `REFERENCE_UNSUCCESSFUL` · `ALREADY_REVERSED` | grava a transação `REJECTED`, sem lançamento; o corpo traz o `transactionId` |
+| `REFERENCE_NOT_FOUND` · `REFERENCE_NOT_PROCESSED` | encerram por prazo uma espera por referência |
+| `WALLET_NOT_FOUND` · `OPENING_NOT_ALLOWED` · `AMOUNT_NOT_ALLOWED_FOR_KIND` · `REFERENCE_REQUIRED` | recusa sem gravar linha |
+| `IDEMPOTENCY_CONFLICT` · `DUPLICATE_EXTERNAL_TRANSACTION` | mesma chave com outro corpo, ou mesmo id externo com outra chave; nenhuma linha nova |
 
-Duas apostas simultâneas na mesma carteira se serializam pelo lock da linha: a segunda lê o saldo já commitado e, se não couber, sai com `INSUFFICIENT_FUNDS`. Carteiras diferentes não esperam uma pela outra.
+A rejeição gravada ocupa a chave de idempotência: reenviar devolve a mesma recusa como replay, e tentar de novo de verdade exige chave nova. O `status` do corpo é o código HTTP, como a RFC define; o estado `REJECTED` fica legível na consulta pelo `transactionId` ([ADR 0029](docs/adr/0029-contrato-http-segue-o-enunciado.md)).
 
-### A operação que cita outra
+### Operações que citam outra
 
-`REFUND` estorna um `BET` e `ROLLBACK` reverte um `WIN` ou um `REFUND`, sempre pelo valor integral da citada — valor diferente responde 422 `REVERSAL_AMOUNT_MISMATCH`. Cada operação aceita uma reversão `PROCESSED` só: a segunda responde 422 `ALREADY_REVERSED`, com a linha gravada e sem lançamento novo.
+`REFUND` estorna um `BET`, e `ROLLBACK` reverte um `WIN` ou um `REFUND`, sempre pelo valor integral; um `WIN` também pode citar a aposta. A citação vai em `referenceExternalTransactionId`, e cada operação aceita uma única reversão.
 
-Quando a operação citada já está `PROCESSED`, tudo se decide no mesmo commit da submissão — como no `ext-0001` acima, que um `REFUND` de `"25.00"` citando-o estorna na hora. Quando ela ainda não chegou pelo outro canal — aqui `ext-0009`, que ninguém enviou —, a submissão é **aceita e fica esperando**:
+Se a operação citada já está `PROCESSED`, tudo se decide no mesmo commit. Se ainda não chegou, a submissão responde **`202`** com `status: PENDING_REFERENCE`, e o worker de referência a conclui:
 
-```bash
-curl -i -X POST http://localhost:8090/wagering/transactions \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: key-0002' \
-  -d '{"providerId":"provider-a","externalTransactionId":"ext-0002",
-       "playerId":"3f8c4a2e-1b5d-4e7a-9c3f-2d6b8a1e5c40","walletId":"<id da carteira>",
-       "roundId":"round-0009","gameId":"crash","kind":"WIN",
-       "referenceExternalTransactionId":"ext-0009",
-       "money":{"amount":"50.00","currency":"BRL"}}'
-```
+| A operação citada… | Desfecho |
+| --- | --- |
+| chega `PROCESSED` e compatível dentro do prazo | a operação segue, com lançamento e saldo no mesmo commit |
+| já terminou `REJECTED` ou `FAILED` | `REFERENCE_UNSUCCESSFUL`, na hora |
+| não fecha em jogador, carteira, rodada ou tipo | `REFERENCE_MISMATCH` |
+| não apareceu até o prazo | `REFERENCE_NOT_FOUND` |
+| existe, mas não concluiu até o prazo | `REFERENCE_NOT_PROCESSED` |
 
-A resposta é **202**, com `Location` apontando o recurso criado e o estado `PENDING_REFERENCE`. Ela não traz saldo observado, porque nenhum commit concluiu a operação, e não é problem details: nenhuma regra a recusou. O código é próprio de propósito — 201 com o estado no corpo obrigaria o provedor a ler o corpo para saber se houve movimento financeiro.
+O prazo é `REFERENCE_TTL`, 15 minutos por padrão, com backoff exponencial de 1 s a 60 s entre tentativas. Uma espera encerrada é terminal.
 
-O worker de referência é o processo de fundo que encerra essa espera. Ele sobe com o binário, varre a fila no intervalo configurado e decide cada linha sob o lock da carteira:
-
-- a citada chega `PROCESSED` e compatível dentro do prazo: a operação segue, com o lançamento e o saldo no mesmo commit;
-- a citada já terminou `REJECTED` ou `FAILED`: `REFERENCE_UNSUCCESSFUL` na hora, sem aguardar o prazo;
-- a citada chega e não fecha em jogador, carteira, rodada ou tipo: `REFERENCE_MISMATCH`;
-- o prazo vence e a citada não existe: `REFERENCE_NOT_FOUND`;
-- o prazo vence e a citada existe sem ter concluído: `REFERENCE_NOT_PROCESSED`.
-
-O prazo é gravado uma vez, na entrada, como `agora + REFERENCE_TTL` — 15 minutos por padrão. Entre tentativas o worker aplica backoff exponencial de base 1s, fator 2 e teto de 60s, com o intervalo sorteado e nunca agendado depois do prazo. Uma espera encerrada é terminal: a citada chegando depois não reabre nada.
-
-Enquanto a espera dura, a mesma chave com o mesmo corpo responde 200 com `PENDING_REFERENCE` e `idempotentReplay: true`, sem saldo observado — o reenvio não antecipa o prazo nem mexe no agendamento. Depois do encerramento, ela devolve o desfecho gravado.
-
-A consulta devolve o resultado gravado ao provedor dono, pela identidade do serviço ou pelo identificador externo:
+### Consultar
 
 ```bash
 curl -s http://localhost:8090/wagering/transactions/<transactionId> \
-  -H "Authorization: Bearer $TOKEN"
-
-curl -s http://localhost:8090/providers/provider-a/wagering/transactions/ext-0001 \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $PROVIDER"
+curl -s http://localhost:8090/providers/provider-a/wagering/transactions/bet-$WALLET_ID \
+  -H "Authorization: Bearer $PROVIDER"
 ```
 
-As duas respondem 200 com a mesma representação: `transactionId`, estado, provedor, quantia, `balance` quando houver saldo observado e `failureCode` quando o estado é `REJECTED` — a leitura concluiu, então não é problem details. Nenhuma traz `idempotentReplay`, porque uma leitura não é uma chegada da operação. Uma transação em `PENDING_REFERENCE` responde 200 com esse estado e sem `balance`; a leitura não tenta a espera, não antecipa o prazo e não mexe no agendamento. Transação de outro provedor responde 404 igual a uma inexistente: nem o corpo nem o status revelam que o registro existe. O `providerId` da URL não autoriza — um que não seja o do token responde esse mesmo 404, antes de qualquer consulta.
+As duas devolvem o resultado gravado, com `failureCode` quando `REJECTED` e sem `balance` enquanto `PENDING_REFERENCE`. A leitura não reabre nem antecipa uma espera.
 
-## Broker
-
-O `docker compose up` provisiona o broker sozinho: o serviço `provision` roda `terraform init` e `apply` com a imagem `hashicorp/terraform`, na versão fixada no `compose.yaml`, contra o LocalStack pela rede do Compose, antes de qualquer réplica ([ADR 0032](docs/adr/0032-apply-do-broker-como-servico-do-compose.md)). O host não precisa de Terraform. Para rodar o apply de novo:
+### Extrato e reconciliação
 
 ```bash
-docker compose run --rm provision   # ou make provision
+curl -s "http://localhost:8090/wallets/$WALLET_ID/ledger?limit=50" \
+  -H "Authorization: Bearer $INTERNAL"
+curl -s -X POST "http://localhost:8090/wallets/$WALLET_ID/reconciliation" \
+  -H "Authorization: Bearer $INTERNAL"
 ```
 
-O estado fica em `deploy/terraform/localstack/terraform.tfstate`. Não há Terraform Cloud. O contêiner roda como root, e o último passo devolve o estado, o backup, a chave e o lock ao dono do diretório, que os lê e apaga sem `sudo`. O cache do provider, perto de 700 MB, fica no volume `terraform` do Compose, e o primeiro `up` o baixa. Um `.terraform/` que um apply do host tenha deixado nesse diretório não é mais usado e pode ser apagado.
+O extrato sai em ordem de sequência, cada lançamento com o saldo anterior e o posterior. `limit` vai de 1 a 200 (padrão 50); quando há próxima página, `nextCursor` é devolvido em `cursor`.
 
-O apply cria:
+```json
+{
+  "walletId": "…",
+  "storedBalance": {"amount":"975.00","currency":"BRL"},
+  "calculatedBalance": {"amount":"975.00","currency":"BRL"},
+  "difference": {"amount":"0.00","currency":"BRL"},
+  "version": 2, "checkedEntries": 2, "lastSequence": 2,
+  "consistent": true
+}
+```
 
-- fila FIFO `wager-transactions.fifo`, long poll de 20s, visibility de 30s, redrive com `maxReceiveCount` 15
-- DLQ FIFO `wager-transactions-dlq.fifo`
-- tópico SNS FIFO `wallet-events.fifo`, sem subscription — não há consumidor dos eventos ainda, e é para ele que o relay publica
-- usuário IAM `wager-sender`, com `sqs:SendMessage` só na fila de entrada
+A reconciliação lê os dois saldos na mesma sentença SQL e não corrige nada. Quando não fecham, `divergences` lista `BALANCE_MISMATCH`, `SEQUENCE_GAP` ou `CHAIN_BREAK` — este com `firstBreakSequence`. É `POST` porque é o verbo do enunciado, mas não grava nem trava.
 
-A access key gerada fica em `deploy/terraform/localstack/wager-sender.keys`, fora do Git. O mapa versionado de remetente está em `deploy/local/queue-senders.yaml`, e ele **não** nomeia o principal IAM: esse nome não chega ao consumidor, então um mapa por ele não poderia ser conferido contra mensagem nenhuma. Cada entrada é chaveada pela identidade que o consumidor observa na mensagem, com a própria lista de provedores; no broker local essa identidade é o identificador da conta, e a entrada dela pode enviar por `provider-a` e `provider-b`.
+### Pela fila
 
-O mapa admite mais de uma entrada, ainda que o apply crie um remetente só. É assim que a configuração de produção nomeia vários remetentes, e é o que permite a suíte de jornada exercitar a recusa escolhendo a credencial de envio — o broker local deriva da access key a identidade que registra.
+A mesma operação pode chegar por `wager-transactions.fifo`. O envelope leva `messageId` e a operação em `data`, com a chave em `data.idempotencyKey`; o grupo é o id da carteira em minúsculas e a deduplicação é o `messageId`.
 
-No LocalStack community o IAM é parcial: a chave do `wager-sender` consegue `SendMessage`, mas a política pode não ser aplicada como na AWS. O principal continua criado.
+```bash
+MESSAGE_ID=$(uuidgen | tr 'A-Z' 'a-z')
 
-O LocalStack community não persiste: qualquer reinício do container esvazia filas e tópico, com ou sem `docker compose down -v`. O `terraform.tfstate` no disco continua afirmando que eles existem, e é o refresh do apply seguinte que percebe a diferença e recria tudo; a access key do `wager-sender` muda nessa recriação, e `wager-sender.keys` é reescrito. Toda subida roda esse apply, e `docker compose restart localstack` também: o `provision` depende do broker com `restart: true`, e o Compose o roda de novo quando é ele quem reinicia o broker. Um reinício por fora do Compose — `docker restart`, o daemon do Docker voltando — não dispara nada, e aí é preciso `make provision`.
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1 \
+aws --endpoint-url http://localhost:4566 sqs send-message \
+  --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
+  --message-group-id "$WALLET_ID" \
+  --message-deduplication-id "$MESSAGE_ID" \
+  --message-body "$(cat <<JSON
+{"messageId":"$MESSAGE_ID","type":"WagerTransactionRequested","occurredAt":"2026-09-08T12:00:00.000Z",
+ "data":{"providerId":"provider-a","externalTransactionId":"win-$WALLET_ID",
+  "idempotencyKey":"provider-a:win-$WALLET_ID","playerId":"$PLAYER_ID","walletId":"$WALLET_ID",
+  "roundId":"round-1","gameId":"crash","kind":"WIN",
+  "money":{"amount":"40.00","currency":"BRL"}}}
+JSON
+)"
+```
 
-O ready de cada réplica só fica verde com a fila `wager-transactions.fifo` existindo: sem ela, `GET /health/ready` responde 503 enquanto a liveness continua 200, e o balanceador para de encaminhar. O tópico não entra no ready, e é por ele que o broker vazio perde eventos. O que já estava na outbox, e o que o worker de referência concluir nesse meio-tempo, vai a um tópico que não existe; o broker responde que ele não existe, e o relay trata isso como recusa permanente, de propósito, porque na AWS é erro de configuração. Na décima recusa, cerca de quatro minutos depois pelo backoff, a linha é marcada morta e fica morta: depois do apply os eventos seguintes saem, e aqueles não saem nunca. As linhas mortas contam em `wager_outbox_dead_events_total` e aparecem no painel. O caminho de volta é rodar `make provision` antes de as dez recusas acabarem; `make verify` nomeia a fila ou o tópico que falta.
-
-O `pprof` escuta em `127.0.0.1:6060` dentro de cada réplica, e o Compose não publica essa porta.
-
-No encerramento, o Compose dá 30s ao processo antes do `SIGKILL`, acima dos 10s de `SHUTDOWN_TIMEOUT`. A margem existe para o buffer de telemetria descarregar depois que o servidor fecha. No `SIGTERM` os quatro componentes de fundo param de reivindicar, buscar ou ler. O worker de referência conclui ou desfaz a espera que já reivindicou dentro do mesmo prazo — desfeita, a linha continua `PENDING_REFERENCE` com o prazo intacto, disponível para outra réplica. O relay conclui o envio em curso dentro do lease que já segura — o sinal corta a varredura, não o envio que já tem reivindicação, e quem corta o envio é o prazo do processo. O que ele não confirmar continua publicável, com o mesmo `eventId`, e outra réplica reivindica depois do prazo. O consumidor da fila para de buscar mensagem nova e conclui a que tem em mãos dentro do prazo; cortada por ele, a mensagem volta à fila com visibilidade zero, para ser entregue de novo sem esperar a invisibilidade que ninguém mais vai servir. O observador de divergência não começa turno novo, e a leitura em curso é cancelada: nada do que ele faz é gravável, então não há o que concluir.
-
-Nove variáveis configuram o trabalho de fundo, e as nove têm padrão: `REFERENCE_TTL` é quanto uma operação espera pela que ela cita, 15 minutos; `REFERENCE_INTERVAL` é de quanto em quanto tempo o worker varre a fila de esperas, 1 segundo; `OUTBOX_INTERVAL` é de quanto em quanto tempo o relay varre a outbox, 1 segundo; `OUTBOX_LEASE` é quanto uma reivindicação segura a linha, 30 segundos; `QUEUE_POLL` é a espera do long poll, 20 segundos; `QUEUE_VISIBILITY` é a invisibilidade da mensagem, 30 segundos; `QUEUE_TIMEOUT` é o prazo de uma decisão, 8 segundos; `RECONCILIATION_INTERVAL` é de quanto em quanto tempo o observador lê uma página de carteiras, 5 segundos; `RECONCILIATION_BATCH` é quantas carteiras cabem numa página, 50. Qualquer uma das oito durações escrita com algo que não seja uma duração positiva, ou um lote que não seja inteiro positivo, impede a subida em vez de cair no padrão. Os dois números do observador são ponto de partida: o custo de um turno é o lote vezes o ledger de cada carteira, e ainda não foi medido sob carga.
-
-As três últimas não são três números independentes: a invisibilidade tem de cobrir a espera do long poll somada ao prazo da decisão. Com invisibilidade menor que a espera, medido no broker local, a busca devolve resposta vazia **e consome a entrega** — a mensagem queima o orçamento de entregas sem nunca ter sido processada, sem erro e sem log. Os padrões são os da fila que o apply provisiona: 20 de espera sob 30 de invisibilidade, com o prazo da decisão abaixo dos 10 que sobram.
-
-`SNS_ENDPOINT` e `SNS_TOPIC_ARN` não têm padrão: sem o endereço do tópico o processo não abre a porta HTTP e não sobe o relay. `SQS_QUEUE_URL`, `SQS_DLQ_URL` e `QUEUE_SENDERS_PATH` também não: sem a fila de entrada o consumidor não tem de onde buscar, sem a DLQ ele não teria como abandonar uma mensagem envenenada — que ficaria na frente da carteira dela para sempre —, e sem o mapa de remetente o processo não sabe quem pode enviar. No Compose eles apontam para o LocalStack e para `arn:aws:sns:us-east-1:000000000000:wallet-events.fifo`.
+O consumidor confere o remetente contra o [mapa de remetentes](deploy/local/queue-senders.yaml); no LocalStack, a identidade observada é a conta local, que pode enviar por `provider-a` e `provider-b`. Desfecho commitado — inclusive `REJECTED` e `PENDING_REFERENCE` — apaga a mensagem; falha transitória a devolve com backoff. Vão para a DLQ, sem efeito financeiro: corpo ilegível, remetente ou provedor fora do mapa, `messageId` repetido com outro corpo e a quinta entrega sem sucesso.
 
 ## Eventos
 
-A liquidação publica quatro eventos, e só estes:
+Publicados no tópico SNS FIFO `wallet-events.fifo`, com a carteira como grupo e o `eventId` como deduplicação:
 
 | Evento | Quando |
 | --- | --- |
-| `WagerTransactionProcessed` | a transação terminou `PROCESSED`, inclusive `LOSS` e a abertura de carteira com saldo positivo |
-| `WagerTransactionRejected` | a transação terminou `REJECTED`, com o `failureCode` gravado |
-| `WalletBalanceChanged` | o saldo da carteira mudou |
-| `WagerTransactionPendingReference` | a espera pela operação citada foi gravada |
+| `WagerTransactionProcessed` | a transação terminou `PROCESSED`, inclusive `LOSS` e abertura com saldo positivo |
+| `WagerTransactionRejected` | a transação terminou `REJECTED` |
+| `WalletBalanceChanged` | o saldo mudou |
+| `WagerTransactionPendingReference` | a espera por referência foi gravada |
 
-`FAILED` não tem evento próprio. `LOSS` e a abertura com saldo zero não emitem `WalletBalanceChanged`, porque nenhum dos dois produz lançamento. Replay e os dois conflitos de idempotência não emitem nada, porque nenhum deles grava transação.
-
-Todos saem no mesmo envelope, com dinheiro em string decimal de duas casas, igual ao contrato de entrada. O `aggregateId` é a carteira, que é o que ordena a publicação:
+<details>
+<summary>Envelope de exemplo</summary>
 
 ```json
 {
@@ -342,212 +289,202 @@ Todos saem no mesmo envelope, com dinheiro em string decimal de duas casas, igua
     "walletId": "019974a4-0000-7000-8000-00000000a11e",
     "transactionId": "019974a4-0000-7000-8000-0000000000c1",
     "direction": "DEBIT",
-    "money": { "amount": "25.00", "currency": "BRL" },
-    "balanceBefore": { "amount": "1000.00", "currency": "BRL" },
-    "balanceAfter": { "amount": "975.00", "currency": "BRL" },
+    "money": {"amount": "25.00", "currency": "BRL"},
+    "balanceBefore": {"amount": "1000.00", "currency": "BRL"},
+    "balanceAfter": {"amount": "975.00", "currency": "BRL"},
     "walletVersion": 2
   }
 }
 ```
 
-`causationId` é o `messageId` da mensagem que causou o commit — o `transactionId-optional` do exemplo do enunciado é ilustrativo, porque a transação já está em `data` ([ADR 0030](docs/adr/0030-causation-id-e-a-mensagem-que-causou-o-commit.md)) —, e sai omitido em todo commit que nenhuma mensagem causou: por HTTP a operação não tem mensagem que a cause, e o commit que o worker de referência conclui por prazo vencido é disparado pelo relógio. Emprestar ali o identificador da mensagem que abriu a espera diria que ela causou um evento que ela não causou; quem liga os dois commits é o identificador da transação, que o primeiro evento carrega e o segundo usa como correlação. O construtor fixa o tipo e a `version`; nenhum chamador escolhe os dois.
+`causationId` é o `messageId` da mensagem que causou o commit e sai omitido quando nenhuma mensagem o causou ([ADR 0030](docs/adr/0030-causation-id-e-a-mensagem-que-causou-o-commit.md)).
 
-### Como o evento sai
+</details>
 
-A linha do evento entra na mesma transação SQL que grava saldo, transação e lançamento — saldo e evento vivem ou morrem juntos, e uma operação desfeita não deixa evento nenhum. Nada é publicado antes do commit.
+Por carteira, o relay publica sempre o evento pendente mais antigo, sob lease, e várias carteiras em paralelo. Falha transitória tenta de novo com backoff; dez recusas permanentes do broker marcam a linha como morta e liberam a carteira. Replay e conflitos de idempotência não emitem evento.
 
-O relay é o segundo componente de fundo do binário. A cada `OUTBOX_INTERVAL` ele varre a outbox e, por carteira, pega o evento não publicado mais antigo; reivindica a linha com um token novo e um lease de `OUTBOX_LEASE`, publica no tópico com a carteira como grupo e o `eventId` como deduplicação, e confirma só se o token ainda for o da reivindicação. A linha que outra réplica segura é pulada, não esperada, então uma carteira travada não para a fila das outras.
+## Observabilidade
 
-Falha transitória do broker devolve a linha para nova tentativa, com backoff de 1s, fator 2 e teto de 60s, e conta como tentativa. Recusa permanente conta à parte, e repetida dez vezes marca a linha como morta e solta a carteira, para os eventos seguintes dela seguirem; a linha permanece no banco, com o mesmo `eventId` e o mesmo payload.
+- **Painel "Liquidação"** no Grafana (`localhost:3000`): divergência de reconciliação no topo, e faixas de saúde e latência, resultado financeiro, fila e referência pendente, outbox e reconciliação. Os pontos do p99 abrem o trace no Tempo.
+- **Três alertas** em `localhost:9095/alerts`: divergência de reconciliação, outbox com pendente há mais de 30 s, e reconciliação que o observador não conseguiu produzir.
+- **Logs JSON** com `correlationId`, `trace_id` e identificadores — nunca quantia, saldo, token ou corpo.
+- **Métricas** em `/metrics` de cada réplica, com exemplar de `trace_id` na latência.
 
-A entrega é ao menos uma vez. A deduplicação do broker pelo `eventId` cobre a janela de cinco minutos do FIFO, e o `eventId` estável cobre o resto — do lado de quem consome.
-
-O envio aparece no log com identificadores apenas: `eventId`, `walletId`, o tipo do evento, o desfecho, e o `trace_id` e o `span_id` do commit que gravou a linha.
-
-```bash
-docker compose logs -f wager | grep "outbox event"
-```
-
-O tópico é provisionado sem subscription, então não há de onde ler as mensagens fora da suíte de jornada, que anexa um assinante só pelo tempo do caso. Para olhar à mão, crie uma fila FIFO e assine com `RawMessageDelivery`.
-
-## Aposta pela fila
-
-O consumidor da fila é o terceiro componente de fundo do binário. Ele busca em long poll, decide cada mensagem pelo mesmo caso de uso da rota HTTP, e responde ao broker: apaga a mensagem cujo desfecho commitou, devolve com backoff a que falhou de forma transitória, e copia para a DLQ a que nenhuma repetição resolveria.
-
-O envelope leva o `messageId` e, opcionalmente, o `correlationId`, que vale pela mesma regra do `X-Correlation-Id` do HTTP — token opaco de até 64 caracteres —, e sem o qual a operação é correlacionada pelo `messageId`; a operação vai em `data`, com o mesmo corpo da rota HTTP mais a chave de idempotência em `data.idempotencyKey`. O grupo da mensagem é o id da carteira em minúsculas, e a deduplicação é o `messageId` do envelope. O envelope do enunciado é aceito como está escrito: `type` e `occurredAt` são ignorados — não levam a mensagem à DLQ nem entram no hash, então a mesma operação enviada antes por HTTP é replay na fila —, e a chave no formato `provider:externo` é gravada como chegou.
-
-```bash
-# a access key do apply está em deploy/terraform/localstack/wager-sender.keys
-BODY=$(cat <<JSON
-{"messageId":"$MESSAGE_ID",
- "type":"WagerTransactionRequested","occurredAt":"2026-09-08T12:00:00.000Z",
- "data":{
-  "providerId":"provider-a","externalTransactionId":"transaction-123",
-  "idempotencyKey":"provider-a:transaction-123","playerId":"$PLAYER_ID","walletId":"$WALLET_ID",
-  "roundId":"round-987","gameId":"fortune-chimp","kind":"BET",
-  "money":{"amount":"25.00","currency":"BRL"}}}
-JSON
-)
-
-aws --endpoint-url http://localhost:4566 sqs send-message \
-  --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
-  --message-group-id "$WALLET_ID" \
-  --message-deduplication-id "$MESSAGE_ID" \
-  --message-body "$BODY"
-```
-
-Rejeição de negócio é desfecho concluído: a transação fica `REJECTED` com o `failureCode` e a mensagem sai da fila, porque reentregar não mudaria a decisão. A espera gravada é tratada do mesmo modo — a linha é durável e o worker de referência a conclui, então a mensagem de entrada não fica na fila esperando por isso.
-
-Quatro razões levam uma mensagem à DLQ, e nenhuma delas grava linha financeira: corpo que a borda não leu, remetente que o mapa não nomeia, corpo declarando provedor fora da lista daquele remetente, e o `messageId` já gravado chegando com outro corpo. Some-se a desistência na quinta entrega, abaixo do `maxReceiveCount` 15 da fila: o grupo da mensagem é a carteira, então uma mensagem envenenada segura as operações daquela carteira até sair do caminho, e é por isso que o consumidor a tira antes do broker.
-
-Toda ida para a DLQ sai no log com a razão e o `messageId`, e a recusa por remetente sai com a identidade observada — é esse valor que corrige o mapa. As mesmas razões contam na série `wager_ingress_messages_abandoned_total`, e a profundidade da DLQ sai em `wager_ingress_dead_letter_depth`.
-
-```bash
-docker compose logs -f wager | grep "dead-letter"
-```
-
-## Token
-
-O issuer é `http://localhost:8080/realms/junglegaming`. Os três clientes usam `client_credentials`. O mapa, sem segredo, está em `deploy/local/clients.yaml`: `wallet-internal` no papel interno de carteira, `provider-a` e `provider-b` nos `providerId` de mesmo nome.
-
-O processo recebe esse mapa em `CLIENTS_PATH` e o issuer em `IDP_ISSUER`. Sem um dos dois, ou com um mapa ilegível, a subida termina com erro e a porta HTTP não abre: um processo sem mapa não sabe autorizar ninguém. `IDP_JWKS_URL` é opcional e existe porque o endereço muda de lado: o issuer é o que o token anuncia em `iss`, visto do host, e o JWKS é buscado de dentro da rede do Compose. Vazio, ele é derivado do issuer.
-
-Quem autoriza é o cliente do token, não o corpo nem a URL. Nas rotas de carteira, só o papel interno passa: o provedor recebe 403 sem criar nada, e um cliente válido fora do mapa também. Credencial ausente, inválida ou expirada é a outra classe, 401. `/health/live` e `/health/ready` seguem públicas.
-
-```bash
-curl -s -X POST http://localhost:8080/realms/junglegaming/protocol/openid-connect/token \
-  -d grant_type=client_credentials \
-  -d client_id=wallet-internal \
-  -d client_secret=wallet-internal-local
-```
-
-Troque `client_id` e `client_secret` por `provider-a` / `provider-a-local` ou `provider-b` / `provider-b-local`. O grant de senha está desligado nos três.
-
-## Telemetria
-
-O coletor recebe OTLP, aplica batch e entrega trace ao Tempo, log ao Loki e métrica ao Prometheus. O Grafana provisiona esses três datasources e o painel "Liquidação"; o Prometheus carrega as três regras de alerta. Os dois são arquivos do repositório, lidos na subida.
-
-O painel está em `deploy/grafana/dashboards/liquidacao.json` e abre em `localhost:3000` com a senha de exemplo. No topo, lado a lado, as divergências de reconciliação dos últimos 15 minutos e as reconciliações que o observador não conseguiu produzir, as duas vermelhas acima de zero; abaixo, cinco faixas na ordem: saúde e latência, com o p99 cujos pontos abrem o trace no Tempo; resultado financeiro, com desfechos, rejeições por `failureCode` e duplicatas; fila e referência pendente, com as duas profundidades, os retries e a idade da espera mais antiga; outbox, com pendentes, a idade do mais antigo, as linhas mortas e os retries; reconciliação, com carteiras conferidas, divergências e reconciliações sem veredito por origem. O painel é provisionado: pela interface ele se explora, mas não se salva, porque o arquivo é a fonte.
-
-As regras estão em `deploy/prometheus/rules/settlement.yml`, e a página `localhost:9095/alerts` mostra o estado das três:
-
-- `ReconciliationDivergenceFound` dispara quando `wager_reconciliation_divergences_total` subiu nos últimos 15 minutos, sem espera: a divergência é achado, não tendência.
-- `OutboxOldestPendingTooOld` dispara quando o evento pendente mais antigo passa de 30 s por mais de um minuto. O lease de um envio é de 30 s, e o minuto é o que deixa um envio lento legítimo passar sem alerta.
-- `ReconciliationVerdictFailed` dispara quando `wager_reconciliation_failures_total{origin="watch"}` subiu nos últimos 15 minutos: o observador não conseguiu produzir o veredito de uma carteira, que é o estado que a divergência não enxerga. A falha da rota não o aciona, porque quem chamou já recebeu a resposta.
-
-Não há Alertmanager: o alerta aparece no Prometheus e no Grafana, e não há para onde notificar num ambiente local. As regras têm teste de unidade, que roda sem a stack com o `promtool` da mesma imagem do Prometheus:
-
-```bash
-make rules-test
-```
-
-O processo manda trace e log por OTLP. A série de processo não vai por esse caminho: ela sai pelo `/metrics` de cada réplica, que o Prometheus descobre pelo DNS do Docker e raspa em separado, para heap e goroutines terem uma fonte só. O outro alvo, `otel-collector:8889`, publica o que chegar ao coletor por OTLP.
-
-A latência HTTP sai em OpenMetrics com exemplar de `trace_id`. O Prometheus sobe com `--enable-feature=exemplar-storage` e o datasource liga esse exemplar ao Tempo, então o ponto do gráfico abre o trace.
-
-`/health/live`, `/health/ready` e `/metrics` ficam fora do span e do log. São chamados de segundo em segundo pela sonda e pelo scrape, e afogariam o trace e o histograma que o painel usa.
+Painel e regras são arquivos do repositório (`deploy/grafana`, `deploy/prometheus`), carregados na subida. Detalhes em [05 · Transversais](docs/05-transversais.md).
 
 ## Testes
 
-A suíte de unidade não sobe Docker:
+| Comando | O que roda | Pede a stack |
+| --- | --- | --- |
+| `make test` | suíte de unidade, com `-race` | não |
+| `make test-journey` | suíte de jornada (`-tags=integration`) contra PostgreSQL, Keycloak e LocalStack reais | sim |
+| `make scenarios` | os oito cenários de concorrência do enunciado | sim |
+| `make rules-test` | teste das regras de alerta, com o `promtool` | só Docker |
+| `make load` | carga de 60 s sobre as réplicas, com veredito por carteira | sobe sozinho |
+
+As suítes com a stack pedem o schema aplicado também no banco próprio delas, `junglegaming_test`, que `make migrate` cria e migra:
 
 ```bash
-go test ./...
-go test -race ./...
-go vet ./...
-```
-
-A suíte de jornada vive em `internal/e2e/`, atrás da tag `integration`, e pede o ambiente de pé, o broker provisionado e o schema aplicado nos dois bancos — o da aplicação e o dela:
-
-```bash
-docker compose up -d --wait postgres localstack keycloak otel-collector
-docker compose run --rm provision
-
-# o banco da suíte, uma vez e idempotente: CREATE DATABASE não aceita IF NOT EXISTS
-docker compose exec -T postgres psql -U junglegaming -d junglegaming -tAc \
-  "SELECT 1 FROM pg_database WHERE datname='junglegaming_test'" | grep -q 1 \
-  || docker compose exec -T postgres createdb -U junglegaming junglegaming_test
-
-# cada banco nomeado no comando que o migra
-docker compose run --rm migrate
-docker compose run --rm migrate -path=/migrations \
-  -database "postgres://junglegaming:junglegaming@postgres:5432/junglegaming_test?sslmode=disable" up
-
-DATABASE_URL="postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable" \
-  go test -race -count=1 -p 1 -tags=integration ./...
-```
-
-O banco próprio não é gosto: a aplicação de pé tem os próprios workers, e o relay de outbox dela varre `outbox_events` inteira a cada segundo, sem filtrar carteira, e publica a linha que um caso espera ver morta.
-
-O `-p 1` é a outra metade do mesmo estado compartilhado: a suíte de carteira encurta o `accessTokenLifespan` do realm para provar que a borda recusa token expirado, e qualquer pacote que peça token em paralelo dentro dessa janela recebe 401.
-
-Migration nova precisa ser aplicada nos dois bancos. Aplicada só num, a suíte falha num `relation does not exist` em vez de dizer que o banco está atrasado.
-
-A suíte pede IdP real: ela obtém token dos três clientes e, no caso do token expirado, encurta o `accessTokenLifespan` do realm pela API de administração e o restaura no fim. Trocar o Keycloak por um emissor de teste não provaria a borda.
-
-A suíte cai nos próprios defaults — banco, endpoint, coletor e credencial — quando eles não vêm do ambiente. O default de `DATABASE_URL` é o banco da suíte, e não o da aplicação: o comando acima o exporta por clareza, e quem esquecer continua caindo no banco certo. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_REGION` sobrescrevem a credencial para apontar em outro broker. Os três estão em `.env.example`. O código de produção não carrega credencial fixa: o cliente SQS usa a cadeia padrão do SDK, que no Compose e no CI lê o ambiente e na nuvem leria o papel.
-
-Além do `go test`, o gate do CI roda `scripts/testgates` — estrutura dos testes e piso de cobertura, 90% em `money`, `wallet`, `wager`, `ledger` e `identity`, 80% em `internal/app` e 70% em `internal/platform` — e o `.golangci.yml`. Antes de qualquer Go ele confere que o painel é JSON válido e roda o teste das regras de alerta.
-
-### Os cenários obrigatórios
-
-Os testes de concorrência que o enunciado exige moram num pacote próprio, `internal/e2e/scenarios`, um teste por item, contra PostgreSQL, Keycloak e LocalStack reais. Todo cenário sobe várias instâncias independentes do processo — cada uma com o próprio grafo do Fx, pool, porta e componentes de fundo — sobre o mesmo banco e o mesmo broker, e reparte as chegadas entre elas; é assim que o item 4, três ou mais instâncias, vale para todos os outros ([ADR 0027](docs/adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)). A morte entre o commit e a remoção da mensagem, e a contagem de cada evento publicado, são feitas por um proxy do teste entre a instância e o broker ([ADR 0028](docs/adr/0028-falha-e-contagem-na-fronteira-de-rede-do-broker.md)).
-
-Pedem o mesmo ambiente da suíte de jornada, e cada um roda sozinho com o próprio comando. O `DATABASE_URL` pode ficar de fora: o default já é o banco da suíte.
-
-```bash
-# 1. a mesma aposta 50 vezes em paralelo → um débito
-go test -race -count=1 -tags=integration -run '^TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce$' ./internal/e2e/scenarios/
-# 2. duas apostas de 80 numa carteira de 100 → uma PROCESSED, uma INSUFFICIENT_FUNDS, e o reenvio não muda nada
-go test -race -count=1 -tags=integration -run '^TestRacingBets_settleAgainstTheBalanceAlreadyCommitted$' ./internal/e2e/scenarios/
-# 3. carteiras distintas ao mesmo tempo, com uma delas travada fora da aplicação
-go test -race -count=1 -tags=integration -run '^TestLockedWallet_doesNotHoldTheOthers$' ./internal/e2e/scenarios/
-# 5. a instância morre depois do commit e antes da remoção → outra recebe a reentrega, sem segundo efeito
-go test -race -count=1 -tags=integration -run '^TestInterruption_changesNothingWhenTheRemovalNeverReachedTheBroker$' ./internal/e2e/scenarios/
-# 6. dois publicadores disputando a outbox → cada evento sai uma vez
-go test -race -count=1 -tags=integration -run '^TestPublishers_sendEachEventOnce$' ./internal/e2e/scenarios/
-# 7. REFUND e ROLLBACK antes da citada → resolvem quando ela chega, ou expiram
-go test -race -count=1 -tags=integration -run '^TestEarlyReversal_waitsAndThenResolvesOrExpires$' ./internal/e2e/scenarios/
-# 8. reinício da frota inteira → replay, conflito, espera concluída, eventos publicados, reconciliação consistente
-go test -race -count=1 -tags=integration -run '^TestRestart_keepsIdempotencyTheWaitAndTheLedger$' ./internal/e2e/scenarios/
-# HTTP e SQS compartilham a idempotência → um efeito nas duas ordens, e conflito com outro corpo
-go test -race -count=1 -tags=integration -run '^TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue$' ./internal/e2e/scenarios/
-```
-
-Cada quantidade é uma variável de ambiente, e a ausente vale o padrão do enunciado. Um valor inválido falha o cenário nomeando a variável, antes de subir qualquer instância, e nunca cai no padrão. O desfecho esperado é calculado a partir dos parâmetros: `SCENARIO_RACING_BETS=5 SCENARIO_RACING_AMOUNT=30.00` espera três `PROCESSED`, duas `INSUFFICIENT_FUNDS` e saldo 10.00.
-
-Inválido é também o valor sob o qual um cenário não teria como falhar. Com uma instância só não há outra para receber a chegada, com um publicador não há disputa, com uma cópia não há replay e com uma aposta não há corrida; por isso o piso dessas quatro é dois. E duas combinações são recusadas mesmo com cada valor aceito sozinho: menos cópias da mesma aposta do que instâncias, que deixa uma instância sem chegada, e uma quantia de corrida que o saldo inicial não comporta nenhuma vez ou comporta uma vez por aposta — nos dois casos nenhuma aposta disputa o saldo, e o desfecho seria o mesmo sem o lock.
-
-| Variável | Padrão | Origem | Aceita |
-| --- | --- | --- | --- |
-| `SCENARIO_INSTANCES` | `3` | enunciado | inteiro ≥ 2 |
-| `SCENARIO_SAME_BET_COPIES` | `50` | enunciado | inteiro ≥ 2 e ≥ `SCENARIO_INSTANCES` |
-| `SCENARIO_OPENING_BALANCE` | `100.00` | enunciado | quantia > 0 |
-| `SCENARIO_RACING_BETS` | `2` | enunciado | inteiro ≥ 2 |
-| `SCENARIO_RACING_AMOUNT` | `80.00` | enunciado | quantia > 0 que o saldo inicial comporta ao menos uma vez e menos vezes que as apostas |
-| `SCENARIO_OTHER_WALLETS` | `10` | estes cenários — o enunciado não fixa | inteiro ≥ 1 |
-| `SCENARIO_PUBLISHERS` | `2` | enunciado | inteiro ≥ 2 |
-| `SCENARIO_RESTARTS` | `1` | estes cenários — o enunciado não fixa | inteiro ≥ 1 |
-| `SCENARIO_DEADLINE` | `2m` | estes cenários: o prazo de cada caso | duração > 0 |
-
-`make scenarios` roda os oito em sequência, cada um no próprio `go test`, contra o banco da suíte. Ele continua depois de um cenário que falhou, termina listando os que falharam e sai diferente de zero se algum falhou. Um cenário que não rodou teste nenhum — um nome que não casa com o teste, ou `SCENARIO_REPEAT=0` — conta como falho, e não como aprovado. Os parâmetros passam pela linha de comando ou pelo ambiente, e `SCENARIO_REPEAT` repete cada cenário — cada execução monta os próprios dados, então repetir contra a mesma stack é legítimo:
-
-```bash
+make up && make migrate
+make test-journey
 make scenarios
+```
+
+A suíte usa banco próprio porque os workers da aplicação de pé varreriam as linhas dos casos, e roda com `-p 1` porque um dos casos encurta a vida do token no realm compartilhado.
+
+### Cenários de concorrência
+
+Cada cenário sobe várias instâncias independentes do processo — cada uma com o próprio grafo do Fx, pool e porta — sobre o mesmo banco e o mesmo broker ([ADR 0027](docs/adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)). Isso cobre o item 4 do enunciado, três ou mais instâncias, em todos os outros.
+
+| # | Cenário | Teste |
+| --- | --- | --- |
+| 1 | a mesma aposta 50 vezes em paralelo → um débito | `TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce` |
+| 2 | duas apostas de 80 numa carteira de 100 → uma `PROCESSED`, uma `INSUFFICIENT_FUNDS` | `TestRacingBets_settleAgainstTheBalanceAlreadyCommitted` |
+| 3 | carteiras distintas em paralelo, com uma travada fora da aplicação | `TestLockedWallet_doesNotHoldTheOthers` |
+| 5 | a instância morre entre o commit e a remoção da mensagem → reentrega sem segundo efeito | `TestInterruption_changesNothingWhenTheRemovalNeverReachedTheBroker` |
+| 6 | dois publicadores disputando a outbox → cada evento sai uma vez | `TestPublishers_sendEachEventOnce` |
+| 7 | `REFUND` e `ROLLBACK` antes da citada → resolvem quando ela chega, ou expiram | `TestEarlyReversal_waitsAndThenResolvesOrExpires` |
+| 8 | reinício da frota → replay, conflito, espera concluída, eventos e ledger consistentes | `TestRestart_keepsIdempotencyTheWaitAndTheLedger` |
+| — | HTTP e fila compartilham a idempotência → um efeito nas duas ordens | `TestChannels_settleTheSameOperationOnceOverHTTPAndTheQueue` |
+
+`make scenarios` roda os oito em sequência, continua depois de uma falha e sai diferente de zero se algum falhou; o log de cada um fica em `.quality/scenarios/<teste>.log`. Um cenário isolado:
+
+```bash
+go test -race -count=1 -tags=integration -run '^TestRacingBets_settleAgainstTheBalanceAlreadyCommitted$' ./internal/e2e/scenarios/
+```
+
+<details>
+<summary>Parâmetros dos cenários</summary>
+
+Cada quantidade é uma variável de ambiente; ausente, vale o padrão do enunciado. Um valor inválido — inclusive um sob o qual o cenário não teria como falhar — falha nomeando a variável, antes de subir qualquer instância. O desfecho esperado é calculado a partir dos parâmetros: `SCENARIO_RACING_BETS=5 SCENARIO_RACING_AMOUNT=30.00` espera três `PROCESSED`, duas `INSUFFICIENT_FUNDS` e saldo `10.00`.
+
+| Variável | Padrão | Aceita |
+| --- | --- | --- |
+| `SCENARIO_INSTANCES` | `3` | inteiro ≥ 2 |
+| `SCENARIO_SAME_BET_COPIES` | `50` | inteiro ≥ 2 e ≥ `SCENARIO_INSTANCES` |
+| `SCENARIO_OPENING_BALANCE` | `100.00` | quantia > 0 |
+| `SCENARIO_RACING_BETS` | `2` | inteiro ≥ 2 |
+| `SCENARIO_RACING_AMOUNT` | `80.00` | quantia que o saldo inicial comporta ao menos uma vez e menos vezes que as apostas |
+| `SCENARIO_OTHER_WALLETS` | `10` | inteiro ≥ 1 |
+| `SCENARIO_PUBLISHERS` | `2` | inteiro ≥ 2 |
+| `SCENARIO_RESTARTS` | `1` | inteiro ≥ 1 |
+| `SCENARIO_DEADLINE` | `2m` | duração > 0 |
+
+```bash
 make scenarios SCENARIO_INSTANCES=5 SCENARIO_SAME_BET_COPIES=200
 make scenarios SCENARIO_REPEAT=3
 ```
 
-A tela mostra, por cenário, o que ele mediu e o veredito — as instâncias que subiram, quantas chegadas cada uma decidiu, os desfechos contados, o saldo e a versão, quanto tempo cada espera levou —, e numa falha a linha que diz o que o caso esperava. O log inteiro de cada um, com o JSON de todas as instâncias, fica em `.quality/scenarios/<nome>.log`, e o resumo das falhas aponta para ele:
+</details>
+
+### Integração contínua
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) valida painel, balanceador e regras de alerta; roda `golangci-lint` em cada módulo, a suíte de unidade com `-race` e os pisos de cobertura — 90% no domínio, 80% em `internal/app`, 70% em `internal/platform`; sobe a stack para a suíte de integração; e termina com carga sobre as réplicas do Compose, com uma delas morta à força, e sobre o cluster.
+
+## Operação
+
+| Comando | O que faz |
+| --- | --- |
+| `make up` / `make down` | sobe a stack e espera cada serviço ficar saudável / derruba e descarta os volumes |
+| `make up REPLICAS=5` | outro número de réplicas; o balanceador enxerga até 10 |
+| `make cluster-up` / `make cluster-down` | as réplicas num cluster Kind sobre os serviços do Compose, em `localhost:8091` / de volta ao Compose |
+| `make load` | carga com veredito; `TARGET=cluster`, `REPLICAS`, `LOAD_KILL=graceful\|forced` |
+| `make verify` | confere o ambiente contra os arquivos versionados: bancos e versão do schema, realm, filas e tópico, imagem, painel e alertas |
+| `make migrate` | aplica o schema nos dois bancos, o da aplicação e o da suíte |
+| `make provision` | refaz o apply do broker no LocalStack |
+| `make help` | lista todos os alvos |
+
+Os dois modos de réplica, o relatório e os números medidos da carga, e os exercícios de falha estão em [07 · Operação](docs/07-operacao.md).
+
+<details>
+<summary>Os comandos por trás dos alvos</summary>
+
+Cada alvo é um atalho para comandos que também rodam à mão, com os valores de `.env.example`:
+
+```bash
+# make up
+WAGER_REPLICAS=3 docker compose up -d --build --wait
+
+# make provision — o estado e a chave do remetente IAM ficam em deploy/terraform/localstack/
+docker compose run --rm provision
+
+# make migrate — cada banco nomeado no próprio comando
+docker compose run --rm migrate -path=/migrations \
+  -database "postgres://junglegaming:junglegaming@postgres:5432/junglegaming?sslmode=disable" up
+docker compose exec -T postgres psql -U junglegaming -d junglegaming -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='junglegaming_test'" | grep -q 1 \
+  || docker compose exec -T postgres createdb -U junglegaming junglegaming_test
+docker compose run --rm migrate -path=/migrations \
+  -database "postgres://junglegaming:junglegaming@postgres:5432/junglegaming_test?sslmode=disable" up
+
+# make test — scripts/ tem go.mod próprio, e o ./... da raiz para na fronteira de módulo
+go test -race -count=1 ./...
+for m in envcheck testgates loadtest; do go test -C scripts/$m -race -count=1 ./...; done
+
+# make test-journey — em série e no banco da suíte
+DATABASE_URL="postgres://junglegaming:junglegaming@localhost:5432/junglegaming_test?sslmode=disable" \
+  go test -race -count=1 -p 1 -tags=integration ./...
+
+# make verify
+go run -C scripts/envcheck . -root "$PWD"
+
+# make down
+docker compose down -v
+```
+
+</details>
+
+**Problemas comuns**
+
+- **`localhost:8090` responde `503`** — nenhuma réplica está pronta. `docker compose ps` mostra o estado de cada uma; com o cluster de pé, as réplicas do Compose ficam paradas e a API está em `localhost:8091`.
+- **Filas ou tópico sumiram** — o LocalStack não persiste estado. Um reinício pelo Compose reprovisiona sozinho; um reinício por fora dele (`docker restart`, o daemon voltando) pede `make provision`.
+- **Algo não bate e não se sabe o quê** — `make verify` nomeia o que divergiu, e funciona mesmo quando a aplicação não sobe.
+
+## Configuração
+
+Tudo por variável de ambiente, validada antes de qualquer porta abrir: ausente ou malformada impede a subida. O Compose já define as obrigatórias; para rodar o binário no host, [.env.example](.env.example) traz cada uma. A lista completa, por grupo, está em [01 · Contexto](docs/01-contexto.md#configuração).
+
+<details>
+<summary>Trabalho de fundo e seus padrões</summary>
+
+| Variável | Padrão | O que controla |
+| --- | --- | --- |
+| `REFERENCE_TTL` | `15m` | quanto uma operação espera pela que cita |
+| `REFERENCE_INTERVAL` | `1s` | varredura do worker de referência |
+| `OUTBOX_INTERVAL` | `1s` | varredura do relay |
+| `OUTBOX_LEASE` | `30s` | quanto uma reivindicação segura a linha da outbox |
+| `QUEUE_POLL` | `20s` | espera do long poll |
+| `QUEUE_VISIBILITY` | `30s` | invisibilidade da mensagem; tem de cobrir `QUEUE_POLL` + `QUEUE_TIMEOUT` |
+| `QUEUE_TIMEOUT` | `8s` | prazo de decisão de uma mensagem |
+| `RECONCILIATION_INTERVAL` | `5s` | intervalo entre páginas do observador de divergência |
+| `RECONCILIATION_BATCH` | `50` | carteiras por página |
+| `SHUTDOWN_TIMEOUT` | `20s` | prazo do encerramento no `SIGTERM` |
+
+</details>
+
+## Documentação
+
+| Quero saber | Onde |
+| --- | --- |
+| a visão de cima: estilo, camadas, invariantes, pastas | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| quem fala com o sistema, do que ele é feito, o que configura | [01 · Contexto e containers](docs/01-contexto.md) |
+| agregados, tipos de operação, ciclo de vida | [02 · Domínio](docs/02-dominio.md) |
+| tabelas, invariantes no banco, migrations | [03 · Dados](docs/03-dados.md) |
+| aposta, replay, corrida e espera, passo a passo | [04 · Fluxos](docs/04-fluxos.md) |
+| erros, autorização, observabilidade, ciclo de vida do processo | [05 · Transversais](docs/05-transversais.md) |
+| o que falta, o que é guarda, o que custa | [06 · Riscos e limitações](docs/06-riscos-e-limitacoes.md) |
+| réplicas, carga e exercícios de falha | [07 · Operação](docs/07-operacao.md) |
+| por que foi feito assim, e o que foi rejeitado | [Decisões (ADRs)](docs/adr/README.md) |
+
+## Estrutura
 
 ```
-== TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce
-    samebet_test.go:29: 3 instances up: http://127.0.0.1:42231 http://127.0.0.1:43879 http://127.0.0.1:43425
-    samebet_test.go:39: sent 50 copies of one bet under one key at once
-    samebet_test.go:41: 1 settled as 01a0dee7-9a3d-… with 975.00 observed, 49 answered the replay of it
-    samebet_test.go:42: wallet: 975.00 at version 2, with one transaction under the key and one debit
-    samebet_test.go:43: arrivals each instance decided, by its own series: [17 17 16], 50 in all
---- PASS: TestSameBet_debitsOnceWhenItArrivesManyTimesAtOnce (0.34s)
+cmd/wager/            o binário
+internal/domain/      regras: money, identity, wallet, ledger, wager, event
+internal/app/         casos de uso, um por pacote, e as portas que eles declaram
+internal/platform/    adaptadores: HTTP, PostgreSQL, SQS e SNS, Keycloak, telemetria, Fx
+internal/e2e/         suíte de jornada e cenários de concorrência
+deploy/               migrations, Terraform, Keycloak, HAProxy, Kubernetes, observabilidade
+scripts/              gates do CI, verificador do ambiente, teste de carga
+docs/                 estrutura (0X) e decisões (adr/)
 ```
-
-O passo de integração do CI roda o pacote com os padrões, dentro do `./...`. Medido na stack local, numa máquina de 16 CPUs, o pacote leva cerca de 14 s; metade disso é o cenário da interrupção, que espera os 6 s de invisibilidade separarem as duas entregas.

@@ -14,6 +14,7 @@ O que ele garante, e que o resto deste documento explica como: o saldo nunca fic
 | o que acontece, passo a passo, numa aposta, num replay, numa corrida, numa espera | [04 · Fluxos](docs/04-fluxos.md) |
 | como um erro viaja, quem pode o quê, o que sai em log, como o processo sobe e desce | [05 · Transversais](docs/05-transversais.md) |
 | o que falta, o que é guarda, o que custa | [06 · Riscos e limitações](docs/06-riscos-e-limitacoes.md) |
+| rodar N réplicas no Compose ou num cluster, a carga sobre elas, os exercícios de falha | [07 · Operação](docs/07-operacao.md) |
 | por que foi feito assim, e o que foi rejeitado | [Decisões](docs/adr/README.md) |
 | subir, testar, chamar as rotas | [README](README.md) |
 
@@ -86,11 +87,15 @@ O que duas réplicas poderiam decidir diferente é decidido pelo PostgreSQL, e n
 - O **saldo** é `SELECT … FOR UPDATE` antes de decidir, mais a versão lida como condição do `UPDATE` ([ADR 0002](docs/adr/0002-lock-pessimista-com-guarda-de-versao.md)).
 - A **máquina de estados**, o acoplamento entre tipo e quantia e a coerência do lançamento com a transação são `CHECK` e chave estrangeira composta ([03 · Dados](docs/03-dados.md)). O agregado afirma as mesmas invariantes em Go; o banco tem a palavra final.
 
-Os cenários obrigatórios do enunciado provam isso com várias instâncias independentes do processo sobre o mesmo banco, cada uma com o próprio grafo, pool e porta ([ADR 0027](docs/adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)); a morte entre o commit e a remoção da mensagem, e a contagem de cada evento publicado, acontecem na rede entre a instância e o broker ([ADR 0028](docs/adr/0028-falha-e-contagem-na-fronteira-de-rede-do-broker.md)).
+Os cenários obrigatórios do enunciado provam isso com várias instâncias independentes do processo sobre o mesmo banco, cada uma com o próprio grafo, pool e porta ([ADR 0027](docs/adr/0027-instancias-como-grafos-do-fx-no-binario-de-teste.md)); a morte entre o commit e a remoção da mensagem, e a contagem de cada evento publicado, acontecem na rede entre a instância e o broker ([ADR 0028](docs/adr/0028-falha-e-contagem-na-fronteira-de-rede-do-broker.md)). O teste de carga repete a disputa com réplicas que são processos do sistema operacional, no Compose ou num cluster, inclusive matando uma no meio, e termina num veredito por carteira: saldo, versão e lançamentos contra o que ele mesmo contou ([ADR 0036](docs/adr/0036-teste-de-carga-com-veredito-e-resolucao-pela-chave.md)).
 
 ### Um commit
 
-A memória da mensagem (inbox), o saldo, a linha da transação, o lançamento e os eventos (outbox) entram na mesma transação SQL, em `READ COMMITTED`. Uma rejeição de negócio **commita** a própria linha `REJECTED` e ainda assim sai como `422` — a recusa viaja ao lado do resultado, não como erro da unit of work ([ADR 0004](docs/adr/0004-rejeicao-duravel-ao-lado-do-resultado.md)). O corpo, em problem details, leva a identidade dessa linha na extensão `transactionId`, e é a única divergência deliberada do contrato do enunciado ([ADR 0029](docs/adr/0029-contrato-http-segue-o-enunciado.md)). Falha transitória desfaz tudo e tenta de novo. Nada é publicado antes do commit: o relay lê a outbox depois, reivindica por lease e publica fora de qualquer transação ([ADR 0013](docs/adr/0013-publicar-fora-da-transacao-sob-lease.md)).
+A memória da mensagem (inbox), o saldo, a linha da transação, o lançamento e os eventos (outbox) entram na mesma transação SQL, em `READ COMMITTED`. Uma rejeição de negócio **commita** a própria linha `REJECTED` e ainda assim sai como `422` — a recusa viaja ao lado do resultado, não como erro da unit of work ([ADR 0004](docs/adr/0004-rejeicao-duravel-ao-lado-do-resultado.md)). O corpo, em problem details, leva a identidade dessa linha na extensão `transactionId`, e é a única divergência deliberada do contrato do enunciado ([ADR 0029](docs/adr/0029-contrato-http-segue-o-enunciado.md)). Falha transitória desfaz tudo e tenta de novo. Nada é publicado antes do commit: o relay lê a outbox depois, reivindica por lease e publica fora de qualquer transação ([ADR 0013](docs/adr/0013-publicar-fora-da-transacao-sob-lease.md)), um evento por vez por carteira e várias carteiras ao mesmo tempo ([ADR 0038](docs/adr/0038-relay-paralelo-e-encadeado-por-carteira.md)).
+
+### Réplicas iguais, e a parada de uma
+
+Nenhuma garantia depende da memória de um processo, então as réplicas são iguais e descartáveis. No `SIGTERM` cada uma deixa de reivindicar trabalho novo e conclui o que já segura dentro de um prazo; o que ficou pela metade volta à fila pelo lease ou pela visibilidade, e outra réplica o termina ([05 · Transversais](docs/05-transversais.md)). Elas sobem atrás do balanceador do Compose ou num cluster Kind sobre os mesmos serviços ([07 · Operação](docs/07-operacao.md)).
 
 ### Duas classes de erro
 
@@ -153,15 +158,18 @@ deploy/
   migrations/              o SQL versionado, aplicado uma vez antes das réplicas
   terraform/localstack/    filas, tópico e papel IAM do remetente; o Compose roda o apply antes das réplicas
   haproxy/                 o balanceador das réplicas no Compose, em localhost:8090
+  k8s/                     o cluster Kind: o Job da migration, as réplicas atrás do NodePort em
+                           localhost:8091, e o agente que manda as séries de cada pod ao Prometheus
   keycloak/                o realm de desenvolvimento
   local/                   os mapas versionados: clientes e remetentes
   otel/ tempo/ loki/ prometheus/ grafana/   a stack de observabilidade do Compose, com o painel
-                           "Liquidação" e as duas regras de alerta
+                           "Liquidação" e as três regras de alerta
 
 scripts/
   testgates/               os pisos de cobertura que o CI aplica, por pacote
   envcheck/                confere o ambiente local contra os arquivos versionados: migrations, realm,
                            broker, imagem, painel e regras de alerta
+  loadtest/                a carga sobre as réplicas, do Compose ou do cluster, com veredito por carteira
 
 docs/                      esta documentação; docs/adr/ é o registro de decisões
 compose.yaml  Dockerfile  Makefile
