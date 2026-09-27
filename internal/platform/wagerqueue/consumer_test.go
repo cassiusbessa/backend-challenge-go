@@ -27,6 +27,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics/metricstest"
 )
 
 // quick is the timing of a case: short enough that nothing waits, and still
@@ -165,7 +166,7 @@ func TestDecide_abandonsAnInvalidBodyWithoutReachingTheUseCase(t *testing.T) {
 	t.Parallel()
 	queue := &fakeQueue{}
 	receiver := &fakeReceiver{status: wager.Processed}
-	consumer, logs, metrics := consumerOver(t, queue, receiver)
+	consumer, logs, series := consumerOver(t, queue, receiver)
 	broken := arrived(1)
 	broken.Body = []byte("{this is not json")
 	consumer.decide(context.Background(), broken)
@@ -175,11 +176,11 @@ func TestDecide_abandonsAnInvalidBodyWithoutReachingTheUseCase(t *testing.T) {
 	if queue.abandoned != 1 || queue.deleted != 1 {
 		t.Fatalf("copies and deletes = %d and %d, want 1 and 1", queue.abandoned, queue.deleted)
 	}
-	assertCounted(t, metrics, reasonInvalidBody, 1)
+	assertCounted(t, series, metrics.AbandonInvalidBody, 1)
 	line := lineWith(t, logs, "abandoned")
 	assertNoSecrets(t, line)
-	if line["reason"] != reasonInvalidBody {
-		t.Fatalf("reason = %v, want %s", line["reason"], reasonInvalidBody)
+	if line["reason"] != metrics.AbandonInvalidBody {
+		t.Fatalf("reason = %v, want %s", line["reason"], metrics.AbandonInvalidBody)
 	}
 	if line["messageId"] != deduplicationID {
 		t.Fatalf("messageId of an undecoded body = %v, want the %s the broker registered", line["messageId"], deduplicationID)
@@ -193,12 +194,12 @@ func TestDecide_recordsTheObservedSenderWhenTheMapRefusesIt(t *testing.T) {
 	t.Parallel()
 	queue := &fakeQueue{}
 	refused := &fakeReceiver{refuse: authz.ErrUnmappedSender}
-	consumer, logs, metrics := consumerOver(t, queue, refused)
+	consumer, logs, series := consumerOver(t, queue, refused)
 	consumer.decide(context.Background(), arrived(1))
 	if queue.abandoned != 1 {
 		t.Fatalf("copies to the dead-letter queue = %d, want 1", queue.abandoned)
 	}
-	assertCounted(t, metrics, reasonRefusedSender, 1)
+	assertCounted(t, series, metrics.AbandonRefusedSender, 1)
 	line := lineWith(t, logs, "abandoned")
 	if line["sender"] != observedSender {
 		t.Fatalf("sender = %v, want the observed %s", line["sender"], observedSender)
@@ -486,12 +487,12 @@ func TestDecide_countsTheMessageHandedBackAsARetry(t *testing.T) {
 func TestDecide_countsNoRetryForAMessageTheShutdownHandedBack(t *testing.T) {
 	t.Parallel()
 	queue := &fakeQueue{}
-	consumer, _, metrics := consumerOver(t, queue, &fakeReceiver{refuse: context.Canceled})
+	consumer, _, series := consumerOver(t, queue, &fakeReceiver{refuse: context.Canceled})
 	work, cut := context.WithCancel(context.Background())
 	cut()
 	consumer.decide(work, arrived(1))
-	if got := testutil.CollectAndCount(metrics.Retries); got != 0 {
-		t.Fatalf("retry series moved by the shutdown = %d, want none", got)
+	if got := metricstest.Sum(t, series.Retries); got != 0 {
+		t.Fatalf("retries counted for a message the shutdown handed back = %v, want 0", got)
 	}
 }
 

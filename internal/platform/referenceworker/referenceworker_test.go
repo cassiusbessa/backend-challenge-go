@@ -20,6 +20,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics/metricstest"
 )
 
 // tick is the interval the cases about the lifecycle run on. It is short because
@@ -426,8 +427,8 @@ func TestReport_countsARescheduledWaitWithoutALine(t *testing.T) {
 	if got := testutil.ToFloat64(moved.Retries.WithLabelValues("reference", "reference_pending")); got != 1 {
 		t.Fatalf("retries{reference,reference_pending} = %v, want 1", got)
 	}
-	if got := testutil.CollectAndCount(moved.Settlements) + testutil.CollectAndCount(moved.Rejections); got != 0 {
-		t.Fatalf("series moved by a rescheduled wait = %d, want only the retry", got)
+	if got := metricstest.Sum(t, moved.Settlements) + metricstest.Sum(t, moved.Rejections); got != 0 {
+		t.Fatalf("series moved by a rescheduled wait = %v, want only the retry", got)
 	}
 }
 
@@ -442,9 +443,8 @@ func TestReport_reportsNothingForAnOutcomeThatDecidedNothing(t *testing.T) {
 	if written.Len() != 0 {
 		t.Fatalf("log of a wait nobody decided = %q, want nothing", written.String())
 	}
-	moved.Settlements.Reset()
-	if got := testutil.CollectAndCount(moved.Settlements) + testutil.CollectAndCount(moved.Rejections) + testutil.CollectAndCount(moved.Retries); got != 0 {
-		t.Fatalf("series moved by a wait nobody decided = %d, want none", got)
+	if got := metricstest.Sum(t, moved.Settlements) + metricstest.Sum(t, moved.Rejections) + metricstest.Sum(t, moved.Retries); got != 0 {
+		t.Fatalf("series moved by a wait nobody decided = %v, want none", got)
 	}
 }
 

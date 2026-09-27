@@ -11,6 +11,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/receivewager"
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 // deliveryLimit is the delivery this consumer gives up on. It is below the
@@ -285,7 +286,7 @@ func (c *Consumer) decide(work context.Context, delivery Delivery) {
 		// The message has had every delivery this consumer grants it. It leaves
 		// before the broker discards the ones behind it in its group.
 		closeSpan(ErrDeliveryLimit)
-		c.abandon(ctx, delivery, reasonDeliveryLimit, ErrDeliveryLimit)
+		c.abandon(ctx, delivery, metrics.AbandonDeliveryLimit, ErrDeliveryLimit)
 		return
 	}
 	result, err := c.settle(ctx, delivery, decoded, refusal)

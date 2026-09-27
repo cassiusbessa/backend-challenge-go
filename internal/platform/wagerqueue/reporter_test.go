@@ -20,6 +20,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics/metricstest"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
@@ -231,8 +232,8 @@ func TestSettled_countsARedeliveryAndAReplayAsDuplicatesUnderTheirOwnReasons(t *
 			if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", tc.reason)); got != 1 {
 				t.Fatalf("duplicates{sqs,%s} = %v, want 1", tc.reason, got)
 			}
-			if got := testutil.CollectAndCount(series.Settlements); got != 0 {
-				t.Fatalf("settlement series moved by %s = %d, want none", tc.name, got)
+			if got := metricstest.Sum(t, series.Settlements); got != 0 {
+				t.Fatalf("settlement series moved by %s = %v, want none", tc.name, got)
 			}
 		})
 	}
@@ -260,8 +261,8 @@ func TestRejected_countsARedeliveredRefusalAsADuplicate(t *testing.T) {
 	if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("sqs", "redelivery")); got != 1 {
 		t.Fatalf("duplicates{sqs,redelivery} = %v, want 1", got)
 	}
-	if got := testutil.CollectAndCount(series.Rejections); got != 0 {
-		t.Fatalf("rejection series moved by a redelivery = %d, want none", got)
+	if got := metricstest.Sum(t, series.Rejections); got != 0 {
+		t.Fatalf("rejection series moved by a redelivery = %v, want none", got)
 	}
 }
 
@@ -287,8 +288,8 @@ func TestRejected_countsTheConflictsAsDuplicatesAndNothingForARefusalWithoutARow
 	}
 	reporter, series := countingReporter()
 	reporter.Rejected(context.Background(), submitwager.Result{}, refusalOf(t, wager.WalletNotFound))
-	if got := testutil.CollectAndCount(series.Settlements) + testutil.CollectAndCount(series.Rejections) + testutil.CollectAndCount(series.Duplicates); got != 0 {
-		t.Fatalf("series moved by a refusal without a row = %d, want none", got)
+	if got := metricstest.Sum(t, series.Settlements) + metricstest.Sum(t, series.Rejections) + metricstest.Sum(t, series.Duplicates); got != 0 {
+		t.Fatalf("series moved by a refusal without a row = %v, want none", got)
 	}
 }
 
@@ -370,7 +371,7 @@ func TestCountRejected_countsTheRowTheRuleWroteAndNothingElse(t *testing.T) {
 	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("sqs", "CURRENCY_MISMATCH")); got != 1 {
 		t.Fatalf("rejections{sqs,CURRENCY_MISMATCH} = %v, want 1", got)
 	}
-	if got := testutil.CollectAndCount(series.Rejections) + testutil.CollectAndCount(series.Settlements); got != 2 {
-		t.Fatalf("series moved = %d, want the settlement and the rejection of the row alone", got)
+	if got := metricstest.Sum(t, series.Rejections) + metricstest.Sum(t, series.Settlements); got != 2 {
+		t.Fatalf("series moved = %v, want the settlement and the rejection of the row alone", got)
 	}
 }

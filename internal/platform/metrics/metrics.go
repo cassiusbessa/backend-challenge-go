@@ -60,6 +60,56 @@ const (
 	RetryReferencePending = "reference_pending"
 )
 
+// The reasons a message is abandoned to the dead-letter queue, as the log and
+// the series name them.
+const (
+	AbandonInvalidBody   = "invalid_body"
+	AbandonRefusedSender = "refused_sender"
+	AbandonBodyDiffers   = "body_differs"
+	AbandonDeliveryLimit = "delivery_limit"
+)
+
+// settledAs pairs each origin with the kinds and statuses it records a
+// settlement under: a border answers the wait it wrote, and the worker only ever
+// closes one, which is also why it sees only the kinds that cite.
+var settledAs = []struct {
+	origin   string
+	kinds    []wager.Kind
+	statuses []wager.Status
+}{
+	{OriginHTTP, external, []wager.Status{wager.Processed, wager.Rejected}},
+	{OriginHTTP, citing, []wager.Status{wager.PendingReference}},
+	{OriginSQS, external, []wager.Status{wager.Processed, wager.Rejected}},
+	{OriginSQS, citing, []wager.Status{wager.PendingReference}},
+	{OriginReference, citing, []wager.Status{wager.Processed, wager.Rejected}},
+}
+
+// external are the kinds a provider sends. OPENING is internal, and settles
+// through neither border nor the worker.
+var external = []wager.Kind{wager.KindBet, wager.KindWin, wager.KindLoss, wager.KindRefund, wager.KindRollback}
+
+// citing are the kinds that may cite another operation, the only ones that wait.
+var citing = []wager.Kind{wager.KindWin, wager.KindRefund, wager.KindRollback}
+
+// duplicatedBy is the reasons each origin counts a duplicate for. Only the queue
+// tells a redelivery of the message from a replay of the operation.
+var duplicatedBy = map[string][]string{
+	OriginHTTP: {ReasonReplay, ReasonKeyConflict, ReasonExternalDuplicate},
+	OriginSQS:  {ReasonReplay, ReasonKeyConflict, ReasonExternalDuplicate, ReasonRedelivery},
+}
+
+// retriedBy is the reasons each component sends work back for: the two borders
+// answer whatever RetryReason reads off the chain, and the relay and the worker
+// each have their own.
+var retriedBy = map[string][]string{
+	ComponentHTTP:      {RetryVersionConflict, RetryOutcomeInFlight, RetryRaceUnresolved, RetryTransient},
+	ComponentSQS:       {RetryVersionConflict, RetryOutcomeInFlight, RetryRaceUnresolved, RetryTransient},
+	ComponentOutbox:    {RetryTransient, RetryRefused},
+	ComponentReference: {RetryReferencePending},
+}
+
+var abandonReasons = []string{AbandonInvalidBody, AbandonRefusedSender, AbandonBodyDiffers, AbandonDeliveryLimit}
+
 // Settlement is every business series of the process. The zero value holds
 // no instrument: New is the only constructor, and it registers what it builds.
 type Settlement struct {
@@ -143,7 +193,7 @@ func New(reg prometheus.Registerer) *Settlement {
 			Help: "Reconciliations that produced no verdict, by origin.",
 		}, []string{"origin"}),
 	}
-	s.primeReconciliation()
+	s.prime()
 	reg.MustRegister(
 		s.Settlements, s.Rejections, s.Duplicates, s.Retries, s.Abandoned,
 		s.IngressDepth, s.DeadLetterDepth, s.OutboxPending, s.OutboxOldestAge, s.OutboxDead,
@@ -152,14 +202,61 @@ func New(reg prometheus.Registerer) *Settlement {
 	return s
 }
 
-// primeReconciliation creates the reconciliation series at zero before any
-// verdict moves them.
+// prime creates at zero every series a panel or an alert rates, before any
+// traffic moves them.
 //
-// The divergence alert asks increase() over a window, and increase() over a
-// series that appears for the first time at 1 answers 0: the first sample is
-// the baseline, not a rise. A divergence found once by the route would then
-// never fire it. Both origins and every token of the vocabulary are closed
-// sets, so the whole set is small and known here.
+// rate() and increase() read the first sample of a series as its baseline, not
+// as a rise, and a child is born at the count it reached by the first scrape: a
+// burst between two scrapes, or the first operation of each kind on a replica
+// that just came up, would never show. Every value of every label is a closed
+// set, so the whole set is small and known here.
+func (s *Settlement) prime() {
+	s.primeSettlements()
+	s.primeRejections()
+	primeEach(s.Duplicates, duplicatedBy)
+	primeEach(s.Retries, retriedBy)
+	for _, reason := range abandonReasons {
+		s.Abandoned.WithLabelValues(reason)
+	}
+	s.primeReconciliation()
+}
+
+func (s *Settlement) primeSettlements() {
+	for _, set := range settledAs {
+		for _, kind := range set.kinds {
+			for _, status := range set.statuses {
+				s.Settlements.WithLabelValues(set.origin, kind.String(), status.String())
+			}
+		}
+	}
+}
+
+// primeRejections creates every token of the catalog for every origin, but the
+// two conflicts of idempotency: those write no row, and DuplicateReason sends
+// them to the series of duplicates.
+func (s *Settlement) primeRejections() {
+	for _, code := range wager.Catalog() {
+		if _, duplicate := DuplicateReason(code); duplicate {
+			continue
+		}
+		for _, origin := range []string{OriginHTTP, OriginSQS, OriginReference} {
+			s.Rejections.WithLabelValues(origin, code.String())
+		}
+	}
+}
+
+// primeEach creates every pair of the table on a vector of two labels.
+func primeEach(vec *prometheus.CounterVec, table map[string][]string) {
+	for first, seconds := range table {
+		for _, second := range seconds {
+			vec.WithLabelValues(first, second)
+		}
+	}
+}
+
+// primeReconciliation creates the reconciliation series at zero before any
+// verdict moves them. The divergence alert asks increase() over a window, so a
+// divergence found once by the route would otherwise never fire it.
 func (s *Settlement) primeReconciliation() {
 	for _, origin := range []string{OriginHTTP, OriginWatch} {
 		s.WalletsChecked.WithLabelValues(origin)

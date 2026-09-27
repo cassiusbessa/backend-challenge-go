@@ -23,6 +23,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics/metricstest"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
@@ -394,8 +395,8 @@ func TestRejected_countsNoSettlementForARefusalThatWroteNoRow(t *testing.T) {
 	reporter, series := reporterCounting()
 	absent := fmt.Errorf("submit wager: %w", wager.NewRejection(wager.WalletNotFound, nil))
 	reporter.Rejected(httptest.NewRecorder(), requestOf(t), submitwager.Result{}, absent)
-	if got := testutil.CollectAndCount(series.Settlements) + testutil.CollectAndCount(series.Rejections); got != 0 {
-		t.Fatalf("series moved by a refusal without a row = %d, want none", got)
+	if got := metricstest.Sum(t, series.Settlements) + metricstest.Sum(t, series.Rejections); got != 0 {
+		t.Fatalf("series moved by a refusal without a row = %v, want none", got)
 	}
 }
 
@@ -417,8 +418,8 @@ func TestRefuse_countsTheTwoConflictsOfIdempotencyAsDuplicates(t *testing.T) {
 			if got := testutil.ToFloat64(series.Duplicates.WithLabelValues("http", tc.reason)); got != 1 {
 				t.Fatalf("duplicates{http,%s} = %v, want 1", tc.reason, got)
 			}
-			if got := testutil.CollectAndCount(series.Rejections); got != 0 {
-				t.Fatalf("rejection series moved by %s = %d, want none", tc.code, got)
+			if got := metricstest.Sum(t, series.Rejections); got != 0 {
+				t.Fatalf("rejection series moved by %s = %v, want none", tc.code, got)
 			}
 		})
 	}
@@ -459,10 +460,10 @@ func TestRefuse_movesNoSeriesForInvalidInputOrADefect(t *testing.T) {
 	} {
 		reporter, series := reporterCounting()
 		reporter.Refuse(httptest.NewRecorder(), requestOf(t), err)
-		moved := testutil.CollectAndCount(series.Retries) + testutil.CollectAndCount(series.Duplicates) +
-			testutil.CollectAndCount(series.Settlements) + testutil.CollectAndCount(series.Rejections)
+		moved := metricstest.Sum(t, series.Retries) + metricstest.Sum(t, series.Duplicates) +
+			metricstest.Sum(t, series.Settlements) + metricstest.Sum(t, series.Rejections)
 		if moved != 0 {
-			t.Fatalf("series moved by %v = %d, want none", err, moved)
+			t.Fatalf("series moved by %v = %v, want none", err, moved)
 		}
 	}
 }
@@ -503,8 +504,8 @@ func TestCount_movesTheSeriesOfTheClassAndNoOther(t *testing.T) {
 	}
 	quiet, untouched := reporterCounting()
 	quiet.count(submitwager.Result{}, broken, problem.Of(problem.InvalidInput))
-	if got := testutil.CollectAndCount(untouched.Retries) + testutil.CollectAndCount(untouched.Duplicates); got != 0 {
-		t.Fatalf("series moved by invalid input = %d, want none", got)
+	if got := metricstest.Sum(t, untouched.Retries) + metricstest.Sum(t, untouched.Duplicates); got != 0 {
+		t.Fatalf("series moved by invalid input = %v, want none", got)
 	}
 }
 
@@ -524,7 +525,7 @@ func TestCountRejection_movesTheSeriesTheTokenAndTheRowCallFor(t *testing.T) {
 	if got := testutil.ToFloat64(series.Rejections.WithLabelValues("http", "INSUFFICIENT_FUNDS")); got != 1 {
 		t.Fatalf("rejections{http,INSUFFICIENT_FUNDS} of the rule that wrote a row = %v, want 1", got)
 	}
-	if got := testutil.CollectAndCount(series.Rejections); got != 1 {
-		t.Fatalf("rejection series = %d, want only the one of the rule that wrote a row", got)
+	if got := metricstest.Sum(t, series.Rejections); got != 1 {
+		t.Fatalf("rejection series = %v, want only the one of the rule that wrote a row", got)
 	}
 }

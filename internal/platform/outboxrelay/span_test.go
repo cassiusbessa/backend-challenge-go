@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics/metricstest"
 )
 
 const (
@@ -97,7 +98,7 @@ func TestCounting_mapsEachStatusOfTheRelayToItsSeries(t *testing.T) {
 	if got := testutil.ToFloat64(moved.OutboxDead); got != 1 {
 		t.Fatalf("dead events = %v, want 1", got)
 	}
-	if got := testutil.CollectAndCount(moved.Retries); got != 2 {
-		t.Fatalf("retry series = %d, want only the two reasons: published and lost move nothing", got)
+	if got := metricstest.Sum(t, moved.Retries); got != 3 {
+		t.Fatalf("retries of every reason = %v, want the 3 above: published and lost move nothing", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,6 +16,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics/metricstest"
 )
 
 // The names are the contract with the dashboard and the alert rules, so the
@@ -38,10 +40,15 @@ func TestNew_registersEverySeriesOfTheSpecificationOnce(t *testing.T) {
 }
 
 // fixedNames is what the specification fixes as always present after New: the
-// gauges, the plain counters and the reconciliation series primed at zero. The
-// vectors moved by the traffic only appear once a label set has been seen.
+// gauges, the plain counters, and every vector, primed at zero before any
+// traffic moves it.
 func fixedNames() []string {
 	return []string{
+		"wager_settlements_total",
+		"wager_rejections_total",
+		"wager_duplicates_total",
+		"wager_retries_total",
+		"wager_ingress_messages_abandoned_total",
 		"wager_ingress_queue_depth",
 		"wager_ingress_dead_letter_depth",
 		"wager_outbox_pending_events",
@@ -110,7 +117,7 @@ func moveEverything(s *Settlement) {
 	s.Rejected(OriginSQS, wager.InsufficientFunds)
 	s.Duplicate(OriginHTTP, ReasonReplay)
 	s.Retry(ComponentOutbox, RetryTransient)
-	s.Abandoned.WithLabelValues("invalid_body").Inc()
+	s.Abandoned.WithLabelValues(AbandonInvalidBody).Inc()
 	s.Checked(OriginWatch)
 	s.Diverged(OriginWatch, reconcilewallet.BalanceMismatch)
 	s.ReconciliationFailed(OriginHTTP)
@@ -235,6 +242,120 @@ func TestPrimeReconciliation_createsEveryOriginAndTokenAtZero(t *testing.T) {
 	if got := testutil.ToFloat64(s.Divergences.WithLabelValues("watch", "BALANCE_MISMATCH")) + testutil.ToFloat64(s.WalletsChecked.WithLabelValues("http")); got != 0 {
 		t.Fatalf("sum of the primed series = %v, want 0: priming moves nothing", got)
 	}
+}
+
+// Every series a panel rates exists at zero once New returns, so the first
+// operation a replica decides is a rise and not the baseline of a new series.
+func TestPrime_createsEverySeriesOfTheTrafficAtZero(t *testing.T) {
+	t.Parallel()
+	s := New(prometheus.NewRegistry())
+	for _, vec := range []*prometheus.CounterVec{s.Settlements, s.Rejections, s.Duplicates, s.Retries, s.Abandoned} {
+		vec.Reset()
+	}
+	s.prime()
+	primed := map[string]int{
+		"settlements": testutil.CollectAndCount(s.Settlements),
+		"rejections":  testutil.CollectAndCount(s.Rejections),
+		"duplicates":  testutil.CollectAndCount(s.Duplicates),
+		"retries":     testutil.CollectAndCount(s.Retries),
+		"abandoned":   testutil.CollectAndCount(s.Abandoned),
+	}
+	want := map[string]int{"settlements": 32, "rejections": 3 * (len(wager.Catalog()) - 2), "duplicates": 7, "retries": 11, "abandoned": 4}
+	for vector, count := range want {
+		if primed[vector] != count {
+			t.Errorf("%s primed = %d, want %d", vector, primed[vector], count)
+		}
+	}
+	moved := metricstest.Sum(t, s.Settlements) + metricstest.Sum(t, s.Rejections) + metricstest.Sum(t, s.Duplicates) +
+		metricstest.Sum(t, s.Retries) + metricstest.Sum(t, s.Abandoned)
+	if moved != 0 {
+		t.Fatalf("total of the primed series = %v, want 0: priming moves nothing", moved)
+	}
+}
+
+// A border records every kind processed or rejected and only a citing kind
+// waiting; the worker only closes the wait of a citing kind.
+func TestPrimeSettlements_createsOnlyWhatEachOriginRecords(t *testing.T) {
+	t.Parallel()
+	s := New(prometheus.NewRegistry())
+	s.Settlements.Reset()
+	s.primeSettlements()
+	children := childrenOf(t, s.Settlements)
+	for _, never := range []string{
+		"kind=BET,origin=http,status=PENDING_REFERENCE",
+		"kind=LOSS,origin=sqs,status=PENDING_REFERENCE",
+		"kind=BET,origin=reference,status=PROCESSED",
+		"kind=WIN,origin=reference,status=PENDING_REFERENCE",
+		"kind=OPENING,origin=http,status=PROCESSED",
+	} {
+		if slices.Contains(children, never) {
+			t.Errorf("settlement primed %s, want only what the origin records", never)
+		}
+	}
+	for _, recorded := range []string{
+		"kind=LOSS,origin=http,status=PROCESSED",
+		"kind=ROLLBACK,origin=sqs,status=PENDING_REFERENCE",
+		"kind=REFUND,origin=reference,status=REJECTED",
+	} {
+		if !slices.Contains(children, recorded) {
+			t.Errorf("settlements primed %v, want %s among them", children, recorded)
+		}
+	}
+}
+
+// The two conflicts of idempotency write no row, and their series is the one
+// of duplicates, so they are the only tokens of the catalog left out.
+func TestPrimeRejections_leavesTheTwoConflictsToTheDuplicates(t *testing.T) {
+	t.Parallel()
+	s := New(prometheus.NewRegistry())
+	s.Rejections.Reset()
+	s.primeRejections()
+	children := childrenOf(t, s.Rejections)
+	if got, want := len(children), 3*(len(wager.Catalog())-2); got != want {
+		t.Fatalf("rejection children = %d, want %d: three origins by every token but the conflicts", got, want)
+	}
+	for _, child := range children {
+		if strings.Contains(child, "IDEMPOTENCY_CONFLICT") || strings.Contains(child, "DUPLICATE_EXTERNAL_TRANSACTION") {
+			t.Fatalf("rejection child %s, want no conflict of idempotency", child)
+		}
+	}
+	if !slices.Contains(children, "failure_code=REFERENCE_NOT_FOUND,origin=reference") {
+		t.Fatalf("rejection children %v, want the deadline of the worker among them", children)
+	}
+}
+
+func TestPrimeEach_createsEveryPairOfTheTableAndNoOther(t *testing.T) {
+	t.Parallel()
+	vec := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "paired_total", Help: "Paired."}, []string{"first", "second"})
+	primeEach(vec, map[string][]string{"a": {"x", "y"}, "b": {"z"}})
+	children := childrenOf(t, vec)
+	slices.Sort(children)
+	if want := []string{"first=a,second=x", "first=a,second=y", "first=b,second=z"}; !slices.Equal(children, want) {
+		t.Fatalf("pairs primed = %v, want %v", children, want)
+	}
+}
+
+// childrenOf answers each child of the collector as its label pairs, in the
+// order of the label names.
+func childrenOf(t *testing.T, c prometheus.Collector) []string {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(c)
+	gathered, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather of one collector = %v, want nil", err)
+	}
+	var children []string
+	for _, family := range gathered {
+		for _, sample := range family.GetMetric() {
+			var pairs []string
+			for _, label := range sample.GetLabel() {
+				pairs = append(pairs, label.GetName()+"="+label.GetValue())
+			}
+			children = append(children, strings.Join(pairs, ","))
+		}
+	}
+	return children
 }
 
 // The reason is read off the chain and never off a status number: the three

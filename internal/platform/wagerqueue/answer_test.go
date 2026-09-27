@@ -10,6 +10,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 func TestAnswerOf_readsEachOutcomeAsTheAnswerTheBrokerIsTold(t *testing.T) {
@@ -40,25 +41,25 @@ func TestAnswerOf_readsEachOutcomeAsTheAnswerTheBrokerIsTold(t *testing.T) {
 			name:   "an invalid body is abandoned",
 			err:    invalid("money"),
 			answer: Abandon,
-			reason: reasonInvalidBody,
+			reason: metrics.AbandonInvalidBody,
 		},
 		{
 			name:   "an unmapped sender is abandoned",
 			err:    fmt.Errorf("receive wager: %w", authz.ErrUnmappedSender),
 			answer: Abandon,
-			reason: reasonRefusedSender,
+			reason: metrics.AbandonRefusedSender,
 		},
 		{
 			name:   "a body claiming another provider is abandoned",
 			err:    fmt.Errorf("receive wager: %w", authz.ErrProviderNotAllowed),
 			answer: Abandon,
-			reason: reasonRefusedSender,
+			reason: metrics.AbandonRefusedSender,
 		},
 		{
 			name:   "a recorded identifier with another body is abandoned",
 			err:    fmt.Errorf("receive wager: %w", submitwager.ErrMessageBodyDiffers),
 			answer: Abandon,
-			reason: reasonBodyDiffers,
+			reason: metrics.AbandonBodyDiffers,
 		},
 		{
 			// The commit rolled back whole, so there is nothing recorded and the

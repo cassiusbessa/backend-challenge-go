@@ -6,6 +6,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
 // Answer is what the consumer does with one message. The zero value is not an
@@ -30,16 +31,6 @@ const (
 	// settle: a body this border did not take, a sender the map does not allow,
 	// and an identifier already recorded with another body.
 	Abandon
-)
-
-// The reasons a message is abandoned, as the log and the metric name them. They
-// are the labels of a series, so they are a closed set of short tokens and never
-// a formatted message.
-const (
-	reasonInvalidBody   = "invalid_body"
-	reasonRefusedSender = "refused_sender"
-	reasonBodyDiffers   = "body_differs"
-	reasonDeliveryLimit = "delivery_limit"
 )
 
 // answerOf reads the outcome of the use case as one of the four answers.
@@ -72,11 +63,11 @@ func answerOf(err error) (Answer, string) {
 func abandonedFor(err error) (string, bool) {
 	switch {
 	case errors.Is(err, ErrInvalidMessage):
-		return reasonInvalidBody, true
+		return metrics.AbandonInvalidBody, true
 	case errors.Is(err, authz.ErrUnmappedSender), errors.Is(err, authz.ErrProviderNotAllowed):
-		return reasonRefusedSender, true
+		return metrics.AbandonRefusedSender, true
 	case errors.Is(err, submitwager.ErrMessageBodyDiffers):
-		return reasonBodyDiffers, true
+		return metrics.AbandonBodyDiffers, true
 	}
 	return "", false
 }
