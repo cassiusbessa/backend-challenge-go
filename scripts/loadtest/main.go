@@ -73,6 +73,10 @@ type options struct {
 	// settle is how long the backend is given to cover the end of the window:
 	// two scrapes and the send of the agent. drainWait bounds the wait for the
 	// outbox, and resolveWait the resolution of the arrivals left undecided.
+	//
+	// The outbox publishes one event of a wallet at a time, and the hot wallets
+	// of the mix receive more events a second than that delivers: their backlog
+	// drains after the window, which is what drainWait has to cover.
 	settle      time.Duration
 	drainWait   time.Duration
 	resolveWait time.Duration
@@ -108,7 +112,7 @@ func command(args []string, stdout, stderr io.Writer, run func(context.Context, 
 // readFlags reads the arguments into the options and refuses the values no run
 // can use, naming the flag.
 func readFlags(args []string, stderr io.Writer) (options, error) {
-	opts := options{settle: 15 * time.Second, drainWait: time.Minute, resolveWait: time.Minute}
+	opts := options{settle: 15 * time.Second, resolveWait: time.Minute}
 	set := flag.NewFlagSet("loadtest", flag.ContinueOnError)
 	set.SetOutput(stderr)
 	set.StringVar(&opts.target, "target", "compose", "replicas to load: compose, behind the balancer, or cluster, behind the NodePort")
@@ -130,6 +134,7 @@ func readFlags(args []string, stderr io.Writer) (options, error) {
 	set.StringVar(&opts.context, "context", "kind-junglegaming", "kubectl context of the cluster")
 	set.StringVar(&opts.namespace, "namespace", "junglegaming", "namespace of the replicas in the cluster")
 	set.StringVar(&opts.report, "report", ".quality/load/report.json", "machine-readable report, relative to root")
+	set.DurationVar(&opts.drainWait, "drain-wait", 10*time.Minute, "how long the outbox has to drain after the window before the run fails")
 	if err := set.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -163,6 +168,8 @@ func bounded(o options) error {
 		return fmt.Errorf("-replicas must be at least 1, got %d", o.replicas)
 	case o.wallets < 1:
 		return fmt.Errorf("-wallets must be at least 1, got %d", o.wallets)
+	case o.drainWait <= 0:
+		return fmt.Errorf("-drain-wait must be positive, got %s", o.drainWait)
 	case o.kill != killNone && o.kill != killGraceful && o.kill != killForced:
 		return fmt.Errorf("-kill must be graceful, forced or empty, got %q", o.kill)
 	}

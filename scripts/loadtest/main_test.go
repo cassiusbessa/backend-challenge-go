@@ -28,7 +28,7 @@ func TestReadFlags_answersTheDefaultsOfTheDesign(t *testing.T) {
 		replicas: 3, duration: 60 * time.Second, concurrency: 32, wallets: 100, seed: 1,
 		kubectl: "kubectl", context: "kind-junglegaming", namespace: "junglegaming",
 		report: filepath.Join(".", ".quality/load/report.json"),
-		settle: 15 * time.Second, drainWait: time.Minute, resolveWait: time.Minute,
+		settle: 15 * time.Second, drainWait: 10 * time.Minute, resolveWait: time.Minute,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("defaults = %+v, want %+v", got, want)
@@ -73,6 +73,7 @@ func TestReadFlags_refusesWhatNoRunCanUse(t *testing.T) {
 		{args: []string{"-replicas", "-2"}, flag: "-replicas"},
 		{args: []string{"-wallets", "0"}, flag: "-wallets"},
 		{args: []string{"-kill", "sideways"}, flag: "-kill"},
+		{args: []string{"-drain-wait", "0s"}, flag: "-drain-wait"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			t.Parallel()
