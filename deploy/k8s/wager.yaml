@@ -25,9 +25,9 @@ spec:
       labels:
         app: wager
     spec:
-      # 5s do `preStop`, 10s do `SHUTDOWN_TIMEOUT` padrão do processo e os 20s de
-      # margem para a descarga da telemetria que o `stop_grace_period` do
-      # Compose já concede.
+      # 5s do `preStop`, os 20s do `SHUTDOWN_TIMEOUT` padrão do processo e os 10s
+      # que o `stop_grace_period` de 30s do Compose deixa além dele, onde cabe a
+      # descarga de 3s da telemetria.
       terminationGracePeriodSeconds: 35
       containers:
         - name: wager

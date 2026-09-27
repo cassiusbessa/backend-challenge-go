@@ -23,7 +23,7 @@ O initContainer migraria a cada reinício de cada réplica, o contrário de "uma
 
 - `make cluster-up` sobe tudo com um comando, sem Terraform no host: parte do mesmo `docker compose up`, para as réplicas do Compose, cria o cluster se não existe, liga o nó à rede, carrega as imagens, gera o Secret e os ConfigMaps das mesmas variáveis e arquivos que o Compose lê, e roda o Job antes do Deployment.
 - As réplicas atendem em `localhost:8091`, por NodePort; `8090` continua sendo o balanceador do Compose, que fica sem destino enquanto o cluster existe.
-- Na terminação, o `preStop` de 5 s tira a réplica do Service antes do `SIGTERM`, e os 35 s de prazo cobrem esse atraso, o `SHUTDOWN_TIMEOUT` de 10 s e os 20 s de descarga da telemetria.
+- Na terminação, o `preStop` de 5 s tira a réplica do Service antes do `SIGTERM`, e os 35 s de prazo cobrem esse atraso, o `SHUTDOWN_TIMEOUT` de 20 s e os 10 s que o Compose já deixa além dele, onde cabem os 3 s de descarga da telemetria.
 - As imagens entram no nó por `docker save --platform` e `kind load image-archive`: com o image store do containerd, o `kind load docker-image` de uma imagem baixada exporta o índice de todas as plataformas e o import falha.
 - **O que se paga:** o nó é ligado à rede por fora da configuração do Kind, então `make down` apaga o cluster antes de o Compose remover a rede. Um `docker compose up` à mão com o cluster de pé devolve as réplicas do Compose em silêncio, e elas disputam a outbox e a fila com os pods; o caminho de volta é `make cluster-down`. O host precisa de `kubectl`, e o Kind compila por `go run` na primeira vez.
 
