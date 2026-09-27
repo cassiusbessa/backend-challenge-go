@@ -14,6 +14,26 @@ As operações chegam por HTTP ou por uma fila SQS FIFO, e o serviço roda em N 
 - **Reconciliação contínua.** Um observador compara saldo e ledger de cada carteira e dispara alerta na primeira divergência.
 - **Dinheiro sem `float`.** `int64` de centavos com a moeda no tipo; entra e sai como string decimal.
 
+## Além do enunciado
+
+O desafio lista tracing, dashboards e teste de carga como diferenciais opcionais. Os três estão aqui, junto com o que faz o serviço rodar e ser verificado como um sistema de produção:
+
+- **Réplicas atrás de um endereço só.** Três réplicas do mesmo binário atrás de um HAProxy que só encaminha para a réplica pronta. O mesmo conjunto sobe num cluster Kubernetes local (Kind), com a migration como Job, por `make cluster-up`.
+- **Infraestrutura como código.** Terraform descreve as filas FIFO, a DLQ com redrive, o tópico SNS FIFO e o remetente IAM, e roda como serviço do Compose — sem Terraform no host. Os manifests Kubernetes estão em [`deploy/k8s`](deploy/k8s).
+- **Observabilidade de ponta a ponta.** Traces, logs e métricas por OpenTelemetry até Tempo, Loki e Prometheus. O painel "Liquidação" é provisionado como código e abre o trace de cada ponto do p99; as três regras de alerta têm teste de unidade.
+- **Carga com veredito de consistência.** `make load` mede vazão, p50/p95/p99, erros, conflitos de versão e atraso da outbox — os campos que o enunciado pede — e termina conferindo saldo, versão e lançamentos de cada carteira, inclusive com uma réplica morta no meio da janela.
+- **Falhas exercitadas, não só descritas.** Réplica morta sob carga, banco, broker e IdP pausados, e divergência gravada por fora da aplicação, cada exercício com o que se observou em [07 · Operação](docs/07-operacao.md#exercícios-de-falha).
+- **O CI como portão.** `golangci-lint` com teto de complexidade ciclomática 6, `-race`, piso de cobertura por camada, suíte de integração contra PostgreSQL, Keycloak e LocalStack reais, e carga sobre as réplicas do Compose e do cluster. Teste de mutação sob comando, com `make mutation`.
+- **Cada decisão registrada.** 40 ADRs, cada um com a alternativa que rejeitou, e a estrutura documentada com diagramas C4 em Mermaid.
+
+| Em números | |
+| --- | --- |
+| Testes | 1.119 de unidade e 177 de integração, estes contra a infraestrutura real |
+| Cobertura de unidade | 92,4% no total — domínio 95,8%, casos de uso 94,0%, adaptadores 90,7% |
+| Cenários do enunciado | 8 de 8 automatizados, cada um sobre três ou mais instâncias independentes |
+| Carga, três réplicas | até ~1.900 operações/s, p99 entre 89 e 135 ms, zero erros e zero conflitos de versão — inclusive matando uma réplica |
+| Decisões | 40 ADRs |
+
 ## Arquitetura
 
 ```mermaid
@@ -314,6 +334,14 @@ Painel e regras são arquivos do repositório (`deploy/grafana`, `deploy/prometh
 
 ## Testes
 
+A suíte de unidade não pede Docker:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
 | Comando | O que roda | Pede a stack |
 | --- | --- | --- |
 | `make test` | suíte de unidade, com `-race` | não |
@@ -391,10 +419,20 @@ make scenarios SCENARIO_REPEAT=3
 | `make load` | carga com veredito; `TARGET=cluster`, `REPLICAS`, `LOAD_KILL=graceful\|forced` |
 | `make verify` | confere o ambiente contra os arquivos versionados: bancos e versão do schema, realm, filas e tópico, imagem, painel e alertas |
 | `make migrate` | aplica o schema nos dois bancos, o da aplicação e o da suíte |
+| `make mutation` / `make cover-journey` | teste de mutação do módulo / cobertura somando unidade e integração |
 | `make provision` | refaz o apply do broker no LocalStack |
 | `make help` | lista todos os alvos |
 
 Os dois modos de réplica, o relatório e os números medidos da carga, e os exercícios de falha estão em [07 · Operação](docs/07-operacao.md).
+
+**Migrations.** O SQL versionado fica em [`deploy/migrations`](deploy/migrations) e é aplicado pelo `golang-migrate`, na subida ou com `make migrate`; aplicar de novo não altera nada. Reverter é o `down` da migration, ou `make down` para recriar do zero:
+
+```bash
+docker compose run --rm migrate -path=/migrations \
+  -database "postgres://junglegaming:junglegaming@postgres:5432/junglegaming?sslmode=disable" down 1
+```
+
+`make migrate-reversibility` sobe, reverte e sobe de novo o banco da suíte, e confere que a versão não ficou suja e que o papel da aplicação continua escrevendo.
 
 <details>
 <summary>Os comandos por trás dos alvos</summary>
