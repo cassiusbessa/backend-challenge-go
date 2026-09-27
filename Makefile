@@ -117,7 +117,9 @@ MIGRATE_JOB_WAIT = for attempt in $$(seq 1 120); do \
 # O cluster parte da mesma subida do Compose, que provisiona o broker e aplica o
 # schema, e as réplicas do Compose param enquanto ele existe: com elas de pé,
 # seriam processos a mais disputando a outbox, a fila e as esperas. O nó entra na
-# rede do Compose e alcança cada serviço pelo nome.
+# rede do Compose e alcança cada serviço pelo nome — pelo CoreDNS, que num
+# cluster recém-criado ainda não responde quando o `create` volta, e por isso é
+# esperado antes do Job.
 cluster-up: ## sobe REPLICAS réplicas num cluster Kind sobre os serviços do Compose, em localhost:8091
 	@$(CHECK_REPLICAS)
 	docker compose up -d --build --wait
@@ -128,6 +130,7 @@ cluster-up: ## sobe REPLICAS réplicas num cluster Kind sobre os serviços do Co
 	@archive=$$(mktemp) && trap 'rm -f "$$archive"' EXIT \
 		&& docker save --platform "$$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')" -o "$$archive" $(CLUSTER_IMAGES) \
 		&& $(KIND) load image-archive --name $(CLUSTER) "$$archive"
+	$(KUBECTL) -n kube-system rollout status deployment/coredns --timeout=120s
 	$(KUBECTL) apply -f deploy/k8s/namespace.yaml
 	@$(KUBECTL) -n $(NAMESPACE) create secret generic wager-credentials \
 		--from-literal=DATABASE_URL='$(APP_URL)' \
