@@ -515,8 +515,19 @@ func (q *queue) Due(ctx context.Context, limit int) ([]storage.OutboxCandidate, 
 	if q.failFirst != nil && q.scans == 1 {
 		return nil, q.failFirst
 	}
+	if q.scans > scansAtMost {
+		return nil, errScannedTooOften
+	}
 	return q.answer(), nil
 }
+
+// scansAtMost bounds the scans of one case. A turn that never leaves its loop
+// would otherwise relay the same rows forever and grow what the fake records
+// until the machine runs out of memory; past the bound the scan fails, the turn
+// ends, and the count the case asserts is what gives the loop away.
+const scansAtMost = 20
+
+var errScannedTooOften = errors.New("queue: scanned more often than any case asks")
 
 // answer is what this scan finds: the round of this scan when the case set
 // rounds, and the same rows on every scan otherwise.
