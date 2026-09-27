@@ -81,6 +81,12 @@ type OutboxQueue interface {
 	// a wallet go on after one of them is given up on.
 	Due(ctx context.Context, limit int) ([]OutboxCandidate, error)
 
+	// NextOf answers the oldest pending row of the wallet when it can be claimed
+	// now, and reports whether there is one. It answers nothing while that row
+	// is set back on the backoff or held by a live lease, rather than the row
+	// behind it: the order of a wallet is never skipped.
+	NextOf(ctx context.Context, wallet identity.WalletID) (OutboxCandidate, bool, error)
+
 	// Claim writes a new lease token and a deadline measured by the clock of the
 	// database, and answers the row re-read under it.
 	//

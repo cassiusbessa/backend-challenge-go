@@ -39,6 +39,52 @@ func TestDue_offersTheNextRowOnceTheOneAheadIsDead(t *testing.T) {
 	}
 }
 
+// The next row of a wallet is its head, and only while the head can be claimed:
+// a head held by another replica or set back on the backoff answers nothing,
+// never the row behind it.
+func TestNextOf_answersTheHeadOfTheWalletOnlyWhileItCanBeClaimed(t *testing.T) {
+	ctx, pool, unit := open(t)
+	queue := postgres.NewOutboxQueue(pool)
+	host := walletWithEvents(ctx, t, unit, 2)
+	assertNext(ctx, t, queue, host.wallet, host.events[0], "a head nobody holds")
+	claimed := claim(ctx, t, queue, host.events[0])
+	assertNothingNext(ctx, t, queue, host.wallet, "a head under a live lease")
+	if err := queue.Reschedule(ctx, host.events[0], claimed.LeaseToken, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("Reschedule = %v, want nil", err)
+	}
+	assertNothingNext(ctx, t, queue, host.wallet, "a head set back on the backoff")
+}
+
+// Once the head is confirmed, or given up on, the row behind it is the next one.
+func TestNextOf_answersTheRowBehindOnceTheHeadIsDone(t *testing.T) {
+	ctx, pool, unit := open(t)
+	queue := postgres.NewOutboxQueue(pool)
+	host := walletWithEvents(ctx, t, unit, 3)
+	claimed := claim(ctx, t, queue, host.events[0])
+	if err := queue.Confirm(ctx, host.events[0], claimed.LeaseToken, time.Now()); err != nil {
+		t.Fatalf("Confirm = %v, want nil", err)
+	}
+	assertNext(ctx, t, queue, host.wallet, host.events[1], "a confirmed head")
+	kill(ctx, t, queue, host.events[1])
+	assertNext(ctx, t, queue, host.wallet, host.events[2], "a dead head")
+}
+
+func assertNext(ctx context.Context, t *testing.T, queue *postgres.OutboxQueue, wallet identity.WalletID, want identity.EventID, after string) {
+	t.Helper()
+	next, found, err := queue.NextOf(ctx, wallet)
+	if err != nil || !found || next.EventID != want || next.WalletID != wallet {
+		t.Fatalf("NextOf after %s = %v, %t, %v; want %s of the wallet", after, next, found, err, want)
+	}
+}
+
+func assertNothingNext(ctx context.Context, t *testing.T, queue *postgres.OutboxQueue, wallet identity.WalletID, over string) {
+	t.Helper()
+	next, found, err := queue.NextOf(ctx, wallet)
+	if err != nil || found {
+		t.Fatalf("NextOf over %s = %v, %t, %v; want nothing", over, next, found, err)
+	}
+}
+
 // The order of publication is the order of the commits and not the order of the
 // instants the events carry. The instant is read before the wallet is locked, so
 // two operations of one wallet can commit in the opposite order of their

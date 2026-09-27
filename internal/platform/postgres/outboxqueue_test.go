@@ -44,6 +44,9 @@ func TestOutboxQueue_answersTheClosedPoolOnEveryPortOfTheTurn(t *testing.T) {
 	if err := queue.Confirm(ctx, eventIdentity(t), "token", time.Time{}); !errors.Is(err, ErrPoolClosed) {
 		t.Fatalf("Confirm over a closed pool = %v, want ErrPoolClosed", err)
 	}
+	if _, found, err := queue.NextOf(ctx, walletIdentity(t)); !errors.Is(err, ErrPoolClosed) || found {
+		t.Fatalf("NextOf over a closed pool = %t, %v, want nothing and ErrPoolClosed", found, err)
+	}
 }
 
 // A row whose identifiers are not the ones this context writes is a defect of

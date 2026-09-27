@@ -22,19 +22,32 @@ import (
 	"time"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
 )
 
-// batch is how many rows one scan takes. It bounds the work of a single turn so
-// that an outbox that grew while the process was down is worked through over
-// several turns instead of in one long run.
-const batch = 50
+// batch is how many rows one scan takes, inFlight how many wallets one replica
+// sends for at once, and perWallet how many rows of one wallet follow each other
+// before the next scan.
+//
+// The scan answers at most one row per wallet — the oldest pending one — so the
+// rows of one scan belong to different wallets, and sending them together keeps
+// the order of each. The next row of a wallet is publishable only once the one
+// before it is confirmed; it is asked for by the wallet right after, instead of
+// waiting for a whole scan, which is what held a busy wallet to a few events a
+// second. perWallet bounds how long one wallet keeps a slot (ADR 0038).
+const (
+	batch     = 50
+	inFlight  = 8
+	perWallet = 50
+)
 
 // Scanner chooses the rows ready to be published, and measures the queue they
 // wait in.
 type Scanner interface {
 	Due(ctx context.Context, limit int) ([]storage.OutboxCandidate, error)
+	NextOf(ctx context.Context, wallet identity.WalletID) (storage.OutboxCandidate, bool, error)
 
 	// Backlog answers how many rows are pending and how old the oldest is, and
 	// zero for both when nothing is pending.
@@ -145,26 +158,83 @@ func (r *Relay) run(scanning, work context.Context) {
 	}
 }
 
-// turn is one scan and the candidates it chose.
+// turn scans and relays until a scan comes back short of the batch, so an
+// outbox that grows faster than a batch per tick is worked through without
+// waiting for the next one. The backlog is measured after each scan: a long
+// turn would otherwise hold the gauges still until it ends.
 //
 // A failure of the scan ends the turn and not the relay: the queue is read again
 // on the next tick, and a database that is out comes back without the process
 // being restarted.
 func (r *Relay) turn(scanning, work context.Context) {
-	due, err := r.scanner.Due(scanning, batch)
-	if err != nil {
-		r.failed(scanning, "scan the outbox queue", err)
-		return
-	}
-	for _, candidate := range due {
-		if r.stopping() || scanning.Err() != nil {
-			// The signal came mid-batch. The rest of the candidates are left for
-			// whoever scans next, here or in another replica.
+	for {
+		due, err := r.scanner.Due(scanning, batch)
+		if err != nil {
+			r.failed(scanning, "scan the outbox queue", err)
 			return
 		}
-		r.publish(work, candidate)
+		r.relayAll(scanning, work, due)
+		r.measure(scanning)
+		if len(due) < batch || r.halted(scanning) {
+			return
+		}
 	}
-	r.measure(scanning)
+}
+
+// relayAll hands the candidates of one scan to the use case, inFlight at a time,
+// and returns once every send it started has ended. The next scan of the same
+// wallet can only follow a send that ended, which is what keeps its order.
+func (r *Relay) relayAll(scanning, work context.Context, due []storage.OutboxCandidate) {
+	slots := make(chan struct{}, inFlight)
+	var sending sync.WaitGroup
+	defer sending.Wait()
+	for _, candidate := range due {
+		slots <- struct{}{}
+		if r.halted(scanning) {
+			// The signal came mid-batch. The sends in flight end inside their
+			// lease, and the rest of the candidates are left for whoever scans
+			// next, here or in another replica.
+			return
+		}
+		sending.Go(func() {
+			defer func() { <-slots }()
+			r.chain(scanning, work, candidate)
+		})
+	}
+}
+
+// chain relays the candidate and then, while each send goes through, the next
+// row of the same wallet, up to perWallet of them. A row set back on the backoff
+// or held by another replica ends the chain, because NextOf answers nothing for
+// either; so does the signal, which claims no new row.
+func (r *Relay) chain(scanning, work context.Context, candidate storage.OutboxCandidate) {
+	for range perWallet {
+		if !r.publish(work, candidate) || r.halted(scanning) {
+			return
+		}
+		next, found := r.behind(scanning, candidate.WalletID)
+		if !found {
+			return
+		}
+		candidate = next
+	}
+}
+
+// behind answers the row that follows in the wallet, when it can be claimed now.
+// A read that fails is logged and ends the chain: the next scan finds the row.
+func (r *Relay) behind(scanning context.Context, wallet identity.WalletID) (storage.OutboxCandidate, bool) {
+	next, found, err := r.scanner.NextOf(scanning, wallet)
+	if err != nil {
+		r.failed(scanning, "read the next outbox event of a wallet", err, slog.String("walletId", wallet.String()))
+		return storage.OutboxCandidate{}, false
+	}
+	return next, found
+}
+
+// halted reports whether no new row is to be claimed: the signal came, or the
+// scan it cancels already reads as done.
+func (r *Relay) halted(scanning context.Context) bool {
+	return r.stopping() || scanning.Err() != nil
 }
 
 // measure reads the backlog into its two gauges, after the turn has published
@@ -197,15 +267,18 @@ func (r *Relay) stopping() bool {
 	}
 }
 
-// publish hands one candidate to the use case. The outcome of a row is logged
-// there, by whoever decided it; what is logged here is the turn failing.
-func (r *Relay) publish(ctx context.Context, candidate storage.OutboxCandidate) {
+// publish hands one candidate to the use case, and reports whether the turn
+// went through. The outcome of a row is logged there, by whoever decided it;
+// what is logged here is the turn failing.
+func (r *Relay) publish(ctx context.Context, candidate storage.OutboxCandidate) bool {
 	if err := r.relayer.Relay(ctx, candidate); err != nil {
 		r.failed(ctx, "relay an outbox event", err,
 			slog.String("eventId", candidate.EventID.String()),
 			slog.String("walletId", candidate.WalletID.String()),
 		)
+		return false
 	}
+	return true
 }
 
 // failed records the failure: the chain that names where it came from, and the

@@ -43,6 +43,24 @@ SELECT event_id, wallet_id
  ORDER BY o.publish_seq
  LIMIT $1`
 
+// The next row of one wallet: the oldest one still pending, and only when it can
+// be claimed now — due, and held by no live lease. It is the scan narrowed to one
+// wallet and walked by the partial index in the order of that wallet, so a chain
+// of sends asks for the next row without scanning the whole queue.
+//
+// The head is taken before the two conditions and not after: filtering first
+// would skip a head that is set back on the backoff or held by another replica,
+// and answer the row behind it out of order.
+const selectNextOutboxEvent = `
+SELECT event_id, wallet_id
+  FROM (SELECT event_id, wallet_id, next_attempt_at, lease_until
+          FROM outbox_events
+         WHERE wallet_id = $1 AND published_at IS NULL AND dead_at IS NULL
+         ORDER BY publish_seq
+         LIMIT 1) head
+ WHERE next_attempt_at <= now()
+   AND (lease_until IS NULL OR lease_until < now())`
+
 // The claim. The token is new on every turn and minted by the database, so it
 // never has to travel from a process that may be about to lose the row, and the
 // deadline is measured against the clock of the database for the same reason.
@@ -123,6 +141,25 @@ func (q *OutboxQueue) Due(ctx context.Context, limit int) ([]storage.OutboxCandi
 	}
 	defer rows.Close()
 	return outboxCandidates(rows)
+}
+
+// NextOf answers the next row of the wallet that can be claimed now, and
+// reports whether there is one.
+func (q *OutboxQueue) NextOf(ctx context.Context, wallet identity.WalletID) (storage.OutboxCandidate, bool, error) {
+	pool, err := q.source.Querier()
+	if err != nil {
+		return storage.OutboxCandidate{}, false, wrap("acquire pool", err)
+	}
+	rows, err := pool.Query(ctx, selectNextOutboxEvent, wallet.String())
+	if err != nil {
+		return storage.OutboxCandidate{}, false, wrap("read the next outbox event", err)
+	}
+	defer rows.Close()
+	found, err := outboxCandidates(rows)
+	if err != nil || len(found) == 0 {
+		return storage.OutboxCandidate{}, false, err
+	}
+	return found[0], true, nil
 }
 
 func outboxCandidates(rows pgx.Rows) ([]storage.OutboxCandidate, error) {

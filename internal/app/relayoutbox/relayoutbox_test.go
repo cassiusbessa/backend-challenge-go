@@ -499,6 +499,10 @@ func (q *queue) Backlog(context.Context) (storage.Backlog, error) {
 	return storage.Backlog{}, nil
 }
 
+func (q *queue) NextOf(context.Context, identity.WalletID) (storage.OutboxCandidate, bool, error) {
+	return storage.OutboxCandidate{}, false, nil
+}
+
 func queueWith(t *testing.T) *queue {
 	t.Helper()
 	return &queue{claimed: storage.OutboxRow{
