@@ -172,7 +172,7 @@ docker compose exec -T postgres psql -U junglegaming -d junglegaming -c \
 
 **O que se vê:** o observador de divergência acha a carteira na passagem dele — 97 s depois, com mil carteiras no banco —, e uma réplica loga `wallet reconciliation diverged` com o `walletId` e `BALANCE_MISMATCH`; `wager_reconciliation_divergences_total{origin="watch"}` sobe, e `ReconciliationDivergenceFound` dispara, aqui em 116 s. O saldo não é corrigido: o observador só lê.
 
-**Volta:** o mesmo `UPDATE`, subtraindo o que foi somado. `POST /wallets/{id}/reconciliation` volta a responder consistente.
+**Volta:** o mesmo `UPDATE`, subtraindo o que foi somado. `POST /wallets/{id}/reconciliation` volta a responder consistente, e o alerta se apaga sozinho 15 minutos depois da última passagem que achou a divergência — a janela da regra.
 
 ### O veredito que falha não tem exercício
 
