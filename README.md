@@ -23,7 +23,7 @@ O desafio lista tracing, dashboards e teste de carga como diferenciais opcionais
 - **Observabilidade de ponta a ponta.** Traces, logs e métricas por OpenTelemetry até Tempo, Loki e Prometheus. O painel "Liquidação" é provisionado como código e abre o trace de cada ponto do p99; as três regras de alerta têm teste de unidade.
 - **Carga com veredito de consistência.** `make load` mede vazão, p50/p95/p99, erros, conflitos de versão e atraso da outbox — os campos que o enunciado pede — e termina conferindo saldo, versão e lançamentos de cada carteira, inclusive com uma réplica morta no meio da janela.
 - **Falhas exercitadas, não só descritas.** Réplica morta sob carga, banco, broker e IdP pausados, e divergência gravada por fora da aplicação, cada exercício com o que se observou em [07 · Operação](docs/07-operacao.md#exercícios-de-falha).
-- **O CI como portão.** `golangci-lint` com teto de complexidade ciclomática 6, `-race`, piso de cobertura por camada, suíte de integração contra PostgreSQL, Keycloak e LocalStack reais, e carga sobre as réplicas do Compose e do cluster. Teste de mutação sob comando, com `make mutation`.
+- **O CI como portão.** `golangci-lint` com teto de complexidade ciclomática 6, `-race`, piso de cobertura por camada, suíte de integração contra PostgreSQL, Keycloak e LocalStack reais. A carga e o teste de mutação ficam sob comando: `make load` ou o workflow `load` da aba Actions, e `make mutation`.
 - **Cada decisão registrada.** 40 ADRs, cada um com a alternativa que rejeitou, e a estrutura documentada com diagramas C4 em Mermaid.
 
 | Em números | |
@@ -407,7 +407,7 @@ make scenarios SCENARIO_REPEAT=3
 
 ### Integração contínua
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) valida painel, balanceador e regras de alerta; roda `golangci-lint` em cada módulo, a suíte de unidade com `-race` e os pisos de cobertura — 90% no domínio, 80% em `internal/app`, 70% em `internal/platform`; sobe a stack para a suíte de integração; e termina com carga sobre as réplicas do Compose, com uma delas morta à força, e sobre o cluster.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) valida painel, balanceador e regras de alerta; roda `golangci-lint` em cada módulo, a suíte de unidade com `-race` e os pisos de cobertura — 90% no domínio, 80% em `internal/app`, 70% em `internal/platform`; e sobe a stack para a suíte de integração, com os cenários de concorrência. A carga fica fora do portão de cada push — os números de um runner compartilhado não dizem nada, e a drenagem da outbox leva minutos — e roda sob comando em [`.github/workflows/load.yml`](.github/workflows/load.yml), com o alvo, as réplicas, a janela e a morte de réplica como parâmetros, e o relatório como artefato.
 
 ## Operação
 

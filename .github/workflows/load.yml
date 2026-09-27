@@ -1,0 +1,64 @@
+name: load
+
+# The load is not a gate of every push. The runner is a shared machine, so its
+# figures say nothing about the service, and the wait for the outbox to drain
+# makes a run take minutes; the correctness it checks is proven on every push by
+# the concurrency scenarios of the integration suite. It stays one click away,
+# with the verdict as the exit code. The figures that count are measured on a
+# described machine, in docs/07.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where the replicas run
+        type: choice
+        options: [compose, cluster]
+        default: compose
+      replicas:
+        description: How many replicas
+        type: string
+        default: "3"
+      duration:
+        description: The window of the load
+        type: string
+        default: 30s
+      kill:
+        description: A replica killed halfway, and how
+        type: choice
+        options: [forced, graceful, none]
+        default: forced
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+
+      - uses: azure/setup-kubectl@v4
+        if: inputs.target == 'cluster'
+        with:
+          version: v1.37.1
+
+      # The inputs reach the shell through the environment, never spliced into
+      # the script, and `none` is the empty LOAD_KILL the Makefile reads as no kill.
+      - name: load the replicas
+        env:
+          TARGET: ${{ inputs.target }}
+          REPLICAS: ${{ inputs.replicas }}
+          DURATION: ${{ inputs.duration }}
+          KILL: ${{ inputs.kill }}
+        run: |
+          if [ "$KILL" = none ]; then KILL=; fi
+          make load TARGET="$TARGET" REPLICAS="$REPLICAS" LOAD_DURATION="$DURATION" LOAD_KILL="$KILL"
+
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-report
+          path: .quality/load/report.json
+          if-no-files-found: ignore
