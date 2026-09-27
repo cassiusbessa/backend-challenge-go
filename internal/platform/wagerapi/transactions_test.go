@@ -14,6 +14,9 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
@@ -58,6 +61,35 @@ func assertFirstCompletion(t *testing.T, answered externalTransaction) {
 	if answered.IdempotentReplay {
 		t.Fatalf("idempotentReplay = %t, want false on the first completion", answered.IdempotentReplay)
 	}
+}
+
+// The use case runs in a span of its own under the one of the request, so the
+// trace tells the submission apart from the decode and the answer.
+func TestSubmit_runsTheUseCaseInASpanUnderTheRequest(t *testing.T) {
+	t.Parallel()
+	spans := tracetest.NewSpanRecorder()
+	ctx, entry := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test").Start(context.Background(), "POST "+Route)
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, Route, strings.NewReader(submission(nil)))
+	request.Header.Set(idempotencyHeader, "key-1")
+	serve(t, "provider-a", Submit(&submitter{result: settled(t, false)}, reporter()), request)
+	entry.End()
+	assertStepUnder(t, spans.Ended(), "submit wager", entry)
+}
+
+// assertStepUnder finds the span of the use case among the ended ones and checks
+// it is a child of the span of the request.
+func assertStepUnder(t *testing.T, ended []sdktrace.ReadOnlySpan, name string, parent trace.Span) {
+	t.Helper()
+	for _, span := range ended {
+		if span.Name() != name {
+			continue
+		}
+		if got, want := span.Parent().SpanID(), parent.SpanContext().SpanID(); got != want {
+			t.Fatalf("parent of %q = %s, want the request %s", name, got, want)
+		}
+		return
+	}
+	t.Fatalf("spans ended without %q, want the span of the use case", name)
 }
 
 // The operation that was accepted and is waiting answers a code of its own: the

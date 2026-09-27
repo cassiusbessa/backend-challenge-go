@@ -9,6 +9,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // Opener is the use case of the opening, as the border needs it.
@@ -40,7 +41,9 @@ func Open(opener Opener, reporter *Reporter) http.Handler {
 			reporter.Refuse(w, r, err)
 			return
 		}
-		opened, err := opener.Open(r.Context(), cmd)
+		ctx, done := telemetry.Step(r.Context(), "open wallet")
+		opened, err := opener.Open(ctx, cmd)
+		done(err)
 		if err != nil {
 			reporter.Refuse(w, r, err)
 			return
@@ -64,7 +67,9 @@ func Read(reader Reader, reporter *Reporter) http.Handler {
 			reporter.Refuse(w, r, err)
 			return
 		}
-		found, err := reader.Wallet(r.Context(), id)
+		ctx, done := telemetry.Step(r.Context(), "read wallet")
+		found, err := reader.Wallet(ctx, id)
+		done(err)
 		if err != nil {
 			reporter.Refuse(w, r, err)
 			return

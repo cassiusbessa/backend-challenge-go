@@ -12,6 +12,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/submitwager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/fault"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/metrics"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // deliveryLimit is the delivery this consumer gives up on. It is below the
@@ -304,12 +305,15 @@ func (c *Consumer) settle(ctx context.Context, delivery Delivery, decoded Messag
 	if refusal != nil {
 		return submitwager.Result{}, refusal
 	}
-	return c.receiver.Receive(ctx, receivewager.Delivery{
+	ctx, done := telemetry.Step(ctx, "receive wager")
+	result, err := c.receiver.Receive(ctx, receivewager.Delivery{
 		MessageID: decoded.MessageID,
 		Sender:    delivery.Sender,
 		BodyHash:  hashOf(delivery.Body),
 		Command:   decoded.Command,
 	})
+	done(err)
+	return result, err
 }
 
 func hashOf(body []byte) string {

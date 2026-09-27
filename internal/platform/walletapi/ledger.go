@@ -8,6 +8,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/listledger"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // Lister is the read of one page of the ledger, as the border needs it.
@@ -46,7 +47,9 @@ func ListLedger(lister Lister, reporter *Reporter) http.Handler {
 			reporter.Refuse(w, r, err)
 			return
 		}
-		page, err := lister.Page(r.Context(), query)
+		ctx, done := telemetry.Step(r.Context(), "list ledger")
+		page, err := lister.Page(ctx, query)
+		done(err)
 		if err != nil {
 			reporter.Refuse(w, r, refusalOf(err))
 			return

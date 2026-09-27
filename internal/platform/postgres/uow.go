@@ -4,8 +4,10 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // UnitOfWork is the only writer of the financial tables. The zero value is not
@@ -21,7 +23,12 @@ func NewUnitOfWork(source *Pool) *UnitOfWork {
 // Within opens READ COMMITTED, commits when the work returns nil and rolls the
 // whole set back on any error. A use case that fails halfway leaves no wallet,
 // no transaction and no entry behind.
-func (u *UnitOfWork) Within(ctx context.Context, work func(storage.Tx) error) error {
+//
+// The span of the unit of work closes after the commit or the rollback, under
+// the span of the operation; there is none per query.
+func (u *UnitOfWork) Within(ctx context.Context, work func(storage.Tx) error) (err error) {
+	ctx, done := telemetry.Step(ctx, "unit of work", attribute.String("db.system.name", "postgresql"))
+	defer func() { done(err) }()
 	pool, err := u.source.Querier()
 	if err != nil {
 		return wrap("acquire pool", err)

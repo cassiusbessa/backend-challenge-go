@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/junglegaming/backend-challenge-go/internal/app/openwallet"
 	"github.com/junglegaming/backend-challenge-go/internal/app/storage"
@@ -30,6 +33,33 @@ func TestOpen_answers201WithTheWalletAsItWasCommitted(t *testing.T) {
 		t.Fatalf("status = %d, want 201", recorder.Code)
 	}
 	assertWalletBody(t, decodeWallet(t, recorder), "1000.00", 1)
+}
+
+// The use case runs in a span of its own under the one of the request, so the
+// trace tells the opening apart from the decode and the answer.
+func TestOpen_runsTheUseCaseInASpanUnderTheRequest(t *testing.T) {
+	t.Parallel()
+	spans := tracetest.NewSpanRecorder()
+	ctx, entry := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test").Start(context.Background(), "POST /wallets")
+	serve(Open(&opener{result: resultOf(t, "1000.00")}, quietReporter()), openRequestOf(validBody).WithContext(ctx))
+	entry.End()
+	assertStepUnder(t, spans.Ended(), "open wallet", entry)
+}
+
+// assertStepUnder finds the span of the use case among the ended ones and checks
+// it is a child of the span of the request.
+func assertStepUnder(t *testing.T, ended []sdktrace.ReadOnlySpan, name string, parent trace.Span) {
+	t.Helper()
+	for _, span := range ended {
+		if span.Name() != name {
+			continue
+		}
+		if got, want := span.Parent().SpanID(), parent.SpanContext().SpanID(); got != want {
+			t.Fatalf("parent of %q = %s, want the request %s", name, got, want)
+		}
+		return
+	}
+	t.Fatalf("spans ended without %q, want the span of the use case", name)
 }
 
 func TestOpen_writesZeroWithTwoPlaces(t *testing.T) {

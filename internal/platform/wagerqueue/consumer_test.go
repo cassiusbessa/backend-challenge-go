@@ -247,11 +247,13 @@ func TestDecide_continuesTheTraceTheMessageCarried(t *testing.T) {
 	delivery.Trace = map[string]string{"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
 	consumer.decide(context.Background(), delivery)
 	ended := spans.Ended()
-	if len(ended) != 1 {
-		t.Fatalf("spans of a message that carried a trace = %d, want 1", len(ended))
+	if len(ended) != 2 {
+		t.Fatalf("spans of a message that carried a trace = %d, want the message and its use case", len(ended))
 	}
-	if got := ended[0].SpanContext().TraceID().String(); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
-		t.Fatalf("trace = %s, want the one of the origin", got)
+	for _, span := range ended {
+		if got := span.SpanContext().TraceID().String(); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
+			t.Fatalf("trace of %q = %s, want the one of the origin", span.Name(), got)
+		}
 	}
 }
 
@@ -261,14 +263,32 @@ func TestDecide_opensATraceOfItsOwnForAMessageWithNoPropagation(t *testing.T) {
 	spans := recorded(t, consumer)
 	consumer.decide(context.Background(), arrived(1))
 	ended := spans.Ended()
-	if len(ended) != 1 {
-		t.Fatalf("spans of a message with no propagation = %d, want 1", len(ended))
+	if len(ended) != 2 {
+		t.Fatalf("spans of a message with no propagation = %d, want the message and its use case", len(ended))
 	}
-	if !ended[0].SpanContext().TraceID().IsValid() {
-		t.Fatalf("trace = %s, want one of its own", ended[0].SpanContext().TraceID())
+	// The use case ends inside the message, so the message is the last to end.
+	message := ended[len(ended)-1]
+	if !message.SpanContext().TraceID().IsValid() {
+		t.Fatalf("trace = %s, want one of its own", message.SpanContext().TraceID())
 	}
-	if ended[0].Parent().IsValid() {
-		t.Fatalf("parent = %s, want none", ended[0].Parent().SpanID())
+	if message.Parent().IsValid() {
+		t.Fatalf("parent = %s, want none", message.Parent().SpanID())
+	}
+}
+
+// The use case runs in a span of its own under the one of the message, so the
+// trace tells the decision apart from the decode and the answer to the broker.
+func TestSettle_runsTheUseCaseInASpanUnderTheMessage(t *testing.T) {
+	t.Parallel()
+	consumer, _, _ := consumerOver(t, &fakeQueue{}, &fakeReceiver{status: wager.Processed})
+	spans := recorded(t, consumer)
+	consumer.decide(context.Background(), arrived(1))
+	ended := spans.Ended()
+	if len(ended) != 2 || ended[0].Name() != "receive wager" || ended[1].Name() != "receive wager message" {
+		t.Fatalf("spans ended = %d, want the use case and then the message", len(ended))
+	}
+	if got, want := ended[0].Parent().SpanID(), ended[1].SpanContext().SpanID(); got != want {
+		t.Fatalf("parent of the use case = %s, want the message %s", got, want)
 	}
 }
 

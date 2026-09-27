@@ -7,6 +7,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/app/reconcilewallet"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/identity"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // Reconciler is the reconciliation of one wallet, as the border needs it.
@@ -43,7 +44,9 @@ func Reconcile(reconciler Reconciler, reporter *Reporter) http.Handler {
 			reporter.Refuse(w, r, err)
 			return
 		}
-		report, err := reconciler.Reconcile(r.Context(), id)
+		ctx, done := telemetry.Step(r.Context(), "reconcile wallet")
+		report, err := reconciler.Reconcile(ctx, id)
+		done(err)
 		if err != nil {
 			reporter.Unreconciled(w, r, err)
 			return

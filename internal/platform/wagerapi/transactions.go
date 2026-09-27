@@ -13,6 +13,7 @@ import (
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/authz"
 	"github.com/junglegaming/backend-challenge-go/internal/platform/problem"
+	"github.com/junglegaming/backend-challenge-go/internal/platform/telemetry"
 )
 
 // Route is the path of the wager transactions, which is also what the created
@@ -89,7 +90,9 @@ func Submit(submitter Submitter, reporter *Reporter) http.Handler {
 			reporter.Refuse(w, r, err)
 			return
 		}
-		settled, err := submitter.Submit(r.Context(), cmd)
+		ctx, done := telemetry.Step(r.Context(), "submit wager")
+		settled, err := submitter.Submit(ctx, cmd)
+		done(err)
 		if err != nil {
 			// A rule that refused wrote a row of its own, and the result names it.
 			// Rejected takes it; the refusals above wrote nothing to name.
@@ -119,7 +122,9 @@ func Read(reader Reader, reporter *Reporter) http.Handler {
 			reporter.Refuse(w, r, err)
 			return
 		}
-		found, err := reader.Transaction(r.Context(), id, provider)
+		ctx, done := telemetry.Step(r.Context(), "read wager")
+		found, err := reader.Transaction(ctx, id, provider)
+		done(err)
 		if err != nil {
 			reporter.Refuse(w, r, err)
 			return
@@ -142,7 +147,9 @@ func ReadByExternal(reader ExternalReader, reporter *Reporter) http.Handler {
 			reporter.Refuse(w, r, err)
 			return
 		}
-		found, err := reader.ByExternal(r.Context(), provider, external)
+		ctx, done := telemetry.Step(r.Context(), "read wager")
+		found, err := reader.ByExternal(ctx, provider, external)
+		done(err)
 		if err != nil {
 			reporter.Refuse(w, r, err)
 			return
